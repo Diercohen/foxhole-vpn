@@ -10,6 +10,7 @@ import { fetchEntitlement } from "./guardian.js";
 import { startProxy } from "./proxy.js";
 import { runGlobal } from "./global.js";
 import { Tui } from "./tui.js";
+import { checkUpdate, updateNotice, versionLines } from "./update.js";
 import { bold, dim, green, red, yellow, flag, countryName, gb, shortDate } from "./ui.js";
 
 // Node gives each server address only 250 ms before moving on; far VPN servers
@@ -207,6 +208,7 @@ async function cmdProxy() {
     await handle.close();
     handleAuthError(err);
   }
+  await notice();
   const stop = async () => {
     await handle.close();
     process.exit(0);
@@ -230,6 +232,7 @@ async function cmdGlobal() {
     process.exit(1);
   }
   await conn.selectServer(country);
+  await notice();
   try {
     await runGlobal(conn, {
       host: arg("host") ?? "127.0.0.1",
@@ -255,6 +258,7 @@ ${bold("Commands:")}
                        Run a local SOCKS5 proxy through the VPN
   global [--country XX] [--force]
                        Route ALL system traffic through the VPN (needs sudo)
+  -v, --version        Show the version and whether an update is available
   help                 Show this help
 
 ${dim("global: run as  sudo -E foxhole-vpn global  · Ctrl+C restores networking.")}
@@ -264,35 +268,54 @@ ${bold("Environment:")}
   FOXHOLE_ACCESS_TOKEN   Use this VPN access token instead of the Firefox login
 `;
 
+/** After a quick command, print the yellow update notice if a newer version is out. */
+async function notice() {
+  await checkUpdate();
+  if (updateNotice()) console.error("\n" + versionLines().join("\n"));
+}
+
 async function main() {
+  checkUpdate(); // fire while the command runs; shown afterwards
   const cmd = process.argv[2] ?? "tui";
+  if (cmd === "-v" || cmd === "--version" || cmd === "version") {
+    await checkUpdate();
+    console.log(versionLines().join("\n"));
+    return;
+  }
   switch (cmd) {
+    // Long-running commands show the update notice themselves.
     case "tui":
     case "up":
       return cmdTui();
-    case "countries":
-      return cmdCountries();
-    case "usage":
-      return cmdUsage();
-    case "status":
-    case "doctor":
-      return cmdDoctor();
-    case "login":
-      return cmdLogin();
     case "proxy":
       return cmdProxy();
     case "global":
       return cmdGlobal();
+    // Quick commands: run, then show the notice.
+    case "countries":
+      await cmdCountries();
+      break;
+    case "usage":
+      await cmdUsage();
+      break;
+    case "status":
+    case "doctor":
+      await cmdDoctor();
+      break;
+    case "login":
+      await cmdLogin();
+      break;
     case "help":
     case "--help":
     case "-h":
       console.log(HELP);
-      return;
+      break;
     default:
       console.error(red(`Unknown command: ${cmd}\n`));
       console.log(HELP);
       process.exit(1);
   }
+  await notice();
 }
 
 main().catch((err) => {

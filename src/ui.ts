@@ -5,6 +5,7 @@ const wrap = (code: string) => (s: string) => (useColor ? `\x1b[${code}m${s}\x1b
 
 export const bold = wrap("1");
 export const dim = wrap("2");
+export const under = wrap("4");
 export const red = wrap("31");
 export const green = wrap("32");
 export const yellow = wrap("33");

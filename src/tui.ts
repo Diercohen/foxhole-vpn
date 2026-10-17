@@ -4,6 +4,7 @@ import { Connection } from "./connection.js";
 import { NotImplementedError } from "./auth.js";
 import { startProxy, type ProxyHandle } from "./proxy.js";
 import { GlobalSession, sudoPriv, validateSudo, ensureTun2socks } from "./global.js";
+import { VERSION, checkUpdate, canUpdate, runUpdate, updateNotice } from "./update.js";
 import { bold, dim, green, red, yellow, cyan, flag, countryName, gb, shortDate } from "./ui.js";
 
 const ESC = "\x1b[";
@@ -51,6 +52,7 @@ export class Tui {
       this.#message = red(`server list failed: ${(err as Error).message}`);
     }
     this.#refreshUsage();
+    void checkUpdate().then(() => this.#render()); // show the update notice once npm answers
     this.#render();
     await this.#loop();
   }
@@ -77,7 +79,7 @@ export class Tui {
       const onResize = () => this.#render();
       process.stdout.on("resize", onResize);
 
-      const quit = async () => {
+      const quit = async (action?: "update") => {
         process.stdin.removeListener("keypress", onKey);
         process.stdout.removeListener("resize", onResize);
         if (process.stdin.isTTY) process.stdin.setRawMode(false);
@@ -88,6 +90,10 @@ export class Tui {
         }
         await this.#proxy?.close();
         process.stdout.write(ALT_OFF);
+        if (action === "update") {
+          runUpdate(); // runs npm in this terminal (asks for sudo if needed)
+          console.log(green("\nUpdated. Start foxhole-vpn again to use the new version."));
+        }
         resolve();
       };
 
@@ -115,6 +121,9 @@ export class Tui {
           case "d":
             void this.#disconnect();
             return;
+          case "u":
+            if (canUpdate()) return void quit("update");
+            break;
           case "r":
             this.#message = dim("refreshing…");
             this.#refreshUsage();
@@ -290,11 +299,13 @@ export class Tui {
         : dim("○ disconnected");
 
     const lines: string[] = [];
-    lines.push(` ${bold("🦊 foxhole-vpn")}    ${state}`);
+    lines.push(` ${bold("🦊 foxhole-vpn")} ${dim(VERSION)}    ${state}`);
     lines.push("");
     lines.push(` ${data}`);
     if (this.#global) lines.push(` ${green("▸ all system traffic routed through the VPN")}`);
     else if (this.#active) lines.push(` ${cyan(this.#proxyAddr())}`);
+    const note = updateNotice(true);
+    if (note) note.forEach((l) => lines.push(` ${yellow(l)}`));
     lines.push("");
     lines.push(` ${bold("Location:")}`);
 
@@ -321,7 +332,8 @@ export class Tui {
       lines.push(` sudo password: ${"•".repeat(this.#pw.length)}`);
     } else {
       const g = this.#global ? "g global off" : "g go global";
-      lines.push(dim(` ↑/↓ move · ⏎ connect · ${g} · d disconnect · r refresh · q quit`));
+      const upd = canUpdate() ? " · u update" : "";
+      lines.push(dim(` ↑/↓ move · ⏎ connect · ${g} · d disconnect · r refresh${upd} · q quit`));
       lines.push(rule);
       lines.push(` ${this.#message}`);
     }
