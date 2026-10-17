@@ -93,11 +93,14 @@ Free-tier countries: 🇺🇸 US · 🇩🇪 DE · 🇯🇵 JP · 🇦🇺 AU ·
 - **TCP only.** The upstream is HTTP `CONNECT`; UDP/QUIC won't tunnel, so QUIC,
   WebRTC and VoIP fall back or fail. IPv6 is blackholed in global mode so apps
   use IPv4 through the tunnel instead of leaking over native IPv6.
-- **DNS goes direct, not through the tunnel.** The VPN refuses port-53 traffic
-  (it resolves names itself for in-browser use), so global mode pins your DNS
-  resolvers to the real uplink. Your browsing *content* is tunnelled, but your
-  DNS *queries* are visible to your network — a DNS leak. (A DNS-over-HTTPS
-  forwarder through the tunnel would close this; not built yet.)
+- **DNS resolves through the tunnel (DoH).** The VPN refuses port-53 traffic, so
+  global mode runs a local resolver that forwards every lookup as DNS-over-HTTPS
+  over the proxy (port 443) and points systemd-resolved at it. Lookups stay
+  inside the tunnel — not visible to, or blockable by, the local network. (On
+  systems without systemd-resolved it falls back to pinning your resolvers to the
+  real uplink, which *is* a DNS leak — a note is printed when that happens.)
+- Non-web ports may be refused by the VPN (e.g. Google's `:5228` push) — that's
+  the VPN's policy and doesn't affect normal browsing.
 - Conflicts with another active full-tunnel VPN — `global` refuses to start if it
   detects one (a VPN on the default route, or `0/1`+`128/1` split routes). Stop
   it first, or pass `--force`.

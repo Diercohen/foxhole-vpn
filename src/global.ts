@@ -10,6 +10,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import type { Connection } from "./connection.js";
 import { startProxy } from "./proxy.js";
+import { startDnsForwarder, type DnsForwarder } from "./dns.js";
 import { dim, green, red, yellow, bold } from "./ui.js";
 
 const exec = promisify(execFile);
@@ -21,6 +22,11 @@ const RESOLV = "/etc/resolv.conf";
 // Private / special ranges must skip the tunnel: the VPN refuses them
 // ("Destination IP Prohibited") and tunnelling them would break LAN access.
 const PRIVATE_CIDRS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"];
+
+// DNS is resolved through the tunnel via DoH (the VPN forbids port 53). The
+// forwarder listens here; systemd-resolved is pointed at it.
+const DOH_HOST = "cloudflare-dns.com";
+const DOH_PORT = 5353;
 
 export interface DefaultRoute {
   gw: string | null;
@@ -256,6 +262,8 @@ export class GlobalSession {
   readonly #o: GlobalSessionOptions;
   #bypassIps: string[] = [];
   #addedPrivate: string[] = [];
+  #dns: DnsForwarder | null = null;
+  #dnsDev: string | null = null;
   #t2s: ReturnType<typeof spawn> | null = null;
   #exitCb: ((code: number | null) => void) | null = null;
   #stopped = false;
@@ -269,8 +277,8 @@ export class GlobalSession {
     this.#exitCb = cb;
   }
 
-  /** Sets up routing + tun2socks. Returns the pinned server IP and DNS servers. */
-  async start(): Promise<{ serverIp: string; dnsIps: string[] }> {
+  /** Sets up routing + tun2socks. Returns the pinned server IP and DNS mode. */
+  async start(): Promise<{ serverIp: string; dns: string }> {
     const { priv, server, force } = this.#o;
     const { stdout: routeOut } = await exec("ip", ["route"]); // reading needs no root
     const orig = parseDefaultRoute(routeOut);
@@ -284,10 +292,33 @@ export class GlobalSession {
     // through the tun (Fastly is anycast; a second lookup could pick another IP).
     const serverIp = (await lookup(server.hostname, { family: 4 })).address;
     server.ip = serverIp;
-    // DNS must bypass the tunnel (the VPN forbids port 53); pin the resolvers.
-    const dnsIps = await dnsUpstreams();
-    if (dnsIps.length === 0) dnsIps.push("1.1.1.1");
-    this.#bypassIps = [...new Set([serverIp, ...dnsIps])];
+
+    // DNS: resolve through the tunnel via DoH so lookups aren't done on (and
+    // can't be blocked by) the local network. Point systemd-resolved at a local
+    // forwarder that speaks DoH over the proxy. If there's no resolved, fall
+    // back to pinning the resolvers to the real uplink.
+    let dns: string;
+    try {
+      this.#dns = await startDnsForwarder({
+        socksHost: this.#o.proxyHost,
+        socksPort: this.#o.proxyPort,
+        dohHost: DOH_HOST,
+        host: "127.0.0.1",
+        port: DOH_PORT,
+      });
+      await priv.run(["resolvectl", "dns", orig.dev, `127.0.0.1:${DOH_PORT}`]);
+      await priv.run(["resolvectl", "domain", orig.dev, "~."]);
+      this.#dnsDev = orig.dev;
+      this.#bypassIps = [serverIp];
+      dns = `tunnelled (DoH via ${DOH_HOST})`;
+    } catch {
+      await this.#dns?.close();
+      this.#dns = null;
+      const dnsIps = await dnsUpstreams();
+      if (dnsIps.length === 0) dnsIps.push("1.1.1.1");
+      this.#bypassIps = [...new Set([serverIp, ...dnsIps])];
+      dns = `direct: ${dnsIps.join(", ")} (no systemd-resolved — DNS may be visible locally)`;
+    }
 
     for (const step of planSetup(this.#bypassIps, orig)) await priv.run(step);
 
@@ -314,7 +345,7 @@ export class GlobalSession {
       `socks5://${this.#o.proxyHost}:${this.#o.proxyPort}`,
     ]);
     this.#t2s.on("exit", (code) => this.#exitCb?.(code));
-    return { serverIp, dnsIps };
+    return { serverIp, dns };
   }
 
   /** The public exit IP (confirms the tunnel works), or null if unreachable. */
@@ -331,6 +362,8 @@ export class GlobalSession {
   async stop(): Promise<void> {
     if (this.#stopped) return;
     this.#stopped = true;
+    if (this.#dnsDev) await this.#o.priv.run(["resolvectl", "revert", this.#dnsDev], true);
+    await this.#dns?.close();
     for (const cidr of this.#addedPrivate) await this.#o.priv.run(["ip", "route", "del", cidr], true);
     for (const step of planTeardown(this.#bypassIps)) await this.#o.priv.run(step, true);
     this.#t2s?.kill("SIGTERM");
@@ -388,7 +421,7 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
   process.on("SIGTERM", () => void cleanup().then(() => process.exit(0)));
 
   try {
-    const { serverIp, dnsIps } = await session.start();
+    const { serverIp, dns } = await session.start();
     console.log(green(`\n● routing all system traffic through the VPN (${serverIp})…`));
     await new Promise((r) => setTimeout(r, 2500));
     if (!dead) {
@@ -399,9 +432,7 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
           : yellow("  couldn't reach the internet through the tunnel — check the tun2socks output above."),
       );
     }
-    console.log(
-      dim(`  DNS via ${dnsIps.join(", ")} (direct, outside tunnel) · IPv6 blackholed · Ctrl+C restores.\n`),
-    );
+    console.log(dim(`  DNS ${dns} · IPv6 blackholed · Ctrl+C restores.\n`));
     await new Promise(() => {}); // run until signalled
   } catch (err) {
     await cleanup();
