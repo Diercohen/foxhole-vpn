@@ -18,20 +18,26 @@ assert.equal(parseDefaultRoute("10.0.0.0/8 dev eth0\n"), null, "no default");
 assert.ok(isVpnDev("tun0") && isVpnDev("wg0") && isVpnDev("proton0"), "vpn devs flagged");
 assert.ok(!isVpnDev("wlo1") && !isVpnDev("eth0"), "real devs not flagged");
 
-// Setup pins the server IP via the original uplink, then defaults via the tun.
-const setup = planSetup("151.101.1.1", { gw: "192.168.0.1", dev: "wlo1" });
+// Setup pins every bypass IP (VPN server + DNS resolvers) via the real uplink,
+// then routes the default through the tun.
+const setup = planSetup(["151.101.1.1", "8.8.8.8"], { gw: "192.168.0.1", dev: "wlo1" });
 assert.deepEqual(
-  setup.find((c) => c[2] === "add" && c[3] === "151.101.1.1"),
+  setup.find((c) => c[3] === "151.101.1.1"),
   ["ip", "route", "add", "151.101.1.1", "via", "192.168.0.1", "dev", "wlo1"],
   "server IP pinned via real gateway",
 );
+assert.deepEqual(
+  setup.find((c) => c[3] === "8.8.8.8"),
+  ["ip", "route", "add", "8.8.8.8", "via", "192.168.0.1", "dev", "wlo1"],
+  "DNS resolver pinned via real gateway",
+);
 assert.ok(
-  setup.some((c) => c.join(" ") === "ip route add default dev foxhole0 metric 1"),
+  setup.some((c) => c.join(" ") === "ip route add default dev escapedfox0 metric 1"),
   "default routed through tun",
 );
 
-// Gateway-less uplink pins the server IP by device only.
-const setupNoGw = planSetup("151.101.1.1", { gw: null, dev: "ppp0" });
+// Gateway-less uplink pins bypass IPs by device only.
+const setupNoGw = planSetup(["151.101.1.1"], { gw: null, dev: "ppp0" });
 assert.deepEqual(
   setupNoGw.find((c) => c[3] === "151.101.1.1"),
   ["ip", "route", "add", "151.101.1.1", "dev", "ppp0"],
@@ -44,10 +50,11 @@ assert.ok(
   "IPv6 blackholed on setup",
 );
 
-// Teardown removes the default, the pin, and the IPv6 blackhole.
-const teardown = planTeardown("151.101.1.1");
-assert.ok(teardown.some((c) => c.join(" ") === "ip route del default dev foxhole0 metric 1"), "default removed");
-assert.ok(teardown.some((c) => c.join(" ") === "ip route del 151.101.1.1"), "pin removed");
+// Teardown removes the default, every pin, and the IPv6 blackhole.
+const teardown = planTeardown(["151.101.1.1", "8.8.8.8"]);
+assert.ok(teardown.some((c) => c.join(" ") === "ip route del default dev escapedfox0 metric 1"), "default removed");
+assert.ok(teardown.some((c) => c.join(" ") === "ip route del 151.101.1.1"), "server pin removed");
+assert.ok(teardown.some((c) => c.join(" ") === "ip route del 8.8.8.8"), "DNS pin removed");
 assert.ok(teardown.some((c) => c.join(" ") === "ip -6 route del blackhole default metric 1"), "IPv6 restored");
 
 // A VPN on the default device, or 0/1 split routes, is detected as conflicting.

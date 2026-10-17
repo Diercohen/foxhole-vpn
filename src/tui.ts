@@ -166,7 +166,7 @@ export class Tui {
       : dim("○ disconnected");
 
     const lines: string[] = [];
-    lines.push(` ${bold("🦊 foxhole")}    ${state}`);
+    lines.push(` ${bold("🦊 escapedfox")}    ${state}`);
     lines.push("");
     lines.push(` ${data}`);
     if (this.#active) lines.push(` ${cyan(this.#proxyAddr())}`);

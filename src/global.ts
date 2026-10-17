@@ -14,7 +14,7 @@ import { dim, green, red, yellow, bold } from "./ui.js";
 
 const exec = promisify(execFile);
 
-const TUN = "foxhole0";
+const TUN = "escapedfox0";
 const TUN_ADDR = "198.18.0.1"; // RFC 2544 benchmark range, unlikely to clash
 const RESOLV = "/etc/resolv.conf";
 
@@ -37,16 +37,21 @@ export function isVpnDev(dev: string): boolean {
   return /^(tun|tap|wg|ppp|utun|gpd|nordlynx|proton)/i.test(dev);
 }
 
-/** Builds the `ip` command sequence to route everything through the tun. Pure. */
-export function planSetup(serverIp: string, orig: DefaultRoute): string[][] {
-  const pin = orig.gw
-    ? ["ip", "route", "add", serverIp, "via", orig.gw, "dev", orig.dev]
-    : ["ip", "route", "add", serverIp, "dev", orig.dev];
+/**
+ * Builds the `ip` command sequence to route everything through the tun. Pure.
+ * `bypassIps` (the VPN server and the DNS resolvers) are pinned to the real
+ * uplink so they don't loop through — or get refused by — the tunnel.
+ */
+export function planSetup(bypassIps: string[], orig: DefaultRoute): string[][] {
+  const pin = (ip: string) =>
+    orig.gw
+      ? ["ip", "route", "add", ip, "via", orig.gw, "dev", orig.dev]
+      : ["ip", "route", "add", ip, "dev", orig.dev];
   return [
     ["ip", "tuntap", "add", "mode", "tun", "dev", TUN],
     ["ip", "addr", "add", `${TUN_ADDR}/15`, "dev", TUN],
     ["ip", "link", "set", "dev", TUN, "up"],
-    pin, // keep the tunnel's own packets off the tunnel
+    ...bypassIps.map(pin),
     ["ip", "route", "add", "default", "dev", TUN, "metric", "1"],
     // The upstream is IPv4-only; blackhole IPv6 so apps can't leak around it
     // over native IPv6 (they fall back to IPv4, which goes through the tun).
@@ -55,18 +60,18 @@ export function planSetup(serverIp: string, orig: DefaultRoute): string[][] {
 }
 
 /** Reverse of planSetup, best-effort. Pure. */
-export function planTeardown(serverIp: string): string[][] {
+export function planTeardown(bypassIps: string[]): string[][] {
   return [
     ["ip", "-6", "route", "del", "blackhole", "default", "metric", "1"],
     ["ip", "route", "del", "default", "dev", TUN, "metric", "1"],
-    ["ip", "route", "del", serverIp],
+    ...bypassIps.map((ip) => ["ip", "route", "del", ip]),
     ["ip", "link", "set", "dev", TUN, "down"],
     ["ip", "tuntap", "del", "mode", "tun", "dev", TUN],
   ];
 }
 
 /**
- * Detects another full-tunnel VPN that would beat foxhole's default route.
+ * Detects another full-tunnel VPN that would beat escapedfox's default route.
  * Besides a VPN device on the default, many VPNs install 0.0.0.0/1 + 128.0.0.0/1
  * (more specific than 0.0.0.0/0), which win regardless of metric. Pure.
  */
@@ -96,7 +101,7 @@ async function downloadTun2socks(dest: string): Promise<void> {
   console.log(dim(`downloading ${asset} from GitHub…`));
   const res = await fetch(url, { redirect: "follow" });
   if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
-  const tmp = mkdtempSync(join(tmpdir(), "foxhole-t2s-"));
+  const tmp = mkdtempSync(join(tmpdir(), "escapedfox-t2s-"));
   try {
     const zip = join(tmp, asset);
     writeFileSync(zip, Buffer.from(await res.arrayBuffer()));
@@ -118,7 +123,7 @@ async function downloadTun2socks(dest: string): Promise<void> {
  */
 async function ensureTun2socks(): Promise<string> {
   const home = process.env.HOME ?? "/root";
-  const cache = join(home, ".cache", "foxhole", "tun2socks");
+  const cache = join(home, ".cache", "escapedfox", "tun2socks");
   for (const probe of ["tun2socks", join(home, "go/bin/tun2socks"), cache]) {
     try {
       await exec(probe, ["--version"]);
@@ -147,13 +152,47 @@ async function ensureTun2socks(): Promise<string> {
   }
 }
 
-/** DNS over the tunnel: upstream is TCP-only, so force glibc to resolve via TCP. */
-function setDns(): () => void {
+/**
+ * The DNS resolvers in use, to be pinned to the real uplink. The VPN refuses
+ * port-53 traffic ("Destination IP Prohibited") and can't carry UDP, so DNS
+ * must bypass the tunnel. Reads systemd-resolved's upstreams (which ignore
+ * /etc/resolv.conf) and any real nameserver in resolv.conf.
+ */
+// Skip resolvers reached via their own interface, not the real uplink: loopback
+// (127/8) and Tailscale's CGNAT range (100.64/10, e.g. MagicDNS 100.100.100.100).
+function pinnableResolver(ip: string): boolean {
+  if (ip.startsWith("127.")) return false;
+  const [a, b] = ip.split(".").map(Number);
+  if (a === 100 && b >= 64 && b <= 127) return false;
+  return true;
+}
+
+async function dnsUpstreams(): Promise<string[]> {
+  const ips = new Set<string>();
+  try {
+    const { stdout } = await exec("resolvectl", ["dns"]);
+    for (const m of stdout.matchAll(/\b(\d{1,3}(?:\.\d{1,3}){3})\b/g)) ips.add(m[1]);
+  } catch {
+    /* resolvectl absent */
+  }
+  try {
+    for (const line of readFileSync(RESOLV, "utf8").split("\n")) {
+      const m = line.match(/^\s*nameserver\s+(\d{1,3}(?:\.\d{1,3}){3})/);
+      if (m) ips.add(m[1]);
+    }
+  } catch {
+    /* no resolv.conf */
+  }
+  return [...ips].filter(pinnableResolver);
+}
+
+/** Writes resolv.conf (used only when no resolver is configured); returns a restore fn. */
+function writeResolv(contents: string): () => void {
   const wasSymlink = existsSync(RESOLV) && lstatSync(RESOLV).isSymbolicLink();
   const target = wasSymlink ? readlinkSync(RESOLV) : null;
   const backup = !wasSymlink && existsSync(RESOLV) ? readFileSync(RESOLV, "utf8") : null;
   if (wasSymlink) rmSync(RESOLV);
-  writeFileSync(RESOLV, "# foxhole\nnameserver 1.1.1.1\nnameserver 9.9.9.9\noptions use-vc\n");
+  writeFileSync(RESOLV, contents);
   return () => {
     try {
       rmSync(RESOLV, { force: true });
@@ -180,7 +219,7 @@ export interface GlobalOptions {
  */
 export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<void> {
   if (process.getuid?.() !== 0) {
-    console.error(red("Global mode needs root.") + ` Run: ${bold("sudo -E foxhole global")}`);
+    console.error(red("Global mode needs root.") + ` Run: ${bold("sudo -E escapedfox global")}`);
     process.exit(1);
   }
   if (!conn.server) throw new Error("No server selected");
@@ -192,7 +231,7 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
   if (conflictingVpn(routeOut, orig) && !opts.force) {
     throw new Error(
       `Another VPN looks active (default on ${orig.dev}, or 0/1 split routes). ` +
-        `Its routes beat foxhole's — stop it first, or pass --force.`,
+        `Its routes beat escapedfox's — stop it first, or pass --force.`,
     );
   }
 
@@ -204,6 +243,16 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
   conn.server.ip = serverIp;
   const tun2socks = await ensureTun2socks();
 
+  // DNS must bypass the tunnel (the VPN forbids port 53). Pin the resolvers in
+  // use; if none are configured, fall back to a public one and point at it.
+  const dnsIps = await dnsUpstreams();
+  let restoreDns: () => void = () => {};
+  if (dnsIps.length === 0) {
+    dnsIps.push("1.1.1.1");
+    restoreDns = writeResolv("# escapedfox\nnameserver 1.1.1.1\n");
+  }
+  const bypassIps = [...new Set([serverIp, ...dnsIps])];
+
   // Start the local proxy and prove auth works BEFORE touching the system.
   const proxy = await startProxy(conn, opts.host, opts.port);
   try {
@@ -213,10 +262,10 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
     throw err;
   }
 
-  const teardown: Array<() => void | Promise<void>> = [() => proxy.close()];
+  const teardown: Array<() => void | Promise<void>> = [() => proxy.close(), restoreDns];
   let t2s: ReturnType<typeof spawn> | null = null;
   const cleanup = async () => {
-    for (const step of planTeardown(serverIp)) await run(step, true);
+    for (const step of planTeardown(bypassIps)) await run(step, true);
     t2s?.kill("SIGTERM");
     for (const fn of teardown.reverse()) {
       try {
@@ -230,8 +279,7 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
   process.on("SIGTERM", () => void cleanup().then(() => process.exit(0)));
 
   try {
-    for (const step of planSetup(serverIp, orig)) await run(step);
-    teardown.push(setDns());
+    for (const step of planSetup(bypassIps, orig)) await run(step);
     // Inherit stderr so tun2socks's own errors (bad device, etc.) are visible.
     t2s = spawn(tun2socks, ["--device", TUN, "--proxy", `socks5://${opts.host}:${opts.port}`], {
       stdio: ["ignore", "ignore", "inherit"],
@@ -256,7 +304,9 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
         );
       }
     }
-    console.log(dim("  DNS forced over TCP · IPv6 blackholed · Ctrl+C restores networking.\n"));
+    console.log(
+      dim(`  DNS via ${dnsIps.join(", ")} (direct, outside tunnel) · IPv6 blackholed · Ctrl+C restores.\n`),
+    );
     await new Promise(() => {}); // run until signalled
   } catch (err) {
     await cleanup();
