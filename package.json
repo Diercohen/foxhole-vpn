@@ -1,0 +1,38 @@
+{
+  "name": "foxhole",
+  "version": "0.1.0",
+  "description": "Use Firefox's built-in VPN (IP Protection) from the whole system, via a TUI (unofficial)",
+  "type": "module",
+  "bin": {
+    "foxhole": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\" && tsc && node -e \"fs.chmodSync('dist/cli.js', 0o755)\"",
+    "test": "npm run build && node test/global.test.mjs && node test/proxy.test.mjs",
+    "prepack": "npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "os": [
+    "linux"
+  ],
+  "keywords": [
+    "firefox",
+    "vpn",
+    "ip-protection",
+    "mozilla",
+    "proxy",
+    "tui",
+    "cli"
+  ],
+  "author": "Dier Cohen",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^7.0.2"
+  }
+}
