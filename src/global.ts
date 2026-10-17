@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { lookup } from "node:dns/promises";
 import {
-  readFileSync, writeFileSync, existsSync, lstatSync, readlinkSync, symlinkSync, rmSync,
+  readFileSync, writeFileSync, rmSync,
   mkdtempSync, mkdirSync, copyFileSync, chmodSync, readdirSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
@@ -121,7 +121,7 @@ async function downloadTun2socks(dest: string): Promise<void> {
  * where Go's module proxy is blocked); falls back to `go install` via a mirror
  * that bypasses the often-blocked proxy.golang.org.
  */
-async function ensureTun2socks(): Promise<string> {
+export async function ensureTun2socks(): Promise<string> {
   const home = process.env.HOME ?? "/root";
   const cache = join(home, ".cache", "escapedfox", "tun2socks");
   for (const probe of ["tun2socks", join(home, "go/bin/tun2socks"), cache]) {
@@ -186,22 +186,135 @@ async function dnsUpstreams(): Promise<string[]> {
   return [...ips].filter(pinnableResolver);
 }
 
-/** Writes resolv.conf (used only when no resolver is configured); returns a restore fn. */
-function writeResolv(contents: string): () => void {
-  const wasSymlink = existsSync(RESOLV) && lstatSync(RESOLV).isSymbolicLink();
-  const target = wasSymlink ? readlinkSync(RESOLV) : null;
-  const backup = !wasSymlink && existsSync(RESOLV) ? readFileSync(RESOLV, "utf8") : null;
-  if (wasSymlink) rmSync(RESOLV);
-  writeFileSync(RESOLV, contents);
-  return () => {
-    try {
-      rmSync(RESOLV, { force: true });
-      if (wasSymlink && target) symlinkSync(target, RESOLV);
-      else if (backup !== null) writeFileSync(RESOLV, backup);
-    } catch {
-      /* best effort */
-    }
+// ── Privilege: run the networking commands either directly (already root) or
+// via `sudo -S` (password fed on stdin, collected in the app). ────────────────
+
+export interface Priv {
+  run(argv: string[], quiet?: boolean): Promise<void>;
+  spawn(argv: string[]): ReturnType<typeof spawn>;
+}
+
+/** Already running as root. tun2socks stderr is shown (CLI use). */
+export function directPriv(): Priv {
+  return {
+    run,
+    spawn: (argv) => spawn(argv[0], argv.slice(1), { stdio: ["ignore", "ignore", "inherit"] }),
   };
+}
+
+/** Checks a sudo password without running anything. */
+export function validateSudo(password: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const p = spawn("sudo", ["-S", "-k", "-p", "", "-v"], { stdio: ["pipe", "ignore", "ignore"] });
+    p.on("error", () => resolve(false));
+    p.on("exit", (code) => resolve(code === 0));
+    p.stdin.end(password + "\n");
+  });
+}
+
+/** Elevates each command with `sudo -S`, feeding the password on stdin. */
+export function sudoPriv(password: string): Priv {
+  const feed = (p: ReturnType<typeof spawn>) => p.stdin!.end(password + "\n");
+  return {
+    run: (argv, quiet = false) =>
+      new Promise<void>((resolve, reject) => {
+        const p = spawn("sudo", ["-S", "-p", "", ...argv], { stdio: ["pipe", "ignore", "pipe"] });
+        let err = "";
+        p.stderr!.on("data", (d) => (err += d));
+        p.on("error", reject);
+        p.on("exit", (code) =>
+          code === 0 || quiet ? resolve() : reject(new Error(`${argv.join(" ")} → ${err.trim() || `exit ${code}`}`)),
+        );
+        feed(p);
+      }),
+    spawn: (argv) => {
+      // stderr ignored: tun2socks' JSON logs would corrupt the TUI's screen.
+      const p = spawn("sudo", ["-S", "-p", "", ...argv], { stdio: ["pipe", "ignore", "ignore"] });
+      feed(p);
+      return p;
+    },
+  };
+}
+
+// ── Shared global session: the privileged half, usable by the CLI and the TUI.
+// The caller runs the SOCKS proxy (as the user) and selects conn.server first.
+
+export interface GlobalSessionOptions {
+  priv: Priv;
+  server: { hostname: string; ip?: string };
+  proxyHost: string;
+  proxyPort: number;
+  tun2socksPath: string;
+  force: boolean;
+}
+
+export class GlobalSession {
+  readonly #o: GlobalSessionOptions;
+  #bypassIps: string[] = [];
+  #t2s: ReturnType<typeof spawn> | null = null;
+  #exitCb: ((code: number | null) => void) | null = null;
+  #stopped = false;
+
+  constructor(o: GlobalSessionOptions) {
+    this.#o = o;
+  }
+
+  /** Called if tun2socks dies unexpectedly. */
+  onExit(cb: (code: number | null) => void): void {
+    this.#exitCb = cb;
+  }
+
+  /** Sets up routing + tun2socks. Returns the pinned server IP and DNS servers. */
+  async start(): Promise<{ serverIp: string; dnsIps: string[] }> {
+    const { priv, server, force } = this.#o;
+    const { stdout: routeOut } = await exec("ip", ["route"]); // reading needs no root
+    const orig = parseDefaultRoute(routeOut);
+    if (!orig) throw new Error("No default route found; are you online?");
+    if (conflictingVpn(routeOut, orig) && !force) {
+      throw new Error(
+        `Another VPN looks active (default on ${orig.dev}, or 0/1 split routes). Stop it, or force.`,
+      );
+    }
+    // Pin the exact IPv4 the proxy will dial, so its upstream can't loop back
+    // through the tun (Fastly is anycast; a second lookup could pick another IP).
+    const serverIp = (await lookup(server.hostname, { family: 4 })).address;
+    server.ip = serverIp;
+    // DNS must bypass the tunnel (the VPN forbids port 53); pin the resolvers.
+    const dnsIps = await dnsUpstreams();
+    if (dnsIps.length === 0) dnsIps.push("1.1.1.1");
+    this.#bypassIps = [...new Set([serverIp, ...dnsIps])];
+
+    for (const step of planSetup(this.#bypassIps, orig)) await priv.run(step);
+    this.#t2s = priv.spawn([
+      this.#o.tun2socksPath,
+      "--device",
+      TUN,
+      "--proxy",
+      `socks5://${this.#o.proxyHost}:${this.#o.proxyPort}`,
+    ]);
+    this.#t2s.on("exit", (code) => this.#exitCb?.(code));
+    return { serverIp, dnsIps };
+  }
+
+  /** The public exit IP (confirms the tunnel works), or null if unreachable. */
+  async verifyExitIp(): Promise<string | null> {
+    try {
+      const res = await fetch("https://api.ipify.org", { signal: AbortSignal.timeout(8000) });
+      return (await res.text()).trim();
+    } catch {
+      return null;
+    }
+  }
+
+  /** Restores routing and stops tun2socks. Best-effort, idempotent. */
+  async stop(): Promise<void> {
+    if (this.#stopped) return;
+    this.#stopped = true;
+    for (const step of planTeardown(this.#bypassIps)) await this.#o.priv.run(step, true);
+    this.#t2s?.kill("SIGTERM");
+    await this.#o.priv.run(["pkill", "-f", TUN], true); // sudo child may outlive the signal
+    this.#t2s = null;
+  }
 }
 
 export interface GlobalOptions {
@@ -211,11 +324,8 @@ export interface GlobalOptions {
 }
 
 /**
- * Routes the whole system through the VPN: local proxy + tun2socks + routes.
- * Requires root. Tears everything down on exit.
- *
- * IPv6 is blackholed (not tunnelled) so apps fall back to IPv4 through the tun
- * rather than leaking over native IPv6.
+ * CLI global mode: routes everything through the VPN and runs until Ctrl+C.
+ * Requires root (so the whole process is elevated via `sudo -E`).
  */
 export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<void> {
   if (process.getuid?.() !== 0) {
@@ -224,35 +334,7 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
   }
   if (!conn.server) throw new Error("No server selected");
 
-  // Refuse if another VPN already owns the default route (would conflict).
-  const { stdout: routeOut } = await exec("ip", ["route"]);
-  const orig = parseDefaultRoute(routeOut);
-  if (!orig) throw new Error("No default route found; are you online?");
-  if (conflictingVpn(routeOut, orig) && !opts.force) {
-    throw new Error(
-      `Another VPN looks active (default on ${orig.dev}, or 0/1 split routes). ` +
-        `Its routes beat escapedfox's — stop it first, or pass --force.`,
-    );
-  }
-
-  // Resolve to one IPv4 address and make the proxy dial exactly that: the pin
-  // below must cover the same IP the proxy connects to, or its upstream loops
-  // back through the tun. (Fastly is anycast/multi-IP, so a second DNS lookup in
-  // the proxy could otherwise pick a different, unpinned address.)
-  const serverIp = (await lookup(conn.server.hostname, { family: 4 })).address;
-  conn.server.ip = serverIp;
-  const tun2socks = await ensureTun2socks();
-
-  // DNS must bypass the tunnel (the VPN forbids port 53). Pin the resolvers in
-  // use; if none are configured, fall back to a public one and point at it.
-  const dnsIps = await dnsUpstreams();
-  let restoreDns: () => void = () => {};
-  if (dnsIps.length === 0) {
-    dnsIps.push("1.1.1.1");
-    restoreDns = writeResolv("# escapedfox\nnameserver 1.1.1.1\n");
-  }
-  const bypassIps = [...new Set([serverIp, ...dnsIps])];
-
+  const tun2socksPath = await ensureTun2socks();
   // Start the local proxy and prove auth works BEFORE touching the system.
   const proxy = await startProxy(conn, opts.host, opts.port);
   try {
@@ -262,47 +344,38 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
     throw err;
   }
 
-  const teardown: Array<() => void | Promise<void>> = [() => proxy.close(), restoreDns];
-  let t2s: ReturnType<typeof spawn> | null = null;
+  const session = new GlobalSession({
+    priv: directPriv(),
+    server: conn.server,
+    proxyHost: opts.host,
+    proxyPort: opts.port,
+    tun2socksPath,
+    force: opts.force,
+  });
+  let dead = false;
+  session.onExit((code) => {
+    dead = true;
+    console.error(red(`tun2socks exited (${code}) — traffic is not being tunnelled.`));
+  });
+
   const cleanup = async () => {
-    for (const step of planTeardown(bypassIps)) await run(step, true);
-    t2s?.kill("SIGTERM");
-    for (const fn of teardown.reverse()) {
-      try {
-        await fn();
-      } catch {
-        /* best effort */
-      }
-    }
+    await session.stop();
+    await proxy.close();
   };
   process.on("SIGINT", () => void cleanup().then(() => process.exit(0)));
   process.on("SIGTERM", () => void cleanup().then(() => process.exit(0)));
 
   try {
-    for (const step of planSetup(bypassIps, orig)) await run(step);
-    // Inherit stderr so tun2socks's own errors (bad device, etc.) are visible.
-    t2s = spawn(tun2socks, ["--device", TUN, "--proxy", `socks5://${opts.host}:${opts.port}`], {
-      stdio: ["ignore", "ignore", "inherit"],
-    });
-    let t2sDead = false;
-    t2s.on("exit", (code) => {
-      t2sDead = true;
-      console.error(red(`tun2socks exited (${code}) — traffic is not being tunnelled.`));
-    });
+    const { serverIp, dnsIps } = await session.start();
     console.log(green(`\n● routing all system traffic through the VPN (${serverIp})…`));
-
-    // Verify: this fetch now goes through the tun; report the public exit IP so
-    // the user sees immediately whether global mode actually took effect.
     await new Promise((r) => setTimeout(r, 2500));
-    if (!t2sDead) {
-      try {
-        const res = await fetch("https://api.ipify.org", { signal: AbortSignal.timeout(8000) });
-        console.log(green(`  exit IP is now ${bold((await res.text()).trim())}`));
-      } catch {
-        console.log(
-          yellow("  couldn't reach the internet through the tunnel — check the tun2socks output above."),
-        );
-      }
+    if (!dead) {
+      const ip = await session.verifyExitIp();
+      console.log(
+        ip
+          ? green(`  exit IP is now ${bold(ip)}`)
+          : yellow("  couldn't reach the internet through the tunnel — check the tun2socks output above."),
+      );
     }
     console.log(
       dim(`  DNS via ${dnsIps.join(", ")} (direct, outside tunnel) · IPv6 blackholed · Ctrl+C restores.\n`),

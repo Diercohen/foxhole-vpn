@@ -3,6 +3,7 @@ import { fetchServerList, type Country } from "./serverlist.js";
 import { Connection } from "./connection.js";
 import { NotImplementedError } from "./auth.js";
 import { startProxy, type ProxyHandle } from "./proxy.js";
+import { GlobalSession, sudoPriv, validateSudo, ensureTun2socks } from "./global.js";
 import { bold, dim, green, red, yellow, cyan, flag, countryName, gb, shortDate } from "./ui.js";
 
 const ESC = "\x1b[";
@@ -28,6 +29,11 @@ export class Tui {
   #active: Country | null = null;
   #message = "";
   #busy = false;
+  #global: GlobalSession | null = null;
+  #globalCountry: Country | null = null;
+  #tun2socksPath: string | null = null;
+  #pwMode = false;
+  #pw = "";
 
   constructor(conn: Connection, host: string, port: number) {
     this.#conn = conn;
@@ -76,14 +82,20 @@ export class Tui {
         process.stdout.removeListener("resize", onResize);
         if (process.stdin.isTTY) process.stdin.setRawMode(false);
         process.stdin.pause();
+        if (this.#global) {
+          process.stdout.write(HOME_CLEAR + " restoring networking…\n");
+          await this.#global.stop().catch(() => {});
+        }
         await this.#proxy?.close();
         process.stdout.write(ALT_OFF);
         resolve();
       };
 
-      const onKey = (_s: string, key: readline.Key) => {
+      const onKey = (s: string, key: readline.Key) => {
         if (!key) return;
-        if (key.name === "q" || (key.ctrl && key.name === "c")) return void quit();
+        if (key.ctrl && key.name === "c") return void quit();
+        if (this.#pwMode) return this.#pwKey(s, key);
+        if (key.name === "q") return void quit();
         if (this.#busy) return;
         switch (key.name) {
           case "up":
@@ -96,6 +108,9 @@ export class Tui {
             break;
           case "return":
             void this.#connect();
+            return;
+          case "g":
+            void this.#toggleGlobal();
             return;
           case "d":
             void this.#disconnect();
@@ -140,12 +155,118 @@ export class Tui {
   }
 
   async #disconnect(): Promise<void> {
+    if (this.#global) await this.#disableGlobal();
     if (!this.#proxy) return;
     await this.#proxy.close();
     this.#proxy = null;
     this.#active = null;
     this.#message = dim("disconnected");
     this.#render();
+  }
+
+  /** Toggle whole-system routing for the selected country (asks for sudo). */
+  async #toggleGlobal(): Promise<void> {
+    if (this.#global) return void this.#disableGlobal();
+    // Global needs a live proxy + chosen server; connect first if needed.
+    if (!this.#proxy || !this.#active) {
+      await this.#connect();
+      if (!this.#active) return; // connect failed; message already set
+    }
+    this.#pwMode = true;
+    this.#pw = "";
+    this.#render();
+  }
+
+  /** Keystrokes while the sudo-password prompt is open. */
+  #pwKey(s: string, key: readline.Key): void {
+    if (key.name === "escape") {
+      this.#pwMode = false;
+      this.#pw = "";
+      this.#message = dim("cancelled");
+    } else if (key.name === "return") {
+      const pw = this.#pw;
+      this.#pwMode = false;
+      this.#pw = "";
+      void this.#enableGlobal(pw);
+      return;
+    } else if (key.name === "backspace") {
+      this.#pw = this.#pw.slice(0, -1);
+    } else if (s && s.length === 1 && s >= " " && !key.ctrl && !key.meta) {
+      this.#pw += s;
+    }
+    this.#render();
+  }
+
+  async #enableGlobal(password: string): Promise<void> {
+    const server = this.#conn.server;
+    if (!server || !this.#proxy) return;
+    this.#busy = true;
+    this.#message = dim("preparing tun2socks…");
+    this.#render();
+    let session: GlobalSession | null = null;
+    try {
+      this.#tun2socksPath ??= await ensureTun2socks();
+      this.#message = dim("checking password…");
+      this.#render();
+      if (!(await validateSudo(password))) {
+        this.#message = red("incorrect sudo password");
+        return;
+      }
+      this.#message = dim("going global…");
+      this.#render();
+      session = new GlobalSession({
+        priv: sudoPriv(password),
+        server,
+        proxyHost: this.#host,
+        proxyPort: this.#proxy.port,
+        tun2socksPath: this.#tun2socksPath,
+        force: false,
+      });
+      session.onExit((code) => {
+        // tun2socks died: tear down the routes so the system keeps working.
+        this.#global = null;
+        this.#globalCountry = null;
+        this.#message = red(`tun2socks stopped (${code}) — restoring networking…`);
+        this.#render();
+        void session?.stop().finally(() => {
+          this.#message = red(`tun2socks stopped (${code}) — global off`);
+          this.#render();
+        });
+      });
+      await session.start();
+      this.#global = session;
+      this.#globalCountry = this.#active;
+      this.#message = dim("verifying…");
+      this.#render();
+      const ip = await session.verifyExitIp();
+      this.#message = ip
+        ? green(`global ON · exit IP ${ip}`)
+        : yellow("global on, but internet check failed — DNS or VPN issue");
+    } catch (err) {
+      this.#message = red(`global failed: ${(err as Error).message}`);
+      await session?.stop().catch(() => {});
+      this.#global = null;
+    } finally {
+      this.#busy = false;
+      this.#render();
+    }
+  }
+
+  async #disableGlobal(): Promise<void> {
+    if (!this.#global) return;
+    this.#busy = true;
+    this.#message = dim("restoring networking…");
+    this.#render();
+    const session = this.#global;
+    this.#global = null;
+    this.#globalCountry = null;
+    try {
+      await session.stop();
+      this.#message = dim("global off (SOCKS proxy still on)");
+    } finally {
+      this.#busy = false;
+      this.#render();
+    }
   }
 
   #proxyAddr(): string {
@@ -161,15 +282,19 @@ export class Tui {
         : `data: ${bold(gb(u.remaining))} / ${gb(u.max)}` +
           (u.reset ? dim(` · resets ${shortDate(u.reset)}`) : "");
 
-    const state = this.#active
-      ? green(`● connected  ${flag(this.#active.code)} ${countryName(this.#active.code, this.#active.name)}`)
-      : dim("○ disconnected");
+    const gc = this.#globalCountry;
+    const state = this.#global
+      ? green(`● GLOBAL  ${flag(gc!.code)} ${countryName(gc!.code, gc!.name)} · system-wide`)
+      : this.#active
+        ? green(`● connected  ${flag(this.#active.code)} ${countryName(this.#active.code, this.#active.name)}`)
+        : dim("○ disconnected");
 
     const lines: string[] = [];
     lines.push(` ${bold("🦊 escapedfox")}    ${state}`);
     lines.push("");
     lines.push(` ${data}`);
-    if (this.#active) lines.push(` ${cyan(this.#proxyAddr())}`);
+    if (this.#global) lines.push(` ${green("▸ all system traffic routed through the VPN")}`);
+    else if (this.#active) lines.push(` ${cyan(this.#proxyAddr())}`);
     lines.push("");
     lines.push(` ${bold("Location:")}`);
 
@@ -189,9 +314,17 @@ export class Tui {
       lines.push(dim(`   … ${this.#countries.length} total`));
     }
     lines.push("");
-    lines.push(dim(" ↑/↓ move   enter connect   d disconnect   r refresh   q quit"));
-    lines.push(dim(" " + "─".repeat(Math.min(60, (process.stdout.columns || 60) - 2))));
-    lines.push(` ${this.#message}`);
+    const rule = dim(" " + "─".repeat(Math.min(60, (process.stdout.columns || 60) - 2)));
+    if (this.#pwMode) {
+      lines.push(dim(" sudo password needed to route the whole system   ⏎ submit · esc cancel"));
+      lines.push(rule);
+      lines.push(` sudo password: ${"•".repeat(this.#pw.length)}`);
+    } else {
+      const g = this.#global ? "g global off" : "g go global";
+      lines.push(dim(` ↑/↓ move · ⏎ connect · ${g} · d disconnect · r refresh · q quit`));
+      lines.push(rule);
+      lines.push(` ${this.#message}`);
+    }
 
     process.stdout.write(HOME_CLEAR + lines.join("\n"));
   }

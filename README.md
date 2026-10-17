@@ -48,6 +48,11 @@ node dist/cli.js proxy --country US  # local SOCKS5 proxy through the US
 sudo -E node dist/cli.js global --country US   # route the whole system
 ```
 
+In the **TUI**, pick a country and press **`g`** to route the whole system
+through it — escapedfox asks for your sudo password in-app (no need to launch
+the whole app with `sudo`), and `g` again turns it back off. Only the networking
+is elevated; the proxy and your Firefox login stay unprivileged.
+
 Point a single app at the proxy:
 
 ```sh
