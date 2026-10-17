@@ -1,7 +1,7 @@
 # The one unimplemented piece: `FirefoxAuth.#exchangeForVpnToken`
 
 `src/auth.ts` can read your Firefox session token but does **not** turn it into a
-VPN access token. That single function is the only thing between escapedfox and a
+VPN access token. That single function is the only thing between foxhole-vpn and a
 working connection. This document is its spec.
 
 ## Contract

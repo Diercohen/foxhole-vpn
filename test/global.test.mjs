@@ -32,7 +32,7 @@ assert.deepEqual(
   "DNS resolver pinned via real gateway",
 );
 assert.ok(
-  setup.some((c) => c.join(" ") === "ip route add default dev escapedfox0 metric 1"),
+  setup.some((c) => c.join(" ") === "ip route add default dev foxhole0 metric 1"),
   "default routed through tun",
 );
 
@@ -52,7 +52,7 @@ assert.ok(
 
 // Teardown removes the default, every pin, and the IPv6 blackhole.
 const teardown = planTeardown(["151.101.1.1", "8.8.8.8"]);
-assert.ok(teardown.some((c) => c.join(" ") === "ip route del default dev escapedfox0 metric 1"), "default removed");
+assert.ok(teardown.some((c) => c.join(" ") === "ip route del default dev foxhole0 metric 1"), "default removed");
 assert.ok(teardown.some((c) => c.join(" ") === "ip route del 151.101.1.1"), "server pin removed");
 assert.ok(teardown.some((c) => c.join(" ") === "ip route del 8.8.8.8"), "DNS pin removed");
 assert.ok(teardown.some((c) => c.join(" ") === "ip -6 route del blackhole default metric 1"), "IPv6 restored");

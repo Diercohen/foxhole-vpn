@@ -1,4 +1,4 @@
-# escapedfox 🦊
+# foxhole-vpn 🦊
 
 Use **Firefox's built-in VPN** (the free "IP Protection" / Mozilla VPN proxy
 baked into Firefox) from your whole system — not just the browser — via a small
@@ -11,7 +11,7 @@ terminal app. Node.js, zero runtime dependencies.
 ## How it works
 
 Firefox's VPN is an authenticated HTTP `CONNECT` proxy on Fastly servers.
-escapedfox:
+foxhole-vpn:
 
 1. reads your Firefox Account login from your local Firefox profile,
 2. exchanges it for a short-lived **proxy pass** from Mozilla's Guardian API,
@@ -49,7 +49,7 @@ sudo -E node dist/cli.js global --country US   # route the whole system
 ```
 
 In the **TUI**, pick a country and press **`g`** to route the whole system
-through it — escapedfox asks for your sudo password in-app (no need to launch
+through it — foxhole-vpn asks for your sudo password in-app (no need to launch
 the whole app with `sudo`), and `g` again turns it back off. Only the networking
 is elevated; the proxy and your Firefox login stay unprivileged.
 
@@ -60,12 +60,12 @@ export ALL_PROXY=socks5://127.0.0.1:1080
 ```
 
 `global` mode sends everything through the VPN: it runs a local proxy, obtains
-`tun2socks` (see below), creates a `escapedfox0` TUN device, routes the default
+`tun2socks` (see below), creates a `foxhole0` TUN device, routes the default
 through it (pinning the VPN server's own IP to the real uplink), forces DNS over
 TCP, and restores all of it on Ctrl+C.
 
-**Getting tun2socks** — escapedfox finds it automatically, in this order:
-1. `tun2socks` already on your `PATH`, `~/go/bin`, or `~/.cache/escapedfox`;
+**Getting tun2socks** — foxhole-vpn finds it automatically, in this order:
+1. `tun2socks` already on your `PATH`, `~/go/bin`, or `~/.cache/foxhole-vpn`;
 2. else it **downloads the prebuilt binary from GitHub releases** (no Go, no
    Google servers — works behind the Go-proxy block);
 3. else it builds via `go install` using the `goproxy.cn` mirror.
@@ -79,12 +79,11 @@ Until `AUTH.md` is filled in, you can supply a VPN access token yourself to
 exercise the entire proxy / TUI / global stack:
 
 ```sh
-export ESCAPEDFOX_ACCESS_TOKEN=<an FxA access token with the VPN scope>
+export FOXHOLE_ACCESS_TOKEN=<an FxA access token with the VPN scope>
 node dist/cli.js doctor   # should print entitlement + remaining data
 ```
 
 When set, every command uses that token instead of the Firefox session.
-(`FOXHOLE_ACCESS_TOKEN` is still accepted as an alias.)
 
 Free-tier countries: 🇺🇸 US · 🇩🇪 DE · 🇯🇵 JP · 🇦🇺 AU · 🇦🇷 AR · 🇿🇦 ZA.
 

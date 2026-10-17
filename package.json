@@ -1,10 +1,10 @@
 {
-  "name": "escapedfox",
+  "name": "foxhole-vpn",
   "version": "0.1.0",
   "description": "Use Firefox's built-in VPN (IP Protection) from the whole system, via a TUI (unofficial)",
   "type": "module",
   "bin": {
-    "escapedfox": "dist/cli.js"
+    "foxhole-vpn": "dist/cli.js"
   },
   "files": [
     "dist"

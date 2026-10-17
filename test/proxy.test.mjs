@@ -21,7 +21,7 @@ const read = (sock) => new Promise((r) => sock.once("data", r));
 const write = (sock, buf) => new Promise((r) => sock.write(buf, r));
 
 // Self-signed cert for the fake upstream.
-const dir = mkdtempSync(path.join(os.tmpdir(), "escapedfox-"));
+const dir = mkdtempSync(path.join(os.tmpdir(), "foxhole-vpn-"));
 const key = path.join(dir, "k.pem");
 const cert = path.join(dir, "c.pem");
 execFileSync("openssl", [
@@ -73,9 +73,9 @@ async function roundTrip(proxyPort) {
   const rep = await read(c);
   assert.equal(rep[0], 0x05, "SOCKS5 reply version");
   assert.equal(rep[1], 0x00, "SOCKS5 CONNECT succeeded");
-  await write(c, Buffer.from("ping escapedfox"));
+  await write(c, Buffer.from("ping foxhole-vpn"));
   const echo = await read(c);
-  assert.equal(echo.toString(), "ping escapedfox", "data round-trips through the tunnel");
+  assert.equal(echo.toString(), "ping foxhole-vpn", "data round-trips through the tunnel");
   c.destroy();
 }
 

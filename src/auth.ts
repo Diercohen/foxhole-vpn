@@ -17,7 +17,7 @@ export class NotImplementedError extends Error {}
 
 /**
  * Authenticator that returns a token supplied out-of-band via the
- * ESCAPEDFOX_ACCESS_TOKEN env var. Lets the whole proxy/TUI/global stack be tested
+ * FOXHOLE_ACCESS_TOKEN env var. Lets the whole proxy/TUI/global stack be tested
  * with a token obtained elsewhere, without the Firefox session exchange.
  */
 export class StaticAuth implements Authenticator {
@@ -38,7 +38,7 @@ export class StaticAuth implements Authenticator {
  *   2. exchange it for an FxA access token (VPN scope)      — NOT IMPLEMENTED
  *
  * Step 2 is the FxA `fxa-credentials` OAuth grant. It is left as a stub here;
- * drop the implementation into `#exchangeForVpnToken`. The rest of escapedfox is
+ * drop the implementation into `#exchangeForVpnToken`. The rest of foxhole-vpn is
  * complete and will work the moment this returns a valid token.
  */
 export class FirefoxAuth implements Authenticator {
@@ -71,7 +71,7 @@ export class FirefoxAuth implements Authenticator {
   async #exchangeForVpnToken(_sessionToken: string, _signal?: AbortSignal): Promise<string> {
     throw new NotImplementedError(
       "FxA token exchange is not implemented yet — see AUTH.md. " +
-        "escapedfox can read your Firefox login but cannot mint a VPN token until this is filled in.",
+        "foxhole-vpn can read your Firefox login but cannot mint a VPN token until this is filled in.",
     );
   }
 }

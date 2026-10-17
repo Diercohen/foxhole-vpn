@@ -290,7 +290,7 @@ export class Tui {
         : dim("○ disconnected");
 
     const lines: string[] = [];
-    lines.push(` ${bold("🦊 escapedfox")}    ${state}`);
+    lines.push(` ${bold("🦊 foxhole-vpn")}    ${state}`);
     lines.push("");
     lines.push(` ${data}`);
     if (this.#global) lines.push(` ${green("▸ all system traffic routed through the VPN")}`);

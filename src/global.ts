@@ -15,7 +15,7 @@ import { dim, green, red, yellow, bold } from "./ui.js";
 
 const exec = promisify(execFile);
 
-const TUN = "escapedfox0";
+const TUN = "foxhole0";
 const TUN_ADDR = "198.18.0.1"; // RFC 2544 benchmark range, unlikely to clash
 const RESOLV = "/etc/resolv.conf";
 
@@ -81,7 +81,7 @@ export function planTeardown(bypassIps: string[]): string[][] {
 }
 
 /**
- * Detects another full-tunnel VPN that would beat escapedfox's default route.
+ * Detects another full-tunnel VPN that would beat foxhole-vpn's default route.
  * Besides a VPN device on the default, many VPNs install 0.0.0.0/1 + 128.0.0.0/1
  * (more specific than 0.0.0.0/0), which win regardless of metric. Pure.
  */
@@ -111,7 +111,7 @@ async function downloadTun2socks(dest: string): Promise<void> {
   console.log(dim(`downloading ${asset} from GitHub…`));
   const res = await fetch(url, { redirect: "follow" });
   if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
-  const tmp = mkdtempSync(join(tmpdir(), "escapedfox-t2s-"));
+  const tmp = mkdtempSync(join(tmpdir(), "foxhole-vpn-t2s-"));
   try {
     const zip = join(tmp, asset);
     writeFileSync(zip, Buffer.from(await res.arrayBuffer()));
@@ -133,7 +133,7 @@ async function downloadTun2socks(dest: string): Promise<void> {
  */
 export async function ensureTun2socks(): Promise<string> {
   const home = process.env.HOME ?? "/root";
-  const cache = join(home, ".cache", "escapedfox", "tun2socks");
+  const cache = join(home, ".cache", "foxhole-vpn", "tun2socks");
   for (const probe of ["tun2socks", join(home, "go/bin/tun2socks"), cache]) {
     try {
       await exec(probe, ["--version"]);
@@ -399,7 +399,7 @@ export interface GlobalOptions {
  */
 export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<void> {
   if (process.getuid?.() !== 0) {
-    console.error(red("Global mode needs root.") + ` Run: ${bold("sudo -E escapedfox global")}`);
+    console.error(red("Global mode needs root.") + ` Run: ${bold("sudo -E foxhole-vpn global")}`);
     process.exit(1);
   }
   if (!conn.server) throw new Error("No server selected");

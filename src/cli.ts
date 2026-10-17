@@ -33,17 +33,10 @@ function tokenTtl(jwt: string): number | null {
   }
 }
 
-// The manual token env var. ESCAPEDFOX_ACCESS_TOKEN is canonical;
-// FOXHOLE_ACCESS_TOKEN is still accepted so the old name keeps working.
-const TOKEN_ENV_VARS = ["ESCAPEDFOX_ACCESS_TOKEN", "FOXHOLE_ACCESS_TOKEN"] as const;
-
-/** Returns the name and value of whichever token env var is set, if any. */
+/** The manual access-token env var, if set; overrides the Firefox session. */
 function tokenEnv(): { name: string; value: string } | null {
-  for (const name of TOKEN_ENV_VARS) {
-    const value = process.env[name];
-    if (value) return { name, value };
-  }
-  return null;
+  const value = process.env.FOXHOLE_ACCESS_TOKEN;
+  return value ? { name: "FOXHOLE_ACCESS_TOKEN", value } : null;
 }
 
 /** Warns about a pasted access token that is expired or short-lived. */
@@ -70,8 +63,8 @@ function makeAuth(): Authenticator | null {
 function requireAuth(): Authenticator {
   const auth = makeAuth();
   if (!auth) {
-    console.error(red("Not signed in to Firefox") + ` and no ${bold("ESCAPEDFOX_ACCESS_TOKEN")} set.`);
-    console.error(dim(`Run ${bold("escapedfox login")}, or set ESCAPEDFOX_ACCESS_TOKEN=<vpn access token>.`));
+    console.error(red("Not signed in to Firefox") + ` and no ${bold("FOXHOLE_ACCESS_TOKEN")} set.`);
+    console.error(dim(`Run ${bold("foxhole-vpn login")}, or set FOXHOLE_ACCESS_TOKEN=<vpn access token>.`));
     process.exit(1);
   }
   return auth;
@@ -80,7 +73,7 @@ function requireAuth(): Authenticator {
 function handleAuthError(err: unknown): never {
   if (err instanceof NotImplementedError) {
     console.error(yellow("\nThe VPN token step is not implemented yet."));
-    console.error(dim("escapedfox can read your Firefox login but cannot mint a token."));
+    console.error(dim("foxhole-vpn can read your Firefox login but cannot mint a token."));
     console.error(dim("See AUTH.md for the one function that needs filling in.\n"));
     process.exit(2);
   }
@@ -127,7 +120,7 @@ async function cmdUsage() {
 
 async function cmdDoctor() {
   const account = findAccount();
-  console.log(bold("\nescapedfox doctor\n"));
+  console.log(bold("\nfoxhole-vpn doctor\n"));
   console.log(`  Firefox profile : ${account ? green("found") : red("not found")}`);
   if (account) {
     console.log(`  Signed in       : ${account.signedIn ? green("yes") : red("no")}`);
@@ -145,7 +138,7 @@ async function cmdDoctor() {
   }
   const auth = makeAuth();
   if (!auth) {
-    console.log(`  VPN token       : ${dim("no auth — sign in or set ESCAPEDFOX_ACCESS_TOKEN")}`);
+    console.log(`  VPN token       : ${dim("no auth — sign in or set FOXHOLE_ACCESS_TOKEN")}`);
   } else {
     const conn = new Connection(auth);
     try {
@@ -248,9 +241,9 @@ async function cmdGlobal() {
   }
 }
 
-const HELP = `${bold("escapedfox")} — use Firefox's built-in VPN system-wide
+const HELP = `${bold("foxhole-vpn")} — use Firefox's built-in VPN system-wide
 
-${bold("Usage:")} escapedfox [command] [options]
+${bold("Usage:")} foxhole-vpn [command] [options]
 
 ${bold("Commands:")}
   ${dim("(no command)")}         Launch the interactive TUI
@@ -264,12 +257,11 @@ ${bold("Commands:")}
                        Route ALL system traffic through the VPN (needs sudo)
   help                 Show this help
 
-${dim("global: run as  sudo -E escapedfox global  · Ctrl+C restores networking.")}
+${dim("global: run as  sudo -E foxhole-vpn global  · Ctrl+C restores networking.")}
 ${dim("Stop any other active VPN first (or pass --force).")}
 
 ${bold("Environment:")}
-  ESCAPEDFOX_ACCESS_TOKEN   Use this VPN access token instead of the Firefox login
-                           (FOXHOLE_ACCESS_TOKEN is also accepted)
+  FOXHOLE_ACCESS_TOKEN   Use this VPN access token instead of the Firefox login
 `;
 
 async function main() {

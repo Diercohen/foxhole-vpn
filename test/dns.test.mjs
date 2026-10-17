@@ -20,7 +20,7 @@ setTimeout(() => {
 const listen = (srv) => new Promise((r) => srv.listen(0, "127.0.0.1", () => r(srv.address().port)));
 const ANSWER = Buffer.from([0xab, 0xcd, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0]); // arbitrary DNS-ish bytes
 
-const dir = mkdtempSync(path.join(os.tmpdir(), "escapedfox-dns-"));
+const dir = mkdtempSync(path.join(os.tmpdir(), "foxhole-vpn-dns-"));
 const key = path.join(dir, "k.pem");
 const cert = path.join(dir, "c.pem");
 execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=cloudflare-dns.com"], { stdio: "ignore" });
