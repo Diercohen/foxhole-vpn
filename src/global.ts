@@ -18,6 +18,10 @@ const TUN = "escapedfox0";
 const TUN_ADDR = "198.18.0.1"; // RFC 2544 benchmark range, unlikely to clash
 const RESOLV = "/etc/resolv.conf";
 
+// Private / special ranges must skip the tunnel: the VPN refuses them
+// ("Destination IP Prohibited") and tunnelling them would break LAN access.
+const PRIVATE_CIDRS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"];
+
 export interface DefaultRoute {
   gw: string | null;
   dev: string;
@@ -251,6 +255,7 @@ export interface GlobalSessionOptions {
 export class GlobalSession {
   readonly #o: GlobalSessionOptions;
   #bypassIps: string[] = [];
+  #addedPrivate: string[] = [];
   #t2s: ReturnType<typeof spawn> | null = null;
   #exitCb: ((code: number | null) => void) | null = null;
   #stopped = false;
@@ -285,6 +290,22 @@ export class GlobalSession {
     this.#bypassIps = [...new Set([serverIp, ...dnsIps])];
 
     for (const step of planSetup(this.#bypassIps, orig)) await priv.run(step);
+
+    // Keep private/LAN ranges off the tunnel. Best-effort: a range that already
+    // has a route (e.g. Docker) fails to add — skip it, and only remove on
+    // teardown the ones we actually added.
+    const pin = (dest: string) =>
+      orig.gw
+        ? ["ip", "route", "add", dest, "via", orig.gw, "dev", orig.dev]
+        : ["ip", "route", "add", dest, "dev", orig.dev];
+    for (const cidr of PRIVATE_CIDRS) {
+      try {
+        await priv.run(pin(cidr));
+        this.#addedPrivate.push(cidr);
+      } catch {
+        /* route already present */
+      }
+    }
     this.#t2s = priv.spawn([
       this.#o.tun2socksPath,
       "--device",
@@ -310,6 +331,7 @@ export class GlobalSession {
   async stop(): Promise<void> {
     if (this.#stopped) return;
     this.#stopped = true;
+    for (const cidr of this.#addedPrivate) await this.#o.priv.run(["ip", "route", "del", cidr], true);
     for (const step of planTeardown(this.#bypassIps)) await this.#o.priv.run(step, true);
     this.#t2s?.kill("SIGTERM");
     await this.#o.priv.run(["pkill", "-f", TUN], true); // sudo child may outlive the signal

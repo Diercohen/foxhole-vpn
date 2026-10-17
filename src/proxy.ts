@@ -214,7 +214,7 @@ async function handleClient(socket: net.Socket, conn: Connection): Promise<void>
   try {
     up = await openUpstreamWithRetry(server, pass.token, target);
   } catch (err) {
-    warn(`upstream connect failed: ${describe(err)}`);
+    warn(`upstream connect failed for ${target.host}:${target.port}: ${describe(err)}`);
     replyFailure(socket);
     socket.destroy();
     return;
