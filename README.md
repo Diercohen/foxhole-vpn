@@ -90,9 +90,10 @@ Free-tier countries: 🇺🇸 US · 🇩🇪 DE · 🇯🇵 JP · 🇦🇺 AU ·
 
 ## Limits
 
-- **TCP only.** The upstream is HTTP `CONNECT`; UDP/QUIC won't tunnel, so QUIC,
-  WebRTC and VoIP fall back or fail. IPv6 is blackholed in global mode so apps
-  use IPv4 through the tunnel instead of leaking over native IPv6.
+- **TCP only.** The upstream is HTTP `CONNECT`; UDP/QUIC won't tunnel. Global
+  mode rejects UDP into the tunnel (via iptables) so Chrome's QUIC/HTTP-3 falls
+  back to TCP immediately instead of hanging; WebRTC and VoIP still won't work.
+  IPv6 is blackholed so apps use IPv4 through the tunnel, not native IPv6.
 - **DNS resolves through the tunnel (DoH).** The VPN refuses port-53 traffic, so
   global mode runs a local resolver that forwards every lookup as DNS-over-HTTPS
   over the proxy (port 443) and points systemd-resolved at it. Lookups stay

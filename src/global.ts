@@ -262,6 +262,7 @@ export class GlobalSession {
   readonly #o: GlobalSessionOptions;
   #bypassIps: string[] = [];
   #addedPrivate: string[] = [];
+  #udpBlocked = false;
   #dns: DnsForwarder | null = null;
   #dnsDev: string | null = null;
   #t2s: ReturnType<typeof spawn> | null = null;
@@ -337,6 +338,18 @@ export class GlobalSession {
         /* route already present */
       }
     }
+
+    // Reject UDP into the tunnel: it's TCP-only, so QUIC (Chrome's HTTP/3 over
+    // UDP 443) would otherwise hang instead of falling back to TCP. The REJECT
+    // makes that fallback immediate. Best-effort (needs iptables). Loopback DNS
+    // and LAN UDP go out other interfaces, so they're unaffected.
+    try {
+      await priv.run(["iptables", "-I", "OUTPUT", "-o", TUN, "-p", "udp", "-j", "REJECT"]);
+      this.#udpBlocked = true;
+    } catch {
+      /* no iptables — users can disable QUIC in the browser instead */
+    }
+
     this.#t2s = priv.spawn([
       this.#o.tun2socksPath,
       "--device",
@@ -364,6 +377,8 @@ export class GlobalSession {
     this.#stopped = true;
     if (this.#dnsDev) await this.#o.priv.run(["resolvectl", "revert", this.#dnsDev], true);
     await this.#dns?.close();
+    if (this.#udpBlocked)
+      await this.#o.priv.run(["iptables", "-D", "OUTPUT", "-o", TUN, "-p", "udp", "-j", "REJECT"], true);
     for (const cidr of this.#addedPrivate) await this.#o.priv.run(["ip", "route", "del", cidr], true);
     for (const step of planTeardown(this.#bypassIps)) await this.#o.priv.run(step, true);
     this.#t2s?.kill("SIGTERM");
