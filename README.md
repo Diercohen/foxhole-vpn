@@ -84,9 +84,12 @@ Free-tier countries: 🇺🇸 US · 🇩🇪 DE · 🇯🇵 JP · 🇦🇺 AU ·
 
 ## Limits
 
-- **TCP only.** The upstream is HTTP `CONNECT`; UDP/QUIC won't tunnel. For
-  whole-system mode, DNS must go over TCP or a DoH resolver.
-- Conflicts with another active full-tunnel VPN — stop that one first.
+- **TCP only.** The upstream is HTTP `CONNECT`; UDP/QUIC won't tunnel. In global
+  mode DNS is forced over TCP, and IPv6 is blackholed so apps fall back to IPv4
+  through the tunnel instead of leaking over native IPv6.
+- Conflicts with another active full-tunnel VPN — `global` refuses to start if it
+  detects one (a VPN on the default route, or `0/1`+`128/1` split routes). Stop
+  it first, or pass `--force`.
 
 ## Test
 

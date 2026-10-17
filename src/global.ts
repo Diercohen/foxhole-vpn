@@ -10,7 +10,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import type { Connection } from "./connection.js";
 import { startProxy } from "./proxy.js";
-import { dim, green, red, bold } from "./ui.js";
+import { dim, green, red, yellow, bold } from "./ui.js";
 
 const exec = promisify(execFile);
 
@@ -48,17 +48,31 @@ export function planSetup(serverIp: string, orig: DefaultRoute): string[][] {
     ["ip", "link", "set", "dev", TUN, "up"],
     pin, // keep the tunnel's own packets off the tunnel
     ["ip", "route", "add", "default", "dev", TUN, "metric", "1"],
+    // The upstream is IPv4-only; blackhole IPv6 so apps can't leak around it
+    // over native IPv6 (they fall back to IPv4, which goes through the tun).
+    ["ip", "-6", "route", "add", "blackhole", "default", "metric", "1"],
   ];
 }
 
 /** Reverse of planSetup, best-effort. Pure. */
 export function planTeardown(serverIp: string): string[][] {
   return [
+    ["ip", "-6", "route", "del", "blackhole", "default", "metric", "1"],
     ["ip", "route", "del", "default", "dev", TUN, "metric", "1"],
     ["ip", "route", "del", serverIp],
     ["ip", "link", "set", "dev", TUN, "down"],
     ["ip", "tuntap", "del", "mode", "tun", "dev", TUN],
   ];
+}
+
+/**
+ * Detects another full-tunnel VPN that would beat foxhole's default route.
+ * Besides a VPN device on the default, many VPNs install 0.0.0.0/1 + 128.0.0.0/1
+ * (more specific than 0.0.0.0/0), which win regardless of metric. Pure.
+ */
+export function conflictingVpn(ipRoute: string, orig: DefaultRoute): boolean {
+  if (isVpnDev(orig.dev)) return true;
+  return /^(0\.0\.0\.0|128\.0\.0\.0)\/1\s/m.test(ipRoute);
 }
 
 async function run(argv: string[], quiet = false): Promise<void> {
@@ -161,9 +175,8 @@ export interface GlobalOptions {
  * Routes the whole system through the VPN: local proxy + tun2socks + routes.
  * Requires root. Tears everything down on exit.
  *
- * shortcut: IPv6 is not tunnelled or blocked here — if the box has working
- * IPv6, traffic can leak around the tunnel. Upgrade: add an IPv6 null route or
- * a matching IPv6 tun when IPv6 support is needed.
+ * IPv6 is blackholed (not tunnelled) so apps fall back to IPv4 through the tun
+ * rather than leaking over native IPv6.
  */
 export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<void> {
   if (process.getuid?.() !== 0) {
@@ -176,13 +189,19 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
   const { stdout: routeOut } = await exec("ip", ["route"]);
   const orig = parseDefaultRoute(routeOut);
   if (!orig) throw new Error("No default route found; are you online?");
-  if (isVpnDev(orig.dev) && !opts.force) {
+  if (conflictingVpn(routeOut, orig) && !opts.force) {
     throw new Error(
-      `Another VPN is active on ${orig.dev}. Stop it first, or pass --force.`,
+      `Another VPN looks active (default on ${orig.dev}, or 0/1 split routes). ` +
+        `Its routes beat foxhole's — stop it first, or pass --force.`,
     );
   }
 
-  const serverIp = (await lookup(conn.server.hostname)).address;
+  // Resolve to one IPv4 address and make the proxy dial exactly that: the pin
+  // below must cover the same IP the proxy connects to, or its upstream loops
+  // back through the tun. (Fastly is anycast/multi-IP, so a second DNS lookup in
+  // the proxy could otherwise pick a different, unpinned address.)
+  const serverIp = (await lookup(conn.server.hostname, { family: 4 })).address;
+  conn.server.ip = serverIp;
   const tun2socks = await ensureTun2socks();
 
   // Start the local proxy and prove auth works BEFORE touching the system.
@@ -213,15 +232,31 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
   try {
     for (const step of planSetup(serverIp, orig)) await run(step);
     teardown.push(setDns());
+    // Inherit stderr so tun2socks's own errors (bad device, etc.) are visible.
     t2s = spawn(tun2socks, ["--device", TUN, "--proxy", `socks5://${opts.host}:${opts.port}`], {
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", "inherit"],
     });
+    let t2sDead = false;
     t2s.on("exit", (code) => {
-      if (code) console.error(red(`tun2socks exited (${code})`));
+      t2sDead = true;
+      console.error(red(`tun2socks exited (${code}) — traffic is not being tunnelled.`));
     });
-    console.log(green(`\n● all system traffic now routes through the VPN (${serverIp}).`));
-    console.log(dim(`   DNS forced over TCP · IPv6 not tunnelled`));
-    console.log(dim("   Press Ctrl+C to disconnect and restore networking.\n"));
+    console.log(green(`\n● routing all system traffic through the VPN (${serverIp})…`));
+
+    // Verify: this fetch now goes through the tun; report the public exit IP so
+    // the user sees immediately whether global mode actually took effect.
+    await new Promise((r) => setTimeout(r, 2500));
+    if (!t2sDead) {
+      try {
+        const res = await fetch("https://api.ipify.org", { signal: AbortSignal.timeout(8000) });
+        console.log(green(`  exit IP is now ${bold((await res.text()).trim())}`));
+      } catch {
+        console.log(
+          yellow("  couldn't reach the internet through the tunnel — check the tun2socks output above."),
+        );
+      }
+    }
+    console.log(dim("  DNS forced over TCP · IPv6 blackholed · Ctrl+C restores networking.\n"));
     await new Promise(() => {}); // run until signalled
   } catch (err) {
     await cleanup();

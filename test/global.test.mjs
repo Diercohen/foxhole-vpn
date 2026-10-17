@@ -1,6 +1,6 @@
 // Pure-function checks for the global-routing planner. No root, no network.
 import assert from "node:assert";
-import { parseDefaultRoute, isVpnDev, planSetup, planTeardown } from "../dist/global.js";
+import { parseDefaultRoute, isVpnDev, planSetup, planTeardown, conflictingVpn } from "../dist/global.js";
 
 // Real-world `ip route` with a DHCP default plus extra routes.
 const r1 = parseDefaultRoute(
@@ -38,9 +38,26 @@ assert.deepEqual(
   "server IP pinned by device",
 );
 
-// Teardown removes the default and the pin.
+// IPv6 is blackholed so apps can't leak around the v4-only tunnel.
+assert.ok(
+  setup.some((c) => c.join(" ") === "ip -6 route add blackhole default metric 1"),
+  "IPv6 blackholed on setup",
+);
+
+// Teardown removes the default, the pin, and the IPv6 blackhole.
 const teardown = planTeardown("151.101.1.1");
 assert.ok(teardown.some((c) => c.join(" ") === "ip route del default dev foxhole0 metric 1"), "default removed");
 assert.ok(teardown.some((c) => c.join(" ") === "ip route del 151.101.1.1"), "pin removed");
+assert.ok(teardown.some((c) => c.join(" ") === "ip -6 route del blackhole default metric 1"), "IPv6 restored");
+
+// A VPN on the default device, or 0/1 split routes, is detected as conflicting.
+const wlo1 = { gw: "192.168.0.1", dev: "wlo1" };
+assert.equal(conflictingVpn("default via 192.168.0.1 dev wlo1\n", wlo1), false, "plain uplink is fine");
+assert.equal(conflictingVpn("default via 10.0.0.1 dev tun0\n", { gw: "10.0.0.1", dev: "tun0" }), true, "vpn dev conflicts");
+assert.equal(
+  conflictingVpn("0.0.0.0/1 via 10.136.12.1 dev tun0\ndefault via 192.168.0.1 dev wlo1\n", wlo1),
+  true,
+  "0/1 split route conflicts even when default looks normal",
+);
 
 console.log("ok - global routing planner builds correct ip command sequences");

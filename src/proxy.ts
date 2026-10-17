@@ -108,12 +108,14 @@ function replyFailure(socket: net.Socket): void {
   socket.write(Buffer.from([SOCKS_VERSION, 0x01, 0x00, ATYP_IPV4, 0, 0, 0, 0, 0, 0]));
 }
 
+interface Upstream {
+  hostname: string;
+  port: number;
+  ip?: string;
+}
+
 /** Opens a TLS tunnel to the upstream and issues HTTP CONNECT for `target`. */
-function openUpstream(
-  server: { hostname: string; port: number },
-  passToken: string,
-  target: Target,
-): Promise<tls.TLSSocket> {
+function openUpstream(server: Upstream, passToken: string, target: Target): Promise<tls.TLSSocket> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const fail = (err: Error) => {
@@ -126,9 +128,9 @@ function openUpstream(
     const timer = setTimeout(() => fail(new Error("timed out")), UPSTREAM_TIMEOUT_MS);
     const up = tls.connect(
       {
-        host: server.hostname,
+        host: server.ip ?? server.hostname, // pinned IP in global mode, else resolve
         port: server.port,
-        servername: server.hostname,
+        servername: server.hostname, // TLS SNI/cert always uses the hostname
         ALPNProtocols: ["http/1.1"],
       },
       () => {
@@ -171,7 +173,7 @@ function openUpstream(
 
 /** Opens the upstream, retrying transient failures (not proxy rejections). */
 async function openUpstreamWithRetry(
-  server: { hostname: string; port: number },
+  server: Upstream,
   passToken: string,
   target: Target,
 ): Promise<tls.TLSSocket> {
