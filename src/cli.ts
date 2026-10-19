@@ -12,7 +12,7 @@ import { runGlobal } from "./global.js";
 import { Tui } from "./tui.js";
 import { checkUpdate, updateNotice, versionLines } from "./update.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenFile } from "./tokenserver.js";
-import { bold, dim, green, red, yellow, cyan, under, flag, countryName, gb, shortDate, box } from "./ui.js";
+import { bold, dim, green, red, yellow, cyan, under, code, flag, countryName, gb, shortDate, box } from "./ui.js";
 
 // Node gives each server address only 250 ms before moving on; far VPN servers
 // take 600-900 ms to answer, so every attempt failed with a blank AggregateError.
@@ -118,6 +118,20 @@ async function ensureAuth(): Promise<Authenticator> {
 }
 
 /**
+ * Minimal JS syntax colors for the snippet. Each token sets only the foreground
+ * and returns to the block's near-white, so the code block's background stays
+ * unbroken. Strings are matched first, so words inside them aren't colored.
+ */
+function highlight(line: string): string {
+  const fg = (n: number, t: string) => `\x1b[38;5;${n}m${t}\x1b[38;5;255m`;
+  return line.replace(
+    /("(?:[^"\\]|\\.)*")|\b(async|await|const)\b|\b(ChromeUtils|console|fetch|JSON)\b|(=>|\?\?|\?\.)/g,
+    (_, str, kw, builtin, op) =>
+      str ? fg(150, str) : kw ? fg(176, kw) : builtin ? fg(81, builtin) : fg(215, op),
+  );
+}
+
+/**
  * Runs a loopback receiver and shows the steps to copy a snippet into Firefox's
  * Browser Console, which posts the VPN token straight back. Returns the token,
  * or null if the user cancels (Ctrl+C) or the wait times out.
@@ -138,7 +152,11 @@ async function captureToken(error: string | null = null): Promise<string | null>
     dim(`${tokenFile()} (readable only by you) for next time.`),
   ];
   process.stdout.write("\n" + box(steps, { title: cyan("🦊 foxhole-vpn") }).join("\n") + "\n\n");
-  process.stdout.write(dim("── paste this into the Browser Console ──") + "\n" + rec.snippet + "\n\n");
+  // No border around the code: box characters would end up in what the user copies.
+  const lines = rec.snippet.split("\n");
+  const w = Math.max(...lines.map((l) => l.length));
+  process.stdout.write(bold("Paste this into the Browser Console:") + "\n\n");
+  process.stdout.write(lines.map((l) => code(`  ${highlight(l)}${" ".repeat(w - l.length)}  `)).join("\n") + "\n\n");
   process.stdout.write(dim(`waiting for the token on ${rec.url.replace(/\/[0-9a-f]+$/, "/…")} · ${under("Ctrl+C")} to cancel\n`));
 
   const cancelled = new Promise<null>((resolve) => {

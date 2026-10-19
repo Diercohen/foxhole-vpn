@@ -12,6 +12,8 @@ export const red = wrap("31");
 export const green = wrap("32");
 export const yellow = wrap("33");
 export const cyan = wrap("36");
+// code block: near-white text on dark grey, readable on light and dark terminals
+export const code = wrap("48;5;236;38;5;255");
 
 /** ISO 3166-1 alpha-2 → regional-indicator flag emoji. */
 export function flag(code: string): string {

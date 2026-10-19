@@ -1,6 +1,6 @@
 {
   "name": "foxhole-vpn",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Use Firefox's built-in VPN (IP Protection) from the whole system, via a TUI (unofficial)",
   "type": "module",
   "bin": {
