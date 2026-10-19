@@ -94,5 +94,16 @@ export function draw(lines: string[]): void {
   const left = " ".repeat(Math.max(0, Math.floor((cols - Math.max(...lines.map(vw))) / 2)));
   const top = Math.max(0, Math.floor((rows - lines.length) / 2));
   const screen = [...Array<string>(top).fill(""), ...lines.map((l) => left + l)].slice(0, rows);
-  process.stdout.write("\x1b[H" + screen.map((l) => l + "\x1b[K").join("\n") + "\x1b[J");
+  process.stdout.write("\x1b[H" + screen.map(paint).join("\n") + "\x1b[J");
+}
+
+// Terminals disagree on a flag's width (1 or 2 cells), which would shift everything after it.
+// So draw the line with 2 spaces in its place, then jump back and paint the flag at its column.
+function paint(line: string): string {
+  let flags = "";
+  const text = line.replace(/[\u{1F1E6}-\u{1F1FF}]{2}/gu, (f: string, i: number) => {
+    flags += `\x1b[${vw(line.slice(0, i)) + 1}G${f}`;
+    return "  ";
+  });
+  return text + "\x1b[K" + flags;
 }
