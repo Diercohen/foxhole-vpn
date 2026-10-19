@@ -76,6 +76,51 @@ export function fit(s: string, n: number): string {
   return out;
 }
 
+/**
+ * The part of s between visible columns [from, to), keeping the colors active at
+ * `from`. A wide character (flag, emoji) cut by an edge is dropped.
+ */
+export function sliceCols(s: string, from: number, to = Infinity): string {
+  let out = "";
+  let sgr = ""; // colors set before `from`, replayed at the start of the slice
+  let w = 0;
+  let started = false;
+  for (const [t] of s.matchAll(/\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\|[\u{1F1E6}-\u{1F1FF}]{2}|\p{M}|./gsu)) {
+    if (t.startsWith("\x1b")) {
+      if (started) out += t;
+      else sgr = t === "\x1b[0m" ? "" : sgr + t;
+      continue;
+    }
+    const cw = vw(t);
+    if (cw === 0) {
+      if (started && w <= to) out += t; // a combining mark goes with the character before it
+      continue;
+    }
+    if (w >= from && w + cw <= to) {
+      if (!started) (out += sgr), (started = true);
+      out += t;
+    }
+    w += cw;
+    if (w >= to) break;
+  }
+  return started ? out + "\x1b[0m" : "";
+}
+
+/** Lays `over` on top of `lines`, centered with a 1-cell clear margin: the covered columns are replaced, the rest stays. */
+export function overlay(lines: string[], box: string[], width: number): string[] {
+  const bw = Math.max(...box.map(vw));
+  const blank = " ".repeat(bw + 2);
+  const over = [blank, ...box.map((l) => ` ${pad(l, bw)} `), blank];
+  const ow = bw + 2;
+  const x = Math.max(0, Math.floor((width - ow) / 2));
+  const y = Math.max(0, Math.floor((lines.length - over.length) / 2));
+  return lines.map((l, i) => {
+    const o = over[i - y];
+    if (o === undefined) return l;
+    return pad(sliceCols(l, 0, x), x) + o + sliceCols(l, x + vw(o));
+  });
+}
+
 /** Pads s with spaces to n visible columns. */
 export const pad = (s: string, n: number) => s + " ".repeat(Math.max(0, n - vw(s)));
 

@@ -8,7 +8,7 @@ import { forgetToken } from "./tokenserver.js";
 import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { GlobalSession, sudoPriv, validateSudo, ensureTun2socks } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, versionLines } from "./update.js";
-import { bold, dim, under, strike, green, red, yellow, cyan, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, repoLink, REPO_URL, linkAt, openUrl } from "./ui.js";
+import { bold, dim, under, strike, green, red, yellow, cyan, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl } from "./ui.js";
 
 const ESC = "\x1b[";
 // alternate screen + hidden cursor + mouse reports (SGR), so the repo link can be clicked
@@ -44,8 +44,10 @@ export class Tui {
   #global: GlobalSession | null = null;
   #globalCountry: Country | null = null;
   #tun2socksPath: string | null = null;
-  #pwMode = false;
+  #pwMode = false; // the password popup is open
   #pw = "";
+  #pwError = "";
+  #pwChecking = false;
 
   constructor(conn: Connection, host: string, port: number) {
     this.#conn = conn;
@@ -97,7 +99,7 @@ export class Tui {
       readline.emitKeypressEvents(input);
       const onData = (buf: Buffer) => {
         const rest = buf.toString().replace(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/g, (_, b: string, x: string, y: string, kind: string) => {
-          if (kind === "M" && b === "0" && linkAt(Number(x) - 1, Number(y) - 1)) openUrl(REPO_URL);
+          if (kind === "M" && b === "0" && !this.#pwMode && linkAt(Number(x) - 1, Number(y) - 1)) openUrl(REPO_URL);
           return "";
         });
         if (rest) input.write(rest);
@@ -225,20 +227,19 @@ export class Tui {
     }
     this.#pwMode = true;
     this.#pw = "";
+    this.#pwError = "";
     this.#render();
   }
 
-  /** Keystrokes while the sudo-password prompt is open. */
+  /** Keystrokes while the password popup is open. */
   #pwKey(s: string, key: readline.Key): void {
+    if (this.#pwChecking) return;
     if (key.name === "escape") {
       this.#pwMode = false;
       this.#pw = "";
       this.#message = dim("cancelled");
     } else if (key.name === "return") {
-      const pw = this.#pw;
-      this.#pwMode = false;
-      this.#pw = "";
-      void this.#enableGlobal(pw);
+      void this.#submitPassword();
       return;
     } else if (key.name === "backspace") {
       this.#pw = this.#pw.slice(0, -1);
@@ -246,6 +247,24 @@ export class Tui {
       this.#pw += s;
     }
     this.#render();
+  }
+
+  /** Checks the password with the popup still open: a wrong one shows an error there and can be retyped. */
+  async #submitPassword(): Promise<void> {
+    const pw = this.#pw;
+    this.#pwChecking = true;
+    this.#pwError = "";
+    this.#render();
+    const ok = await validateSudo(pw);
+    this.#pwChecking = false;
+    this.#pw = "";
+    if (!ok) {
+      this.#pwError = "Incorrect password, try again.";
+      this.#render();
+      return;
+    }
+    this.#pwMode = false;
+    void this.#enableGlobal(pw);
   }
 
   async #enableGlobal(password: string): Promise<void> {
@@ -257,12 +276,6 @@ export class Tui {
     let session: GlobalSession | null = null;
     try {
       this.#tun2socksPath ??= await ensureTun2socks();
-      this.#message = dim("checking password…");
-      this.#render();
-      if (!(await validateSudo(password))) {
-        this.#message = red("incorrect sudo password");
-        return;
-      }
       this.#message = dim("going global…");
       this.#render();
       session = new GlobalSession({
@@ -343,10 +356,7 @@ export class Tui {
       : this.#active
         ? `${cyan(this.#proxyAddr())}  ${dim("SOCKS5 or HTTP")}`
         : dim("—");
-    // The sudo prompt takes the status row, so nothing else on screen moves.
-    const status = this.#pwMode
-      ? `${yellow("sudo password:")} ${"•".repeat(this.#pw.length)}${cyan("▏")}  ${dim("enter submit · esc cancel")}`
-      : this.#message;
+    const status = this.#message;
     // A long status (e.g. a --verbose proxy error) would widen the box past the terminal and wrap.
     const room4status = (process.stdout.columns || 80) - 14;
     const headLines = [`${dim("data  ")}  ${data}`, `${dim("route ")}  ${route}`, `${dim("status")}  ${fit(status, room4status)}`];
@@ -381,7 +391,7 @@ export class Tui {
       minWidth: Math.max(headW, vw(buttons) + 4),
     });
     const width = vw(table[0]);
-    draw([
+    const frame = [
       ...box(headLines, { title, right: state, width: width - 4 }),
       ...table,
       "",
@@ -389,7 +399,30 @@ export class Tui {
       "",
       ...version.map((l) => centerIn(l, width)),
       centerIn(dim(repoLink), width),
-    ]);
+    ];
+    draw(this.#pwMode ? overlay(frame, this.#passwordPopup(), width) : frame);
+  }
+
+  /** The popup asking for the sudo password (sudo wants the user's own login password). */
+  #passwordPopup(): string[] {
+    const field = "•".repeat(this.#pw.length) + (this.#pwChecking ? "" : cyan("▏"));
+    const note = this.#pwChecking ? dim("checking…") : this.#pwError ? red(this.#pwError) : "";
+    return box(
+      [
+        "",
+        "Global mode routes all of this computer's",
+        "traffic through the VPN, which needs",
+        "administrator rights.",
+        "",
+        `Enter your ${bold("login password")} (used by sudo):`,
+        "",
+        `  ${field}`,
+        `  ${note}`,
+        "",
+        dim("enter OK · esc cancel"),
+      ],
+      { title: bold(yellow("🔒 Administrator password")), width: 44 },
+    );
   }
 }
 
