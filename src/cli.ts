@@ -65,7 +65,7 @@ function requireAuth(): Authenticator {
   const auth = makeAuth();
   if (!auth) {
     console.error(red("Not signed in to Firefox") + ` and no ${bold("FOXHOLE_ACCESS_TOKEN")} set.`);
-    console.error(dim(`Run ${bold("foxhole-vpn login")}, or set FOXHOLE_ACCESS_TOKEN=<vpn access token>.`));
+    console.error(dim(`Run ${bold("foxhole login")}, or set FOXHOLE_ACCESS_TOKEN=<vpn access token>.`));
     process.exit(1);
   }
   return auth;
@@ -250,7 +250,7 @@ async function cmdGlobal() {
 
 const HELP = `${bold("foxhole-vpn")} — use Firefox's built-in VPN system-wide
 
-${bold("Usage:")} foxhole-vpn [command] [options]
+${bold("Usage:")} foxhole [command] [options]
 
 ${bold("Commands:")}
   ${dim("(no command)")}         Launch the interactive TUI
@@ -265,7 +265,7 @@ ${bold("Commands:")}
   -v, --version        Show the version and whether an update is available
   help                 Show this help
 
-${dim("global: run as  sudo -E foxhole-vpn global  · Ctrl+C restores networking.")}
+${dim("global: run as  sudo -E foxhole global  · Ctrl+C restores networking.")}
 ${dim("Stop any other active VPN first (or pass --force).")}
 
 ${bold("Environment:")}

@@ -37,16 +37,19 @@ token. See [AUTH.md](AUTH.md) for why and exactly what it must do.
 ## Usage
 
 ```sh
-npm install && npm run build
+npm install -g foxhole-vpn
 
-node dist/cli.js                     # interactive TUI (default)
-node dist/cli.js countries           # list countries (no login needed)
-node dist/cli.js login               # open Firefox to sign in
-node dist/cli.js usage               # remaining data this month
-node dist/cli.js doctor              # check login, server list, entitlement
-node dist/cli.js proxy --country US  # local SOCKS5 proxy through the US
-sudo -E node dist/cli.js global --country US   # route the whole system
+foxhole                     # interactive TUI (default)
+foxhole countries           # list countries (no login needed)
+foxhole login               # open Firefox to sign in
+foxhole usage               # remaining data this month
+foxhole doctor              # check login, server list, entitlement
+foxhole proxy --country US  # local SOCKS5 proxy through the US
+sudo -E foxhole global --country US   # route the whole system
 ```
+
+`foxhole-vpn` works too, as an alias. From a checkout: `npm install && npm run build`,
+then `node dist/cli.js` in place of `foxhole`.
 
 In the **TUI**, pick a country and press **`g`** to route the whole system
 through it — foxhole-vpn asks for your sudo password in-app (no need to launch
@@ -80,7 +83,7 @@ exercise the entire proxy / TUI / global stack:
 
 ```sh
 export FOXHOLE_ACCESS_TOKEN=<an FxA access token with the VPN scope>
-node dist/cli.js doctor   # should print entitlement + remaining data
+foxhole doctor   # should print entitlement + remaining data
 ```
 
 When set, every command uses that token instead of the Firefox session.

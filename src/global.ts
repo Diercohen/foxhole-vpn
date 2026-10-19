@@ -420,7 +420,7 @@ export interface GlobalOptions {
  */
 export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<void> {
   if (process.getuid?.() !== 0) {
-    console.error(red("Global mode needs root.") + ` Run: ${bold("sudo -E foxhole-vpn global")}`);
+    console.error(red("Global mode needs root.") + ` Run: ${bold("sudo -E foxhole global")}`);
     process.exit(1);
   }
   if (!conn.server) throw new Error("No server selected");

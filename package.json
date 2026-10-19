@@ -4,6 +4,7 @@
   "description": "Use Firefox's built-in VPN (IP Protection) from the whole system, via a TUI (unofficial)",
   "type": "module",
   "bin": {
+    "foxhole": "dist/cli.js",
     "foxhole-vpn": "dist/cli.js"
   },
   "files": [
