@@ -137,6 +137,9 @@ function highlight(line: string): string {
  * or null if the user cancels (Ctrl+C) or the wait times out.
  */
 async function captureToken(error: string | null = null): Promise<string | null> {
+  // Mouse reports off, in case an earlier run was killed with them on: the user
+  // must be able to select and copy the snippet.
+  process.stdout.write("\x1b[?1000l\x1b[?1006l");
   const rec = await startTokenReceiver();
   const steps = [
     // one box line per sentence, so the window stays narrow enough for an 80-column terminal

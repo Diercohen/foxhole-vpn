@@ -140,7 +140,14 @@ async function httpScenarios() {
   assert.match((await read(b)).toString(), /^HTTP\/1\.1 400 /, "non-proxy request refused");
   b.destroy();
 
+  // close() must not wait for clients that keep a connection open (browsers do).
+  const idle = net.connect(handle.port, "127.0.0.1");
+  idle.on("error", () => {});
+  await write(idle, `CONNECT 127.0.0.1:${targetPort} HTTP/1.1\r\n\r\n`);
+  await read(idle);
+  const t0 = Date.now();
   await handle.close();
+  assert.ok(Date.now() - t0 < 1000, "close() returns despite an open client connection");
   server.close();
   console.log("ok - HTTP proxy (CONNECT and plain GET) works on the same port");
 }

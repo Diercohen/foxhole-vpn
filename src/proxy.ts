@@ -310,7 +310,10 @@ export interface ProxyHandle {
 
 /** Starts the local SOCKS5 + HTTP proxy. Resolves once it is listening. */
 export function startProxy(conn: Connection, host = "127.0.0.1", port = 1080): Promise<ProxyHandle> {
+  const sockets = new Set<net.Socket>();
   const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
     handleClient(socket, conn).catch(() => socket.destroy());
   });
   return new Promise((resolve, reject) => {
@@ -319,9 +322,12 @@ export function startProxy(conn: Connection, host = "127.0.0.1", port = 1080): P
       const addr = server.address() as net.AddressInfo;
       resolve({
         port: addr.port,
+        // server.close() alone waits for every client to hang up, and browsers keep
+        // connections open, so drop them (each one's tunnel closes with it).
         close: () =>
           new Promise<void>((res) => {
             server.close(() => res());
+            for (const s of sockets) s.destroy();
           }),
       });
     });

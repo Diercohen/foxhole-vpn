@@ -22,7 +22,6 @@ function leaveScreen(): void {
   process.stdout.write(ALT_OFF);
 }
 process.on("exit", leaveScreen);
-const HOME_CLEAR = `${ESC}H${ESC}2J`;
 
 /** Sort order: free & usable first, then paid, each alphabetical. */
 function order(list: Country[]): Country[] {
@@ -109,18 +108,27 @@ export class Tui {
       const onResize = () => this.#render();
       process.stdout.on("resize", onResize);
 
+      // Ctrl+C outside raw mode, a closed terminal or a kill: quit properly, so the
+      // screen and mouse mode are restored and global mode puts the routes back.
+      const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+      const onSignal = () => void quit();
+      for (const sig of signals) process.on(sig, onSignal);
+
       const quit = async (action?: "update") => {
+        for (const sig of signals) process.removeListener(sig, onSignal);
         input.removeListener("keypress", onKey);
         process.stdin.removeListener("data", onData);
         process.stdout.removeListener("resize", onResize);
         if (process.stdin.isTTY) process.stdin.setRawMode(false);
         process.stdin.pause();
+        // Give the terminal back first (mouse reports off): if cleanup is slow, clicks
+        // and keys must not be echoed as ^[[<0;… junk, and text selection must work.
+        leaveScreen();
         if (this.#global) {
-          process.stdout.write(HOME_CLEAR + " restoring networking…\n");
+          console.log("restoring networking…");
           await this.#global.stop().catch(() => {});
         }
         await this.#proxy?.close();
-        leaveScreen();
         if (action === "update") {
           runUpdate(); // runs npm in this terminal (asks for sudo if needed)
           console.log(green("\nUpdated. Start foxhole-vpn again to use the new version."));
