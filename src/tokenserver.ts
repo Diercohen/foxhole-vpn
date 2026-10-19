@@ -127,7 +127,7 @@ export function startTokenReceiver(timeoutMs = 120_000, port = TOKEN_PORT): Prom
     // Rejects `token` (not the startup promise, which has resolved by then).
     const timer = setTimeout(() => (server.close(), fail(new Error("timed out waiting for the token"))), timeoutMs);
     const close = () => (clearTimeout(timer), server.close());
-    token.then(close); // stop as soon as we have it
+    token.then(close, () => {}); // stop as soon as we have it (a timeout already closed it)
 
     server.once("listening", () => {
       const addr = server.address();
