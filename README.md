@@ -1,12 +1,35 @@
-# foxhole-vpn 🦊
+# foxhole-vpn 🦊 — Firefox's free VPN for your whole system
+
+[![npm version](https://img.shields.io/npm/v/foxhole-vpn)](https://www.npmjs.com/package/foxhole-vpn)
+[![npm downloads](https://img.shields.io/npm/dm/foxhole-vpn)](https://www.npmjs.com/package/foxhole-vpn)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
+![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
 Use **Firefox's built-in VPN** (the free "IP Protection" / Mozilla VPN proxy
-baked into Firefox) from your whole system — not just the browser — via a small
-terminal app. Node.js, zero runtime dependencies.
+baked into Firefox) from your whole system, not just the browser, via a small
+terminal app. It gives you a **local SOCKS5 + HTTP proxy** and optional
+**system-wide VPN routing (TUN)** on **Linux, macOS and Windows**. Node.js, zero
+runtime dependencies.
+
+```sh
+npm install -g foxhole-vpn && foxhole
+```
 
 > Unofficial. Not affiliated with Mozilla. Routing all your system traffic
 > through Firefox's VPN is probably outside Mozilla's intended use; your account
 > and its monthly data cap are your responsibility.
+
+## Features
+
+- 🌍 **Free VPN servers** from Firefox's IP Protection: US, Germany, Japan,
+  Australia, Argentina, South Africa
+- 🧦 **SOCKS5 and HTTP proxy on one port** for any app (curl, git, Chrome, Telegram…)
+- 🛡️ **System-wide VPN mode** through a TUN device, with **DNS over HTTPS**
+  inside the tunnel (no DNS leaks) and IPv6/QUIC leak protection
+- 🖥️ **Interactive terminal UI (TUI)**: pick a country, toggle global routing, view live logs
+- 📊 **Remaining data / monthly usage** and a `doctor` command for diagnostics
+- 🐧🍎🪟 Works on **Linux, macOS and Windows**
 
 ## How it works
 
@@ -169,3 +192,30 @@ The proxy and DNS tests generate a certificate with `openssl`; on Windows, Git
 for Windows ships one (add its `bin` folder to `PATH`). In an elevated Windows
 terminal, `node test/win32-live.mjs` checks global mode end to end — no VPN
 token needed — and verifies everything is restored afterwards.
+
+## FAQ
+
+**Is Firefox's VPN free?**
+Firefox's built-in VPN (IP Protection) has a free tier with a monthly data cap
+and a fixed set of countries. `foxhole countries` lists them; `foxhole usage`
+shows how much data you have left.
+
+**Can I use Firefox's VPN outside Firefox, e.g. in Chrome or the terminal?**
+Yes, that is what foxhole-vpn is for. Run `foxhole proxy` and point any app at
+`127.0.0.1:1080` (SOCKS5 or HTTP), or run `foxhole global` to send all system
+traffic through it.
+
+**Is this the same as Mozilla VPN?**
+No. Mozilla VPN is a separate paid WireGuard product. foxhole-vpn uses the
+proxy built into Firefox (IP Protection), which runs on Fastly servers.
+
+**Does it leak DNS?**
+In global mode, DNS goes through the tunnel as DNS over HTTPS. See [Limits](#limits)
+for the one fallback case that does leak, and when it happens.
+
+**Does UDP / gaming / WebRTC work?**
+No. The VPN is an HTTP `CONNECT` proxy, so only TCP is carried.
+
+## License
+
+[MIT](LICENSE) © Dier Cohen
