@@ -4,8 +4,8 @@ import { Connection } from "./connection.js";
 import { NotImplementedError } from "./auth.js";
 import { startProxy, type ProxyHandle } from "./proxy.js";
 import { GlobalSession, sudoPriv, validateSudo, ensureTun2socks } from "./global.js";
-import { VERSION, checkUpdate, canUpdate, runUpdate, updateNotice } from "./update.js";
-import { bold, dim, green, red, yellow, cyan, flag, countryName, gb, shortDate } from "./ui.js";
+import { checkUpdate, canUpdate, runUpdate, versionLines } from "./update.js";
+import { bold, dim, under, strike, green, red, yellow, cyan, flag, countryName, gb, shortDate, vw, box, grid, centerIn, draw } from "./ui.js";
 
 const ESC = "\x1b[";
 const ALT_ON = `${ESC}?1049h${ESC}?25l`;
@@ -48,6 +48,7 @@ export class Tui {
     this.#render();
     try {
       this.#countries = order(await fetchServerList());
+      this.#message = "";
     } catch (err) {
       this.#message = red(`server list failed: ${(err as Error).message}`);
     }
@@ -285,60 +286,65 @@ export class Tui {
   #render(): void {
     const u = this.#conn.usage;
     const data = !u
-      ? dim("data: unknown")
+      ? dim("unknown")
       : u.unlimited
-        ? green("data: unlimited")
-        : `data: ${bold(gb(u.remaining))} / ${gb(u.max)}` +
-          (u.reset ? dim(` · resets ${shortDate(u.reset)}`) : "");
-
+        ? green("unlimited")
+        : `${bold(gb(u.remaining))} / ${gb(u.max)}` + (u.reset ? dim(` · resets ${shortDate(u.reset)}`) : "");
     const gc = this.#globalCountry;
     const state = this.#global
-      ? green(`● GLOBAL  ${flag(gc!.code)} ${countryName(gc!.code, gc!.name)} · system-wide`)
+      ? green(`● GLOBAL ${flag(gc!.code)} ${countryName(gc!.code, gc!.name)}`)
       : this.#active
-        ? green(`● connected  ${flag(this.#active.code)} ${countryName(this.#active.code, this.#active.name)}`)
+        ? green(`● connected ${flag(this.#active.code)} ${countryName(this.#active.code, this.#active.name)}`)
         : dim("○ disconnected");
+    const route = this.#global
+      ? green("all system traffic → VPN")
+      : this.#active
+        ? cyan(this.#proxyAddr())
+        : dim("—");
+    // The sudo prompt takes the status row, so nothing else on screen moves.
+    const status = this.#pwMode
+      ? `${yellow("sudo password:")} ${"•".repeat(this.#pw.length)}${cyan("▏")}  ${dim("enter submit · esc cancel")}`
+      : this.#message;
+    const headLines = [`${dim("data  ")}  ${data}`, `${dim("route ")}  ${route}`, `${dim("status")}  ${status}`];
 
-    const lines: string[] = [];
-    lines.push(` ${bold("🦊 foxhole-vpn")} ${dim(VERSION)}    ${state}`);
-    lines.push("");
-    lines.push(` ${data}`);
-    if (this.#global) lines.push(` ${green("▸ all system traffic routed through the VPN")}`);
-    else if (this.#active) lines.push(` ${cyan(this.#proxyAddr())}`);
-    const note = updateNotice(true);
-    if (note) note.forEach((l) => lines.push(` ${yellow(l)}`));
-    lines.push("");
-    lines.push(` ${bold("Location:")}`);
-
-    const rows = process.stdout.rows || 24;
-    const room = Math.max(5, rows - 11);
+    const version = versionLines(true);
+    const room = Math.max(3, (process.stdout.rows || 24) - 14 - version.length);
     const { start, slice } = window(this.#sel, this.#countries.length, room);
-    slice.forEach((i) => {
+    const label = (c: Country) => `${flag(c.code)} ${countryName(c.code, c.name)}`;
+    const body = slice.map((i) => {
       const c = this.#countries[i];
-      const marker = i === this.#sel ? cyan("▸") : " ";
-      const name = countryName(c.code, c.name).padEnd(20);
-      const tier = c.locked ? dim("paid") : green("free");
-      const tag = !c.available ? red(" ×") : this.#active?.code === c.code ? green(" ✓") : "";
-      const row = ` ${marker} ${flag(c.code)}  ${name} ${tier}${tag}`;
-      lines.push(i === this.#sel ? bold(row) : row);
+      const here = i === this.#sel;
+      const mark = !c.available ? red("×") : this.#active?.code === c.code ? green("●") : dim("○");
+      return [
+        `${here ? cyan("❯") : " "} ${mark}`,
+        here ? bold(c.code) : dim(c.code),
+        c.locked ? `${dim(strike("paid"))} ${green("free")}` : green("free"),
+        here ? bold(cyan(label(c))) : label(c),
+      ];
     });
-    if (start + room < this.#countries.length || start > 0) {
-      lines.push(dim(`   … ${this.#countries.length} total`));
-    }
-    lines.push("");
-    const rule = dim(" " + "─".repeat(Math.min(60, (process.stdout.columns || 60) - 2)));
-    if (this.#pwMode) {
-      lines.push(dim(" sudo password needed to route the whole system   ⏎ submit · esc cancel"));
-      lines.push(rule);
-      lines.push(` sudo password: ${"•".repeat(this.#pw.length)}`);
-    } else {
-      const g = this.#global ? "g global off" : "g go global";
-      const upd = canUpdate() ? " · u update" : "";
-      lines.push(dim(` ↑/↓ move · ⏎ connect · ${g} · d disconnect · r refresh${upd} · q quit`));
-      lines.push(rule);
-      lines.push(` ${this.#message}`);
-    }
+    if (!body.length) body.push(["   ", "", "", dim("loading…")]);
+    const range = this.#countries.length > room
+      ? `${start + 1}–${start + slice.length} of ${this.#countries.length}`
+      : `${this.#countries.length} countries`;
 
-    process.stdout.write(HOME_CLEAR + lines.join("\n"));
+    const title = bold(cyan("🦊 foxhole-vpn"));
+    const key = (k: string, rest: string) => `[ ${under(k)}${rest} ]`;
+    const buttons = [bold(cyan("[ ⏎ Connect ]")), dim(key("G", "lobal")), dim(key("D", "isconnect")), dim(key("R", "efresh")), dim(key("Q", "uit"))].join("  ");
+    const headW = vw(box(headLines, { title, right: state })[0]);
+    const table = grid(["", "Code", "Tier", "Country"], body, {
+      caption: bold("Locations"),
+      captionRight: dim(range),
+      minWidth: Math.max(headW, vw(buttons) + 4),
+    });
+    const width = vw(table[0]);
+    draw([
+      ...box(headLines, { title, right: state, width: width - 4 }),
+      ...table,
+      "",
+      centerIn(buttons, width),
+      "",
+      ...version.map((l) => centerIn(l, width)),
+    ]);
   }
 }
 
