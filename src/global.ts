@@ -6,13 +6,14 @@ import {
   readFileSync, writeFileSync, rmSync,
   mkdtempSync, mkdirSync, copyFileSync, chmodSync, readdirSync,
 } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import type { Connection } from "./connection.js";
 import { startProxy } from "./proxy.js";
 import { startDnsForwarder, type DnsForwarder } from "./dns.js";
 import { dim, green, red, yellow, bold, verbose } from "./ui.js";
 import { DarwinRouting } from "./global-darwin.js";
+import { logStream } from "./log.js";
 
 const exec = promisify(execFile);
 
@@ -239,8 +240,10 @@ export function sudoPriv(password: string): Priv {
         feed(p);
       }),
     spawn: (argv) => {
-      // stderr ignored: tun2socks' JSON logs would corrupt the TUI's screen.
-      const p = spawn("sudo", ["-S", "-p", "", ...argv], { stdio: ["pipe", "ignore", "ignore"] });
+      // stderr goes to the in-app log (the TUI's Logs popup), not the terminal: it would
+      // corrupt the screen. Always read, so a chatty child never blocks on a full pipe.
+      const p = spawn("sudo", ["-S", "-p", "", ...argv], { stdio: ["pipe", "ignore", "pipe"] });
+      logStream(argv[0].endsWith("node") ? "dns relay" : basename(argv[0]), p.stderr!);
       feed(p);
       return p;
     },

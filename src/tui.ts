@@ -6,6 +6,7 @@ import { NotImplementedError } from "./auth.js";
 import { GuardianError } from "./guardian.js";
 import { forgetToken } from "./tokenserver.js";
 import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
+import { logLines, onLog } from "./log.js";
 import { GlobalSession, sudoPriv, validateSudo, ensureTun2socks } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, versionLines } from "./update.js";
 import { bold, dim, under, strike, green, red, yellow, cyan, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl } from "./ui.js";
@@ -48,6 +49,8 @@ export class Tui {
   #pw = "";
   #pwError = "";
   #pwChecking = false;
+  #logsOpen = false; // the Logs popup is open
+  #renderTimer: NodeJS.Timeout | null = null;
 
   constructor(conn: Connection, host: string, port: number) {
     this.#conn = conn;
@@ -56,6 +59,7 @@ export class Tui {
   }
 
   async run(): Promise<void> {
+    onLog(() => this.#logsOpen && this.#renderSoon());
     onProxyWarning((msg) => {
       this.#message = red(`proxy: ${msg}`);
       this.#render();
@@ -99,7 +103,7 @@ export class Tui {
       readline.emitKeypressEvents(input);
       const onData = (buf: Buffer) => {
         const rest = buf.toString().replace(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/g, (_, b: string, x: string, y: string, kind: string) => {
-          if (kind === "M" && b === "0" && !this.#pwMode && linkAt(Number(x) - 1, Number(y) - 1)) openUrl(REPO_URL);
+          if (kind === "M" && b === "0" && !this.#pwMode && !this.#logsOpen && linkAt(Number(x) - 1, Number(y) - 1)) openUrl(REPO_URL);
           return "";
         });
         if (rest) input.write(rest);
@@ -142,7 +146,13 @@ export class Tui {
         if (!key) return;
         if (key.ctrl && key.name === "c") return void quit();
         if (this.#pwMode) return this.#pwKey(s, key);
+        if (this.#logsOpen) {
+          // the popup only closes; other keys stay with it, so nothing happens behind it
+          if (key.name === "escape" || key.name === "l") (this.#logsOpen = false), this.#render();
+          return;
+        }
         if (key.name === "q") return void quit();
+        if (key.name === "l") return void ((this.#logsOpen = true), this.#render());
         if (this.#busy) return;
         switch (key.name) {
           case "up":
@@ -338,7 +348,16 @@ export class Tui {
     return `${this.#host}:${this.#proxy?.port ?? this.#port}`;
   }
 
+  /** Redraws at most every 100 ms: tun2socks can log many lines a second while the Logs popup is open. */
+  #renderSoon(): void {
+    this.#renderTimer ??= setTimeout(() => {
+      this.#renderTimer = null;
+      this.#render();
+    }, 100);
+  }
+
   #render(): void {
+    if (!screenOn) return; // a late redraw (timer, log line) must not paint over the normal screen
     const u = this.#conn.usage;
     const data = !u
       ? dim("unknown")
@@ -383,12 +402,12 @@ export class Tui {
 
     const title = bold(cyan("🦊 foxhole-vpn"));
     const key = (k: string, rest: string) => `[ ${under(k)}${rest} ]`;
-    const buttons = [bold(cyan("[ ⏎ Connect ]")), dim(key("G", "lobal")), dim(key("D", "isconnect")), dim(key("R", "efresh Usage")), dim(key("Q", "uit"))].join("  ");
+    const buttons = [bold(cyan("[ ⏎ Connect ]")), dim(key("G", "lobal")), dim(key("D", "isconnect")), dim(key("R", "efresh Usage")), dim(key("L", "ogs")), dim(key("Q", "uit"))].join("  ");
     const headW = vw(box(headLines, { title, right: state })[0]);
     const table = grid(["", "Code", "Tier", "Country"], body, {
       caption: bold("Locations"),
       captionRight: dim(range),
-      minWidth: Math.max(headW, vw(buttons) + 4),
+      minWidth: Math.max(headW, vw(buttons)), // the button row is 80 wide: fits an 80-column terminal
     });
     const width = vw(table[0]);
     const frame = [
@@ -400,7 +419,26 @@ export class Tui {
       ...version.map((l) => centerIn(l, width)),
       centerIn(dim(repoLink), width),
     ];
-    draw(this.#pwMode ? overlay(frame, this.#passwordPopup(), width) : frame);
+    draw(
+      this.#pwMode
+        ? overlay(frame, this.#passwordPopup(), width)
+        : this.#logsOpen
+          ? overlay(frame, this.#logsPopup(width, frame.length), width)
+          : frame,
+    );
+  }
+
+  /** The Logs popup: the newest lines that fit, updated live while open. */
+  #logsPopup(width: number, frameHeight: number): string[] {
+    const inner = width - 6; // box border + padding (4) and the overlay's margin (2)
+    const rows = Math.max(3, frameHeight - 6); // box top/bottom, margin, footer
+    const shown = logLines.slice(-rows);
+    const body = shown.length
+      ? shown.map((l) => fit(dim(l.slice(0, 8)) + l.slice(8), inner)) // dim the HH:MM:SS
+      : [dim("Nothing logged yet. Proxy failures (e.g. ports the VPN refuses)"), dim("and tun2socks output in global mode appear here.")];
+    const padded = [...body, ...Array<string>(Math.max(0, rows - body.length)).fill("")];
+    const count = logLines.length > rows ? `newest ${rows} of ${logLines.length}` : `${logLines.length} lines`;
+    return box([...padded, dim(`esc close · ${count}`)], { title: bold(cyan("Logs")), width: inner });
   }
 
   /** The popup asking for the sudo password (sudo wants the user's own login password). */

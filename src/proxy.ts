@@ -2,6 +2,7 @@ import net from "node:net";
 import tls from "node:tls";
 import type { Connection } from "./connection.js";
 import { red, verbose } from "./ui.js";
+import { log } from "./log.js";
 
 // Throttled stderr: a browser opens many connections, so don't repeat the same
 // failure more than once every few seconds.
@@ -14,6 +15,7 @@ export function onProxyWarning(fn: (msg: string) => void): void {
   sink = fn;
 }
 function warn(msg: string): void {
+  log(`proxy: ${msg}`); // always: the TUI's Logs popup shows these
   if (!verbose) return; // e.g. "Destination IP Prohibited" for a blocked port: noise in normal use
   const now = Date.now();
   if (msg === lastWarn && now - lastWarnAt < 5000) return;

@@ -57,6 +57,10 @@ through it — foxhole-vpn asks for your sudo password in-app (no need to launch
 the whole app with `sudo`), and `g` again turns it back off. Only the networking
 is elevated; the proxy and your Firefox login stay unprivileged.
 
+Press **`l`** for **Logs**: a popup with proxy failures (e.g. ports the VPN
+refuses) and tun2socks output, updating live; **Esc** closes it. Logs are
+collected in every session, not only with `--verbose`.
+
 Point a single app at the proxy. The same port speaks **SOCKS5 and HTTP**
 (foxhole-vpn tells them apart by the first byte), so use whichever the app
 supports:
