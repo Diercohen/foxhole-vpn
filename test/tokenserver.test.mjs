@@ -42,6 +42,10 @@ assert.equal(ok.status, 200, "valid token accepted over the wire");
 assert.equal(await rec.token, good, "token promise resolves with the posted token");
 rec.close();
 
+// The timeout rejects the token promise (it used to hang silently).
+const quick = await startTokenReceiver(300, 0);
+await assert.rejects(quick.token, /timed out/, "timeout rejects the token promise");
+
 // The snippet posts to the secret URL.
 assert.ok(rec.snippet.includes(rec.url), "snippet targets the secret URL");
 assert.ok(rec.snippet.includes("getOAuthToken"), "snippet mints the VPN token");

@@ -86,11 +86,12 @@ export interface TokenReceiver {
 }
 
 /** Starts the receiver. `timeoutMs` rejects `token` if nothing valid arrives. */
-export function startTokenReceiver(timeoutMs = 300_000, port = TOKEN_PORT): Promise<TokenReceiver> {
+export function startTokenReceiver(timeoutMs = 120_000, port = TOKEN_PORT): Promise<TokenReceiver> {
   const path = "/" + randomBytes(24).toString("hex");
   return new Promise((resolve, reject) => {
     let settle: (t: string) => void;
-    const token = new Promise<string>((r) => (settle = r));
+    let fail: (e: Error) => void;
+    const token = new Promise<string>((res, rej) => ((settle = res), (fail = rej)));
 
     const server = createServer((req, res) => {
       if (req.method !== "POST" || req.url !== path) return void res.writeHead(404).end();
@@ -123,7 +124,8 @@ export function startTokenReceiver(timeoutMs = 300_000, port = TOKEN_PORT): Prom
       server.once("error", reject);
       server.listen(0, "127.0.0.1");
     });
-    const timer = setTimeout(() => (server.close(), reject(new Error("timed out waiting for the token"))), timeoutMs);
+    // Rejects `token` (not the startup promise, which has resolved by then).
+    const timer = setTimeout(() => (server.close(), fail(new Error("timed out waiting for the token"))), timeoutMs);
     const close = () => (clearTimeout(timer), server.close());
     token.then(close); // stop as soon as we have it
 

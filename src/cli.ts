@@ -161,18 +161,23 @@ async function captureToken(error: string | null = null): Promise<string | null>
   const w = Math.max(...lines.map((l) => l.length));
   process.stdout.write(bold("Paste this into the Browser Console:") + "\n\n");
   process.stdout.write(lines.map((l) => code(`  ${highlight(l)}${" ".repeat(w - l.length)}  `)).join("\n") + "\n\n");
-  process.stdout.write(dim(`waiting for the token on ${rec.url.replace(/\/[0-9a-f]+$/, "/…")} · ${under("Ctrl+C")} to cancel\n`));
+  process.stdout.write(dim(`waiting for the token on ${rec.url.replace(/\/[0-9a-f]+$/, "/…")} · closes in 2 minutes · ${under("Ctrl+C")} to cancel\n`));
 
   const cancelled = new Promise<null>((resolve) => {
     const onInt = () => resolve(null);
     process.once("SIGINT", onInt);
     rec.token.finally(() => process.removeListener("SIGINT", onInt));
   });
-  const token = await Promise.race([rec.token.catch(() => null), cancelled]);
+  const timedOut = Symbol();
+  const token = await Promise.race([rec.token.catch(() => timedOut), cancelled]);
   rec.close();
-  if (token) console.log(green("✓ token received — saved for next time."));
-  else console.log(yellow("No token received. foxhole needs one to connect — run it again when you're ready."));
-  return token;
+  if (typeof token === "string") {
+    console.log(green("✓ token received — saved for next time."));
+    return token;
+  }
+  const why = token === timedOut ? "No token arrived within 2 minutes, so foxhole closed." : "Cancelled.";
+  console.log(yellow(`${why} foxhole needs a token to connect — run it again when you're ready.`));
+  return null;
 }
 
 function handleAuthError(err: unknown): never {

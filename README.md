@@ -108,7 +108,7 @@ one-shot HTTP receiver on `127.0.0.1:47380` (a random port if that one is
 busy). The snippet posts to a path containing a random 192-bit secret, and the
 receiver sends no CORS headers, so web pages can't reach it. It accepts only a
 well-formed, unexpired token with the VPN scope, never logs it, and shuts down
-as soon as one arrives (or after 5 minutes). Another program running as you on
+as soon as one arrives. If none arrives within 2 minutes, foxhole exits. Another program running as you on
 the same machine could still read the terminal and use the secret.
 
 **Using your own token instead:** set `FOXHOLE_ACCESS_TOKEN`. It takes priority
