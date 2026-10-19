@@ -386,11 +386,26 @@ export class GlobalSession {
     if (this.#udpBlocked)
       await this.#o.priv.run(["iptables", "-D", "OUTPUT", "-o", TUN, "-p", "udp", "-j", "REJECT"], true);
     for (const cidr of this.#addedPrivate) await this.#o.priv.run(["ip", "route", "del", cidr], true);
-    for (const step of planTeardown(this.#bypassIps)) await this.#o.priv.run(step, true);
-    this.#t2s?.kill("SIGTERM");
-    await this.#o.priv.run(["pkill", "-f", TUN], true); // sudo child may outlive the signal
+    // Stop tun2socks before deleting the device: a tun still held open can't be
+    // deleted, and the leftover makes the next `ip tuntap add` fail (busy).
+    await stopProcess(this.#t2s, () => this.#o.priv.run(["pkill", "-f", TUN], true)); // sudo child may outlive the signal
     this.#t2s = null;
+    for (const step of planTeardown(this.#bypassIps)) await this.#o.priv.run(step, true);
   }
+}
+
+/**
+ * Stops a child on purpose: detaches its exit listeners first (so the "died
+ * unexpectedly" callback doesn't fire), signals it, runs `extra` (e.g. pkill),
+ * and waits up to 3s for it to exit.
+ */
+export async function stopProcess(p: ReturnType<typeof spawn> | null, extra: () => Promise<void>): Promise<void> {
+  if (!p || p.exitCode !== null || p.signalCode !== null) return void (await extra());
+  p.removeAllListeners("exit");
+  const exited = new Promise((r) => p.once("exit", r));
+  p.kill("SIGTERM");
+  await extra();
+  await Promise.race([exited, new Promise((r) => setTimeout(r, 3000))]);
 }
 
 export interface GlobalOptions {

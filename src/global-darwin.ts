@@ -6,7 +6,7 @@ import { execFile, type spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { lookup } from "node:dns/promises";
 import { connect } from "node:net";
-import { PRIVATE_CIDRS, DOH_HOST, isVpnDev, type GlobalSessionOptions } from "./global.js";
+import { PRIVATE_CIDRS, DOH_HOST, isVpnDev, stopProcess, type GlobalSessionOptions } from "./global.js";
 
 const exec = promisify(execFile);
 
@@ -162,10 +162,14 @@ export class DarwinRouting {
     if (this.#dnsService) await priv.run(["networksetup", "-setdnsservers", this.#dnsService, ...this.#dnsRestore], true);
     for (const argv of this.#undo.reverse()) await priv.run(argv, true);
     this.#undo = [];
-    for (const p of this.#procs) p.kill("SIGTERM");
     // sudo children may outlive the signal. The [x] keeps pkill from matching its own sudo.
-    await priv.run(["pkill", "-f", `${UTUN.slice(0, -1)}[${UTUN.slice(-1)}]`], true);
-    await priv.run(["pkill", "-f", `${DNS_MARK.slice(0, -1)}[${DNS_MARK.slice(-1)}]`], true);
+    const pkill = async () => {
+      await priv.run(["pkill", "-f", `${UTUN.slice(0, -1)}[${UTUN.slice(-1)}]`], true);
+      await priv.run(["pkill", "-f", `${DNS_MARK.slice(0, -1)}[${DNS_MARK.slice(-1)}]`], true);
+    };
+    await Promise.all(this.#procs.map((p) => stopProcess(p, pkill)));
+    if (!this.#procs.length) await pkill();
+    this.#procs = [];
     await priv.run(["killall", "-HUP", "mDNSResponder"], true);
   }
 }
