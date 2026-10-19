@@ -138,16 +138,30 @@ export interface DnsForwarderOptions {
   dohHost: string;
   host: string;
   port: number;
+  /** Parallel DoH connections; each serialises its queries. Default 1. */
+  connections?: number;
 }
 
 /** Starts a UDP+TCP DNS listener that forwards every query via DoH-over-SOCKS. */
 export async function startDnsForwarder(o: DnsForwarderOptions): Promise<DnsForwarder> {
-  const doh = new DohClient(o.socksHost, o.socksPort, o.dohHost);
+  const pool = Array.from({ length: o.connections ?? 1 }, () => ({
+    doh: new DohClient(o.socksHost, o.socksPort, o.dohHost),
+    busy: 0,
+  }));
+  // Send each query down the least-busy connection.
+  const query = async (q: Buffer): Promise<Buffer> => {
+    const c = pool.reduce((a, b) => (b.busy < a.busy ? b : a));
+    c.busy++;
+    try {
+      return await c.doh.query(q);
+    } finally {
+      c.busy--;
+    }
+  };
 
   const udp = dgram.createSocket("udp4");
   udp.on("message", (msg, rinfo) => {
-    doh
-      .query(msg)
+    query(msg)
       .then((ans) => udp.send(ans, rinfo.port, rinfo.address))
       .catch(() => {});
   });
@@ -161,8 +175,7 @@ export async function startDnsForwarder(o: DnsForwarderOptions): Promise<DnsForw
         const len = buf.readUInt16BE(0);
         const q = buf.subarray(2, 2 + len);
         buf = buf.subarray(2 + len);
-        doh
-          .query(q)
+        query(q)
           .then((ans) => {
             const out = Buffer.alloc(2 + ans.length);
             out.writeUInt16BE(ans.length, 0);
@@ -186,7 +199,7 @@ export async function startDnsForwarder(o: DnsForwarderOptions): Promise<DnsForw
 
   return {
     close: async () => {
-      doh.close();
+      for (const c of pool) c.doh.close();
       udp.close();
       await new Promise<void>((r) => tcp.close(() => r()));
     },

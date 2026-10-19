@@ -85,6 +85,26 @@ node dist/cli.js doctor   # should print entitlement + remaining data
 
 When set, every command uses that token instead of the Firefox session.
 
+**Getting a token from Firefox:** set `devtools.chrome.enabled` to `true` in
+`about:config`, open the **Browser Console** (Ctrl+Shift+J / ⌘⇧J — not the
+page's web console), and run:
+
+```js
+(async () => {
+  const m = ChromeUtils.importESModule("resource://gre/modules/FxAccounts.sys.mjs");
+  const fxa = m.getFxAccountsSingleton?.() ?? m.fxAccounts;
+  const token = await fxa.getOAuthToken({
+    scope: ["profile", "https://identity.mozilla.com/apps/vpn"],
+  });
+  copy(token);
+  console.log("token copied to clipboard");
+})();
+```
+
+Then `export FOXHOLE_ACCESS_TOKEN="$(pbpaste)"` (macOS) or
+`"$(wl-paste)"` / `"$(xclip -o -sel clip)"` (Linux). The token is short-lived —
+rerun the snippet when it expires. Treat it like a password.
+
 Free-tier countries: 🇺🇸 US · 🇩🇪 DE · 🇯🇵 JP · 🇦🇺 AU · 🇦🇷 AR · 🇿🇦 ZA.
 
 ## Limits
@@ -104,6 +124,10 @@ Free-tier countries: 🇺🇸 US · 🇩🇪 DE · 🇯🇵 JP · 🇦🇺 AU ·
 - Conflicts with another active full-tunnel VPN — `global` refuses to start if it
   detects one (a VPN on the default route, or `0/1`+`128/1` split routes). Stop
   it first, or pass `--force`.
+- **macOS:** global mode uses a `utun` device, `route` (0/1 + 128/1 split
+  routes) and `networksetup` to point the uplink's DNS at a local DoH relay on
+  `127.0.0.1:53`; all restored on exit. UDP isn't rejected there (no pf rules),
+  so QUIC takes a moment longer to fall back to TCP.
 
 ## Test
 

@@ -163,6 +163,10 @@ async function cmdDoctor() {
 }
 
 function openBrowser(url: string) {
+  if (process.platform === "darwin") {
+    spawn("open", ["-a", "Firefox", url], { detached: true, stdio: "ignore" }).unref();
+    return;
+  }
   const candidates = [
     "/opt/firefox-official/firefox",
     "firefox",

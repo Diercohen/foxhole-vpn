@@ -5,7 +5,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 // When run under sudo, look in the invoking user's home, not root's.
 function userHome(): string {
   if (process.env.SUDO_USER && (process.env.HOME === "/root" || process.getuid?.() === 0)) {
-    return join("/home", process.env.SUDO_USER);
+    return join(process.platform === "darwin" ? "/Users" : "/home", process.env.SUDO_USER);
   }
   return homedir();
 }
@@ -16,6 +16,7 @@ function profileRoots(): string[] {
   return [
     join(home, ".mozilla", "firefox"),
     join(home, ".config", "mozilla", "firefox"), // some Linux/Omarchy builds
+    join(home, "Library", "Application Support", "Firefox"), // macOS
   ].filter(existsSync);
 }
 

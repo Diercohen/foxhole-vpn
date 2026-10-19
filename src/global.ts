@@ -12,6 +12,7 @@ import type { Connection } from "./connection.js";
 import { startProxy } from "./proxy.js";
 import { startDnsForwarder, type DnsForwarder } from "./dns.js";
 import { dim, green, red, yellow, bold } from "./ui.js";
+import { DarwinRouting } from "./global-darwin.js";
 
 const exec = promisify(execFile);
 
@@ -21,11 +22,11 @@ const RESOLV = "/etc/resolv.conf";
 
 // Private / special ranges must skip the tunnel: the VPN refuses them
 // ("Destination IP Prohibited") and tunnelling them would break LAN access.
-const PRIVATE_CIDRS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"];
+export const PRIVATE_CIDRS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"];
 
 // DNS is resolved through the tunnel via DoH (the VPN forbids port 53). The
 // forwarder listens here; systemd-resolved is pointed at it.
-const DOH_HOST = "cloudflare-dns.com";
+export const DOH_HOST = "cloudflare-dns.com";
 const DOH_PORT = 5353;
 
 export interface DefaultRoute {
@@ -103,10 +104,10 @@ const GO_ARCH: Record<string, string> = { x64: "amd64", arm64: "arm64" };
 /** Downloads the prebuilt tun2socks from GitHub releases to `dest`. */
 async function downloadTun2socks(dest: string): Promise<void> {
   const arch = GO_ARCH[process.arch];
-  if (process.platform !== "linux" || !arch) {
+  if ((process.platform !== "linux" && process.platform !== "darwin") || !arch) {
     throw new Error(`no prebuilt tun2socks for ${process.platform}/${process.arch}`);
   }
-  const asset = `tun2socks-linux-${arch}.zip`;
+  const asset = `tun2socks-${process.platform}-${arch}.zip`;
   const url = `https://github.com/xjasonlyu/tun2socks/releases/latest/download/${asset}`;
   console.log(dim(`downloading ${asset} from GitHub…`));
   const res = await fetch(url, { redirect: "follow" });
@@ -268,9 +269,11 @@ export class GlobalSession {
   #t2s: ReturnType<typeof spawn> | null = null;
   #exitCb: ((code: number | null) => void) | null = null;
   #stopped = false;
+  readonly #mac: DarwinRouting | null;
 
   constructor(o: GlobalSessionOptions) {
     this.#o = o;
+    this.#mac = process.platform === "darwin" ? new DarwinRouting(o) : null;
   }
 
   /** Called if tun2socks dies unexpectedly. */
@@ -280,6 +283,8 @@ export class GlobalSession {
 
   /** Sets up routing + tun2socks. Returns the pinned server IP and DNS mode. */
   async start(): Promise<{ serverIp: string; dns: string }> {
+    if (this.#mac) return this.#mac.start((code) => this.#exitCb?.(code));
+    if (process.platform !== "linux") throw new Error("global mode needs Linux or macOS; use `proxy` instead");
     const { priv, server, force } = this.#o;
     const { stdout: routeOut } = await exec("ip", ["route"]); // reading needs no root
     const orig = parseDefaultRoute(routeOut);
@@ -375,6 +380,7 @@ export class GlobalSession {
   async stop(): Promise<void> {
     if (this.#stopped) return;
     this.#stopped = true;
+    if (this.#mac) return this.#mac.stop();
     if (this.#dnsDev) await this.#o.priv.run(["resolvectl", "revert", this.#dnsDev], true);
     await this.#dns?.close();
     if (this.#udpBlocked)
