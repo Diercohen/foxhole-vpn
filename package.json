@@ -1,7 +1,15 @@
 {
   "name": "foxhole-vpn",
   "version": "0.3.0",
-  "description": "Use Firefox's built-in VPN (IP Protection) from the whole system, via a TUI (unofficial)",
+  "description": "Free system-wide VPN for Linux, macOS and Windows using Firefox's built-in VPN (IP Protection): SOCKS5/HTTP proxy + TUN routing, in a terminal UI (unofficial)",
+  "homepage": "https://github.com/Diercohen/foxhole-vpn#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Diercohen/foxhole-vpn.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Diercohen/foxhole-vpn/issues"
+  },
   "type": "module",
   "bin": {
     "foxhole": "dist/cli.js",
@@ -26,12 +34,25 @@
   ],
   "keywords": [
     "firefox",
+    "firefox-vpn",
+    "mozilla-vpn",
     "vpn",
+    "free-vpn",
     "ip-protection",
     "mozilla",
     "proxy",
+    "socks5",
+    "socks5-proxy",
+    "http-proxy",
+    "tun",
+    "tun2socks",
+    "system-wide-vpn",
+    "privacy",
     "tui",
-    "cli"
+    "cli",
+    "linux",
+    "macos",
+    "windows"
   ],
   "author": "Dier Cohen",
   "license": "MIT",
