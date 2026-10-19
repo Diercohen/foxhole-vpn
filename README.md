@@ -49,6 +49,11 @@ sudo -E foxhole global --country US   # route the whole system
 foxhole --verbose                  # also show per-connection errors and tun2socks logs
 ```
 
+On **Windows**, run `foxhole global` (or `foxhole` and press **`g`**) in an
+elevated terminal — **Terminal (Admin)** — instead of using `sudo`. If a global
+session is ever killed without restoring networking, `foxhole restore` (also
+elevated) removes what it left behind.
+
 `foxhole-vpn` works too, as an alias. From a checkout: `npm install && npm run build`,
 then `node dist/cli.js` in place of `foxhole`.
 
@@ -95,7 +100,7 @@ access token from Firefox. You only do this once per token:
 1. Run `foxhole` (or `foxhole proxy` / `foxhole global`) in a terminal. With no
    usable token it opens a window with the steps and a ready-made snippet.
 2. In Firefox, set `devtools.chrome.enabled` to `true` in `about:config`.
-3. Open the **Browser Console** (⌘⇧J on macOS, Ctrl+Shift+J on Linux — not the
+3. Open the **Browser Console** (⌘⇧J on macOS, Ctrl+Shift+J on Linux and Windows — not the
    page's web console), paste the snippet and press Enter.
 
 The snippet sends the token back to foxhole-vpn, which saves it to
@@ -146,9 +151,21 @@ Free-tier countries: 🇺🇸 US · 🇩🇪 DE · 🇯🇵 JP · 🇦🇺 AU ·
   routes) and `networksetup` to point the uplink's DNS at a local DoH relay on
   `127.0.0.1:53`; all restored on exit. UDP isn't rejected there (no pf rules),
   so QUIC takes a moment longer to fall back to TCP.
+- **Windows:** global mode uses a Wintun adapter (foxhole-vpn downloads
+  `tun2socks.exe` and the checksum-verified `wintun.dll` into
+  `%USERPROFILE%\.cache\foxhole-vpn`), `netsh` 0/1 + 128/1 split routes, an
+  NRPT rule sending all DNS to a local DoH relay on `127.0.0.1:53`, and Windows
+  Firewall rules blocking IPv6 and QUIC; all removed on exit (routes also vanish
+  on reboot). With Windows Firewall off, IPv6 isn't blocked and a note says so.
+  The token is saved to `%USERPROFILE%\.config\foxhole-vpn\token`.
 
 ## Test
 
 ```sh
 npm test   # builds, then runs the SOCKS5 bridge integration test
 ```
+
+The proxy and DNS tests generate a certificate with `openssl`; on Windows, Git
+for Windows ships one (add its `bin` folder to `PATH`). In an elevated Windows
+terminal, `node test/win32-live.mjs` checks global mode end to end — no VPN
+token needed — and verifies everything is restored afterwards.

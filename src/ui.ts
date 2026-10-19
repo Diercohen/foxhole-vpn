@@ -170,7 +170,10 @@ export const linkAt = (x: number, y: number) =>
 
 /** Opens a URL in the default browser. */
 export const openUrl = (url: string) =>
-  spawn(process.platform === "darwin" ? "open" : "xdg-open", [url], { stdio: "ignore", detached: true })
+  // Windows: rundll32, not `cmd /c start`, which would split the URL at each `&`
+  (process.platform === "win32"
+    ? spawn("rundll32", ["url.dll,FileProtocolHandler", url], { stdio: "ignore", detached: true })
+    : spawn(process.platform === "darwin" ? "open" : "xdg-open", [url], { stdio: "ignore", detached: true }))
     .on("error", () => {})
     .unref();
 

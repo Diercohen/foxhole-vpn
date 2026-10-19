@@ -17,6 +17,7 @@ function profileRoots(): string[] {
     join(home, ".mozilla", "firefox"),
     join(home, ".config", "mozilla", "firefox"), // some Linux/Omarchy builds
     join(home, "Library", "Application Support", "Firefox"), // macOS
+    join(process.env.APPDATA ?? join(home, "AppData", "Roaming"), "Mozilla", "Firefox"), // Windows
   ].filter(existsSync);
 }
 

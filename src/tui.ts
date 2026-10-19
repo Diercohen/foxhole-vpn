@@ -7,7 +7,7 @@ import { GuardianError } from "./guardian.js";
 import { forgetToken } from "./tokenserver.js";
 import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { logLines, onLog } from "./log.js";
-import { GlobalSession, sudoPriv, validateSudo, ensureTun2socks } from "./global.js";
+import { GlobalSession, sudoPriv, directPriv, isPrivileged, validateSudo, ensureTun2socks } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, versionLines } from "./update.js";
 import { bold, dim, under, strike, green, red, yellow, cyan, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl } from "./ui.js";
 
@@ -116,7 +116,8 @@ export class Tui {
 
       // Ctrl+C outside raw mode, a closed terminal or a kill: quit properly, so the
       // screen and mouse mode are restored and global mode puts the routes back.
-      const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+      // SIGBREAK: Ctrl+Break on Windows.
+      const signals = ["SIGINT", "SIGTERM", "SIGHUP", ...(process.platform === "win32" ? ["SIGBREAK"] as const : [])];
       const onSignal = () => void quit();
       for (const sig of signals) process.on(sig, onSignal);
 
@@ -235,6 +236,12 @@ export class Tui {
       await this.#connect();
       if (!this.#active) return; // connect failed; message already set
     }
+    if (process.platform === "win32") {
+      // Windows has no sudo to ask: the whole app must already run as Administrator.
+      if (await isPrivileged()) return void this.#enableGlobal(null);
+      this.#message = yellow("global needs Administrator rights — quit, then run foxhole in Terminal (Admin)");
+      return void this.#render();
+    }
     this.#pwMode = true;
     this.#pw = "";
     this.#pwError = "";
@@ -277,7 +284,8 @@ export class Tui {
     void this.#enableGlobal(pw);
   }
 
-  async #enableGlobal(password: string): Promise<void> {
+  /** password: for sudo; null when already privileged (Windows, elevated). */
+  async #enableGlobal(password: string | null): Promise<void> {
     const server = this.#conn.server;
     if (!server || !this.#proxy) return;
     this.#busy = true;
@@ -289,7 +297,7 @@ export class Tui {
       this.#message = dim("going global…");
       this.#render();
       session = new GlobalSession({
-        priv: sudoPriv(password),
+        priv: password === null ? directPriv(true) : sudoPriv(password),
         server,
         proxyHost: this.#host,
         proxyPort: this.#proxy.port,

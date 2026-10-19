@@ -8,11 +8,12 @@ import { FirefoxAuth, StaticAuth, NotImplementedError, type Authenticator } from
 import { Connection, findCountry } from "./connection.js";
 import { fetchEntitlement, GuardianError } from "./guardian.js";
 import { startProxy } from "./proxy.js";
-import { runGlobal } from "./global.js";
+import { runGlobal, directPriv, isPrivileged } from "./global.js";
+import { restoreWindows } from "./global-win32.js";
 import { Tui } from "./tui.js";
 import { checkUpdate, updateNotice, versionLines } from "./update.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenFile } from "./tokenserver.js";
-import { bold, dim, green, red, yellow, cyan, under, code, flag, countryName, gb, shortDate, box } from "./ui.js";
+import { bold, dim, green, red, yellow, cyan, under, code, flag, countryName, gb, shortDate, box, openUrl } from "./ui.js";
 
 // Node gives each server address only 250 ms before moving on; far VPN servers
 // take 600-900 ms to answer, so every attempt failed with a blank AggregateError.
@@ -276,13 +277,21 @@ function openBrowser(url: string) {
     spawn("open", ["-a", "Firefox", url], { detached: true, stdio: "ignore" }).unref();
     return;
   }
+  if (process.platform === "win32") {
+    const firefox = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]
+      .map((dir) => dir && `${dir}\\Mozilla Firefox\\firefox.exe`)
+      .find((p) => p && existsSync(p));
+    if (firefox) spawn(firefox, [url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
+    else openUrl(url); // the default browser
+    return;
+  }
   const candidates = [
     "/opt/firefox-official/firefox",
     "firefox",
     "xdg-open",
   ].filter((c) => c === "firefox" || c === "xdg-open" || existsSync(c));
   const cmd = candidates[0] ?? "xdg-open";
-  spawn(cmd, [url], { detached: true, stdio: "ignore" }).unref();
+  spawn(cmd, [url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
 }
 
 async function cmdLogin() {
@@ -338,6 +347,11 @@ async function cmdTui() {
 }
 
 async function cmdGlobal() {
+  if (WIN && !(await isPrivileged())) {
+    // Say so before the token steps, not after them.
+    console.error(red("Global mode needs Administrator rights.") + ` Open ${bold("Terminal (Admin)")} and run ${bold("foxhole global")} there.`);
+    process.exit(1);
+  }
   const conn = new Connection(await ensureAuth());
   const code = arg("country");
   const country = code ? await findCountry(code) : null;
@@ -358,6 +372,22 @@ async function cmdGlobal() {
   }
 }
 
+/** Windows: undoes what a killed `global` session left behind (DNS rule, firewall rules, tun2socks). */
+async function cmdRestore() {
+  if (process.platform !== "win32") {
+    console.log(dim("Nothing to do: on Linux and macOS a reboot restores networking."));
+    return;
+  }
+  if (!(await isPrivileged())) {
+    console.error(red("restore needs Administrator rights.") + ` Run it in ${bold("Terminal (Admin)")}.`);
+    process.exit(1);
+  }
+  await restoreWindows(directPriv());
+  console.log(green("Networking restored (DNS rule, firewall rules and tun2socks removed)."));
+}
+
+const WIN = process.platform === "win32";
+
 const HELP = `${bold("foxhole-vpn")} — use Firefox's built-in VPN system-wide
 
 ${bold("Usage:")} foxhole [command] [options]
@@ -371,7 +401,8 @@ ${bold("Commands:")}
   proxy [--country XX] [--port N] [--host H]
                        Run a local SOCKS5 + HTTP proxy through the VPN
   global [--country XX] [--force]
-                       Route ALL system traffic through the VPN (needs sudo)
+                       Route ALL system traffic through the VPN (needs ${WIN ? "Administrator" : "sudo"})${WIN ? `
+  restore              Undo a global session that was killed (Administrator)` : ""}
   -v, --version        Show the version and whether an update is available
   help                 Show this help
 
@@ -379,7 +410,7 @@ ${bold("Options:")}
   --verbose            Also show per-connection errors (e.g. ports the VPN
                        refuses) and tun2socks logs
 
-${dim("global: run as  sudo -E foxhole global  · Ctrl+C restores networking.")}
+${dim(WIN ? "global: run  foxhole global  in Terminal (Admin)  · Ctrl+C restores networking." : "global: run as  sudo -E foxhole global  · Ctrl+C restores networking.")}
 ${dim("Stop any other active VPN first (or pass --force).")}
 
 ${bold("Environment:")}
@@ -422,6 +453,9 @@ async function main() {
       break;
     case "login":
       await cmdLogin();
+      break;
+    case "restore":
+      await cmdRestore();
       break;
     case "help":
     case "--help":

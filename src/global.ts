@@ -4,8 +4,9 @@ import { promisify } from "node:util";
 import { lookup } from "node:dns/promises";
 import {
   readFileSync, writeFileSync, rmSync,
-  mkdtempSync, mkdirSync, copyFileSync, chmodSync, readdirSync,
+  mkdtempSync, mkdirSync, copyFileSync, chmodSync, readdirSync, existsSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import type { Connection } from "./connection.js";
@@ -13,7 +14,9 @@ import { startProxy } from "./proxy.js";
 import { startDnsForwarder, type DnsForwarder } from "./dns.js";
 import { dim, green, red, yellow, bold, verbose } from "./ui.js";
 import { DarwinRouting } from "./global-darwin.js";
+import { WindowsRouting, isWindowsAdmin } from "./global-win32.js";
 import { logStream } from "./log.js";
+import { userHome } from "./profile.js";
 
 const exec = promisify(execFile);
 
@@ -101,28 +104,60 @@ async function run(argv: string[], quiet = false): Promise<void> {
 }
 
 const GO_ARCH: Record<string, string> = { x64: "amd64", arm64: "arm64" };
+const IS_WIN = process.platform === "win32";
+const EXE = IS_WIN ? ".exe" : "";
+
+/** Downloads `url` and unpacks the zip into a fresh temp folder; returns that folder. */
+async function fetchZip(url: string, sha256?: string): Promise<string> {
+  const name = basename(new URL(url).pathname);
+  console.log(dim(`downloading ${name}…`));
+  const res = await fetch(url, { redirect: "follow" });
+  if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
+  const body = Buffer.from(await res.arrayBuffer());
+  if (sha256 && createHash("sha256").update(body).digest("hex") !== sha256) {
+    throw new Error(`${name}: checksum mismatch`);
+  }
+  const tmp = mkdtempSync(join(tmpdir(), "foxhole-vpn-t2s-"));
+  const zip = join(tmp, name);
+  writeFileSync(zip, body);
+  // Windows 10+ ships bsdtar, which unpacks zips; it has no unzip.
+  if (IS_WIN) await exec("tar", ["-xf", zip, "-C", tmp]);
+  else await exec("unzip", ["-oq", zip, "-d", tmp]);
+  return tmp;
+}
 
 /** Downloads the prebuilt tun2socks from GitHub releases to `dest`. */
 async function downloadTun2socks(dest: string): Promise<void> {
   const arch = GO_ARCH[process.arch];
-  if ((process.platform !== "linux" && process.platform !== "darwin") || !arch) {
+  if (!["linux", "darwin", "win32"].includes(process.platform) || !arch) {
     throw new Error(`no prebuilt tun2socks for ${process.platform}/${process.arch}`);
   }
-  const asset = `tun2socks-${process.platform}-${arch}.zip`;
-  const url = `https://github.com/xjasonlyu/tun2socks/releases/latest/download/${asset}`;
-  console.log(dim(`downloading ${asset} from GitHub…`));
-  const res = await fetch(url, { redirect: "follow" });
-  if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
-  const tmp = mkdtempSync(join(tmpdir(), "foxhole-vpn-t2s-"));
+  const os = IS_WIN ? "windows" : process.platform;
+  const tmp = await fetchZip(`https://github.com/xjasonlyu/tun2socks/releases/latest/download/tun2socks-${os}-${arch}.zip`);
   try {
-    const zip = join(tmp, asset);
-    writeFileSync(zip, Buffer.from(await res.arrayBuffer()));
-    await exec("unzip", ["-oq", zip, "-d", tmp]);
     const bin = readdirSync(tmp).find((f) => /^tun2socks/.test(f) && !/\.(zip|md|txt)$/i.test(f));
     if (!bin) throw new Error("tun2socks binary not found in archive");
     mkdirSync(dirname(dest), { recursive: true });
     copyFileSync(join(tmp, bin), dest); // copy, not rename: /tmp may be a different fs
     chmodSync(dest, 0o755);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+// tun2socks on Windows needs the Wintun driver DLL beside it; pinned to the
+// release's published SHA-256 (https://www.wintun.net).
+const WINTUN_URL = "https://www.wintun.net/builds/wintun-0.14.1.zip";
+const WINTUN_SHA256 = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51";
+
+/** Puts wintun.dll next to the tun2socks binary at `exe`, if it isn't there yet. */
+async function ensureWintun(exe: string): Promise<void> {
+  const dll = join(dirname(exe), "wintun.dll");
+  if (existsSync(dll)) return;
+  const arch = GO_ARCH[process.arch];
+  const tmp = await fetchZip(WINTUN_URL, WINTUN_SHA256);
+  try {
+    copyFileSync(join(tmp, "wintun", "bin", arch, "wintun.dll"), dll);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -134,8 +169,18 @@ async function downloadTun2socks(dest: string): Promise<void> {
  * that bypasses the often-blocked proxy.golang.org.
  */
 export async function ensureTun2socks(): Promise<string> {
-  const home = process.env.HOME ?? "/root";
-  const cache = join(home, ".cache", "foxhole-vpn", "tun2socks");
+  const home = userHome();
+  const cache = join(home, ".cache", "foxhole-vpn", `tun2socks${EXE}`);
+  if (IS_WIN) {
+    // Only our own copy: it must sit next to wintun.dll, which we can put there.
+    try {
+      await exec(cache, ["--version"]);
+    } catch {
+      await downloadTun2socks(cache);
+    }
+    await ensureWintun(cache);
+    return cache;
+  }
   for (const probe of ["tun2socks", join(home, "go/bin/tun2socks"), cache]) {
     try {
       await exec(probe, ["--version"]);
@@ -206,12 +251,25 @@ export interface Priv {
   spawn(argv: string[]): ReturnType<typeof spawn>;
 }
 
-/** Already running as root. tun2socks stderr is shown (CLI use). */
-export function directPriv(): Priv {
+/**
+ * Already running as root (or as Administrator on Windows). tun2socks stderr is
+ * shown (CLI use), or with `toLog` sent to the in-app log (the TUI's screen).
+ */
+export function directPriv(toLog = false): Priv {
   return {
     run,
-    spawn: (argv) => spawn(argv[0], argv.slice(1), { stdio: ["ignore", "ignore", verbose ? "inherit" : "ignore"] }),
+    spawn: (argv) => {
+      if (!toLog) return spawn(argv[0], argv.slice(1), { stdio: ["ignore", "ignore", verbose ? "inherit" : "ignore"] });
+      const p = spawn(argv[0], argv.slice(1), { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+      logStream(basename(argv[0]), p.stderr!);
+      return p;
+    },
   };
+}
+
+/** True if this process may change routing: root, or an elevated process on Windows. */
+export async function isPrivileged(): Promise<boolean> {
+  return IS_WIN ? isWindowsAdmin() : process.getuid?.() === 0;
 }
 
 /** Checks a sudo password without running anything. */
@@ -272,11 +330,11 @@ export class GlobalSession {
   #t2s: ReturnType<typeof spawn> | null = null;
   #exitCb: ((code: number | null) => void) | null = null;
   #stopped = false;
-  readonly #mac: DarwinRouting | null;
+  readonly #mac: DarwinRouting | WindowsRouting | null;
 
   constructor(o: GlobalSessionOptions) {
     this.#o = o;
-    this.#mac = process.platform === "darwin" ? new DarwinRouting(o) : null;
+    this.#mac = process.platform === "darwin" ? new DarwinRouting(o) : IS_WIN ? new WindowsRouting(o) : null;
   }
 
   /** Called if tun2socks dies unexpectedly. */
@@ -287,7 +345,7 @@ export class GlobalSession {
   /** Sets up routing + tun2socks. Returns the pinned server IP and DNS mode. */
   async start(): Promise<{ serverIp: string; dns: string }> {
     if (this.#mac) return this.#mac.start((code) => this.#exitCb?.(code));
-    if (process.platform !== "linux") throw new Error("global mode needs Linux or macOS; use `proxy` instead");
+    if (process.platform !== "linux") throw new Error("global mode needs Linux, macOS or Windows; use `proxy` instead");
     const { priv, server, force } = this.#o;
     const { stdout: routeOut } = await exec("ip", ["route"]); // reading needs no root
     const orig = parseDefaultRoute(routeOut);
@@ -422,8 +480,12 @@ export interface GlobalOptions {
  * Requires root (so the whole process is elevated via `sudo -E`).
  */
 export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<void> {
-  if (process.getuid?.() !== 0) {
-    console.error(red("Global mode needs root.") + ` Run: ${bold("sudo -E foxhole global")}`);
+  if (!(await isPrivileged())) {
+    console.error(
+      IS_WIN
+        ? red("Global mode needs Administrator rights.") + ` Open ${bold("Terminal (Admin)")} and run ${bold("foxhole global")} there.`
+        : red("Global mode needs root.") + ` Run: ${bold("sudo -E foxhole global")}`,
+    );
     process.exit(1);
   }
   if (!conn.server) throw new Error("No server selected");
@@ -456,8 +518,9 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
     await session.stop();
     await proxy.close();
   };
-  process.on("SIGINT", () => void cleanup().then(() => process.exit(0)));
-  process.on("SIGTERM", () => void cleanup().then(() => process.exit(0)));
+  const onSignal = () => void cleanup().then(() => process.exit(0));
+  // SIGBREAK is Ctrl+Break, SIGHUP a closed console window (Windows gives ~10s to clean up).
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", ...(IS_WIN ? ["SIGBREAK"] : [])]) process.on(sig, onSignal);
 
   try {
     const { serverIp, dns } = await session.start();
@@ -471,7 +534,7 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
           : yellow(`  couldn't reach the internet through the tunnel — ${verbose ? "check the tun2socks output above" : "run with --verbose for details"}.`),
       );
     }
-    console.log(dim(`  DNS ${dns} · IPv6 blackholed · Ctrl+C restores.\n`));
+    console.log(dim(`  DNS ${dns} · IPv6 ${IS_WIN ? "blocked" : "blackholed"} · Ctrl+C restores.\n`));
     await new Promise(() => {}); // run until signalled
   } catch (err) {
     await cleanup();

@@ -58,12 +58,16 @@ assert.ok(rec.snippet.includes("getOAuthToken"), "snippet mints the VPN token");
 delete process.env.SUDO_USER;
 const home = mkdtempSync(join(tmpdir(), "foxhole-home-"));
 process.env.HOME = home;
+process.env.USERPROFILE = home; // Windows: os.homedir() reads this, not HOME
 assert.equal(tokenFile(), join(home, ".config", "foxhole-vpn", "token"), "token file under HOME");
 assert.equal(loadSavedToken(), null, "nothing saved yet");
 saveToken(good);
 assert.equal(loadSavedToken(), good, "saved token reads back");
-assert.equal(statSync(tokenFile()).mode & 0o777, 0o600, "token file is 0600");
-assert.equal(statSync(join(home, ".config", "foxhole-vpn")).mode & 0o777, 0o700, "folder is 0700");
+// Windows has no Unix modes; the profile folder's ACL keeps it private there.
+if (process.platform !== "win32") {
+  assert.equal(statSync(tokenFile()).mode & 0o777, 0o600, "token file is 0600");
+  assert.equal(statSync(join(home, ".config", "foxhole-vpn")).mode & 0o777, 0o700, "folder is 0700");
+}
 forgetToken();
 assert.equal(loadSavedToken(), null, "forgotten token is gone");
 rmSync(home, { recursive: true, force: true });

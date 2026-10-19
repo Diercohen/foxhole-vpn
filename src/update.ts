@@ -34,6 +34,7 @@ export function checkUpdate(): Promise<void> {
 export const viaNpx = () => process.env.npm_command === "exec";
 // npm replaces the folder this package sits in; a root-owned global folder (system Node) needs sudo for that
 const sudo = (() => {
+  if (process.platform === "win32") return false; // npm's global folder is per-user; there's no sudo
   try {
     accessSync(new URL("../..", import.meta.url), constants.W_OK);
     return false;
