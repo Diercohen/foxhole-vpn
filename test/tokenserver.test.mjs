@@ -1,6 +1,7 @@
 // The loopback token receiver: shape/expiry/scope validation, secret-path
 // gating, and a real round-trip over 127.0.0.1. No Firefox, no network.
 import assert from "node:assert";
+import net from "node:net";
 import { mkdtempSync, statSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,11 +21,13 @@ assert.ok(!validToken("only.two"), "wrong segment count rejected");
 assert.ok(!validToken(42), "non-string rejected");
 
 const good = jwt({ exp: future, scope: VPN_SCOPE });
-const rec = await startTokenReceiver(5000, 47390);
-assert.ok(rec.url.startsWith("http://127.0.0.1:47390/"), "uses the fixed port");
+// A port that is free right now (the test must not depend on a fixed number being free).
+const free = await new Promise((r) => { const s = net.createServer().listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => r(p)); }); });
+const rec = await startTokenReceiver(5000, free);
+assert.ok(rec.url.startsWith(`http://127.0.0.1:${free}/`), "uses the requested port");
 // A second receiver on the same port falls back to a random one.
-const rec2 = await startTokenReceiver(5000, 47390);
-assert.ok(!rec2.url.startsWith("http://127.0.0.1:47390/"), "busy port falls back");
+const rec2 = await startTokenReceiver(5000, free);
+assert.ok(!rec2.url.startsWith(`http://127.0.0.1:${free}/`), "busy port falls back");
 rec2.close();
 
 // Wrong path (even same host/port) is a 404 — the secret gates access.
