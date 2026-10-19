@@ -86,10 +86,11 @@ export function findAccount(): AccountState | null {
       const f = join(dir, "signedInUser.json");
       if (!existsSync(f)) continue;
       try {
+        // Firefox writes `null` here on sign-out
         const data = JSON.parse(readFileSync(f, "utf8")) as {
           accountData?: { email?: string; verified?: boolean; sessionToken?: string };
-        };
-        const acct = data.accountData;
+        } | null;
+        const acct = data?.accountData;
         const signedIn = !!acct?.sessionToken;
         return {
           profileDir: dir,

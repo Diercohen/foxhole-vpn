@@ -13,7 +13,7 @@ import { restoreWindows } from "./global-win32.js";
 import { Tui } from "./tui.js";
 import { checkUpdate, updateNotice, versionLines } from "./update.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenFile } from "./tokenserver.js";
-import { bold, dim, green, red, yellow, cyan, under, code, flag, countryName, gb, shortDate, box, openUrl } from "./ui.js";
+import { bold, dim, green, red, yellow, cyan, under, code, flag, countryName, gb, shortDate, box, vw, centerIn, openUrl } from "./ui.js";
 
 // Node gives each server address only 250 ms before moving on; far VPN servers
 // take 600-900 ms to answer, so every attempt failed with a blank AggregateError.
@@ -142,8 +142,14 @@ async function captureToken(error: string | null = null): Promise<string | null>
   // must be able to select and copy the snippet.
   process.stdout.write("\x1b[?1000l\x1b[?1006l");
   const rec = await startTokenReceiver();
+  // the snippet reads the token from Firefox's own VPN login, so it fails when signed out
+  const signedOut = !findAccount()?.signedIn;
+  const status = signedOut ? bold(red("⚠ You MUST sign in to Firefox first!")) : bold(green("✓ You are signed in to Firefox"));
   const steps = [
     // one box line per sentence, so the window stays narrow enough for an 80-column terminal
+    status,
+    ...(signedOut ? [`Run ${bold("foxhole login")}, sign in, then do the steps below.`] : []),
+    "",
     ...(error ? [...error.split("\n").map((l, i) => red(`${i ? " " : "✗"} ${l}`)), ""] : []),
     bold(error ? "Let's grab a new token from Firefox." : "No VPN token yet — let's grab one from Firefox."),
     "",
@@ -156,22 +162,50 @@ async function captureToken(error: string | null = null): Promise<string | null>
     dim("The token comes back over localhost only and is saved to"),
     dim(`${tokenFile()} (readable only by you) for next time.`),
   ];
-  process.stdout.write("\n" + box(steps, { title: cyan("🦊 foxhole-vpn") }).join("\n") + "\n\n");
+  const title = cyan("🦊 foxhole-vpn");
+  // centered in the box's inner width (row width minus "│ " and " │")
+  steps[0] = centerIn(status, vw(box(steps, { title })[0]) - 4);
+  const boxed = box(steps, { title });
   // No border around the code: box characters would end up in what the user copies.
   const lines = rec.snippet.split("\n");
   const w = Math.max(...lines.map((l) => l.length));
-  process.stdout.write(bold("Paste this into the Browser Console:") + "\n\n");
-  process.stdout.write(lines.map((l) => code(`  ${highlight(l)}${" ".repeat(w - l.length)}  `)).join("\n") + "\n\n");
-  process.stdout.write(dim(`waiting for the token on ${rec.url.replace(/\/[0-9a-f]+$/, "/…")} · closes in 2 minutes · ${under("Ctrl+C")} to cancel\n`));
+  const out = [
+    ...boxed,
+    "",
+    bold("Paste this into the Browser Console:"),
+    "",
+    ...lines.map((l) => code(`  ${highlight(l)}${" ".repeat(w - l.length)}  `)),
+    "",
+    dim(`Waiting for the token from Firefox (up to 2 minutes) · press ${under("q")} or ${under("Ctrl+C")} to cancel`),
+  ];
+  process.stdout.write("\n" + out.join("\n") + "\n");
+  // Many terminals (Alacritty, kitty) ignore SGR 5 blink, so redraw the warning's box row
+  // ourselves: it's row 1, `up` rows above the cursor. Only when nothing wrapped or
+  // scrolled it off screen, or the cursor jump would land on the wrong row.
+  // shortcut: a resize while waiting can misplace the redraw, fine for a 2-minute prompt.
+  const up = out.length - 1;
+  const fits = up < (process.stdout.rows ?? 0) && out.every((l) => vw(l) <= (process.stdout.columns ?? 0));
+  const rows = [boxed[1], box([" ".repeat(vw(steps[0])), ...steps.slice(1)], { title })[1]];
+  let shown = true;
+  const blinker = signedOut && fits
+    ? setInterval(() => process.stdout.write(`\x1b7\x1b[${up}A\r${rows[(shown = !shown) ? 0 : 1]}\x1b8`), 500)
+    : undefined;
 
-  const cancelled = new Promise<null>((resolve) => {
-    const onInt = () => resolve(null);
-    process.once("SIGINT", onInt);
-    rec.token.finally(() => process.removeListener("SIGINT", onInt));
-  });
+  // Raw mode so q works without Enter; it also turns Ctrl+C into a 0x03 byte instead of SIGINT.
+  let cancel = () => {};
+  const cancelled = new Promise<null>((resolve) => (cancel = () => resolve(null)));
+  const onKey = (b: Buffer) => [3, 0x71, 0x51].includes(b[0]) && cancel(); // Ctrl+C, q, Q
+  process.once("SIGINT", cancel);
+  process.stdin.on("data", onKey).setRawMode(true).resume();
   const timedOut = Symbol();
   const token = await Promise.race([rec.token.catch(() => timedOut), cancelled]);
+  process.removeListener("SIGINT", cancel);
+  process.stdin.removeListener("data", onKey).setRawMode(false).pause();
   rec.close();
+  if (blinker) {
+    clearInterval(blinker);
+    process.stdout.write(`\x1b7\x1b[${up}A\r${rows[0]}\x1b8`); // leave the warning showing
+  }
   if (typeof token === "string") {
     console.log(green("✓ token received — saved for next time."));
     return token;

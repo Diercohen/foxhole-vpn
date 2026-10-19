@@ -51,7 +51,6 @@ foxhole-vpn:
 | Firefox login detection / open | ✅ working |
 | Interactive TUI | ✅ working |
 | Whole-system (TUN) routing | ✅ built + unit-tested (needs sudo; untested live) |
-| **FxA token exchange** | ⛔ **not implemented — see [AUTH.md](AUTH.md)** |
 
 The token exchange (step 2's auth) is a single ~30-line function left as a
 documented stub. Everything else is complete and works the moment it returns a
@@ -181,17 +180,6 @@ Free-tier countries: 🇺🇸 US · 🇩🇪 DE · 🇯🇵 JP · 🇦🇺 AU ·
   Firewall rules blocking IPv6 and QUIC; all removed on exit (routes also vanish
   on reboot). With Windows Firewall off, IPv6 isn't blocked and a note says so.
   The token is saved to `%USERPROFILE%\.config\foxhole-vpn\token`.
-
-## Test
-
-```sh
-npm test   # builds, then runs the SOCKS5 bridge integration test
-```
-
-The proxy and DNS tests generate a certificate with `openssl`; on Windows, Git
-for Windows ships one (add its `bin` folder to `PATH`). In an elevated Windows
-terminal, `node test/win32-live.mjs` checks global mode end to end — no VPN
-token needed — and verifies everything is restored afterwards.
 
 ## FAQ
 
