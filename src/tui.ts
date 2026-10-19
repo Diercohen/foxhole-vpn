@@ -334,7 +334,7 @@ export class Tui {
 
     const title = bold(cyan("🦊 foxhole-vpn"));
     const key = (k: string, rest: string) => `[ ${under(k)}${rest} ]`;
-    const buttons = [bold(cyan("[ ⏎ Connect ]")), dim(key("G", "lobal")), dim(key("D", "isconnect")), dim(key("R", "efresh")), dim(key("Q", "uit"))].join("  ");
+    const buttons = [bold(cyan("[ ⏎ Connect ]")), dim(key("G", "lobal")), dim(key("D", "isconnect")), dim(key("R", "efresh Usage")), dim(key("Q", "uit"))].join("  ");
     const headW = vw(box(headLines, { title, right: state })[0]);
     const table = grid(["", "Code", "Tier", "Country"], body, {
       caption: bold("Locations"),
