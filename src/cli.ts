@@ -3,7 +3,7 @@ import net from "node:net";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fetchServerList } from "./serverlist.js";
-import { findAccount } from "./profile.js";
+import { findAccount, type AccountState } from "./profile.js";
 import { FirefoxAuth, StaticAuth, NotImplementedError, type Authenticator } from "./auth.js";
 import { Connection, findCountry } from "./connection.js";
 import { fetchEntitlement, GuardianError } from "./guardian.js";
@@ -13,7 +13,7 @@ import { restoreWindows } from "./global-win32.js";
 import { Tui } from "./tui.js";
 import { checkUpdate, updateNotice, versionLines } from "./update.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenFile } from "./tokenserver.js";
-import { bold, dim, green, red, yellow, cyan, under, code, flag, countryName, gb, shortDate, box, vw, centerIn, openUrl } from "./ui.js";
+import { bold, dim, green, red, yellow, cyan, under, code, flag, countryName, gb, shortDate, box, vw, centerIn } from "./ui.js";
 
 // Node gives each server address only 250 ms before moving on; far VPN servers
 // take 600-900 ms to answer, so every attempt failed with a blank AggregateError.
@@ -132,6 +132,21 @@ function highlight(line: string): string {
   );
 }
 
+/** Resolves to null when the user presses q or Ctrl+C; stop() releases the keyboard. */
+function cancelKeys(): { cancelled: Promise<null>; stop: () => void } {
+  // Raw mode so q works without Enter; it also turns Ctrl+C into a 0x03 byte instead of SIGINT.
+  let cancel = () => {};
+  const cancelled = new Promise<null>((resolve) => (cancel = () => resolve(null)));
+  const onKey = (b: Buffer) => [3, 0x71, 0x51].includes(b[0]) && cancel(); // Ctrl+C, q, Q
+  process.once("SIGINT", cancel);
+  process.stdin.on("data", onKey).setRawMode(true).resume();
+  const stop = () => {
+    process.removeListener("SIGINT", cancel);
+    process.stdin.removeListener("data", onKey).setRawMode(false).pause();
+  };
+  return { cancelled, stop };
+}
+
 /**
  * Runs a loopback receiver and shows the steps to copy a snippet into Firefox's
  * Browser Console, which posts the VPN token straight back. Returns the token,
@@ -143,20 +158,24 @@ async function captureToken(error: string | null = null): Promise<string | null>
   process.stdout.write("\x1b[?1000l\x1b[?1006l");
   const rec = await startTokenReceiver();
   // the snippet reads the token from Firefox's own VPN login, so it fails when signed out
-  const signedOut = !findAccount()?.signedIn;
+  const account = findAccount();
+  const signedOut = !account?.signedIn;
+  const email = !signedOut && account?.email ? account.email : null;
   const status = signedOut ? bold(red("⚠ You MUST sign in to Firefox first!")) : bold(green("✓ You are signed in to Firefox"));
   const steps = [
     // one box line per sentence, so the window stays narrow enough for an 80-column terminal
     status,
-    ...(signedOut ? [`Run ${bold("foxhole login")}, sign in, then do the steps below.`] : []),
+    ...(signedOut ? [`Run ${bold("foxhole login")}, sign in, then do the steps below.`] : email ? [email] : []),
     "",
     ...(error ? [...error.split("\n").map((l, i) => red(`${i ? " " : "✗"} ${l}`)), ""] : []),
     bold(error ? "Let's grab a new token from Firefox." : "No VPN token yet — let's grab one from Firefox."),
     "",
     `${bold("1.")} In Firefox open ${cyan("about:config")} and set`,
-    `   ${cyan("devtools.chrome.enabled")} to ${bold("true")}.`,
-    `${bold("2.")} Open the ${bold("Browser Console")}: ${cyan("⌘⇧J")} (mac) / ${cyan("Ctrl+Shift+J")}.`,
+    `   ${cyan("devtools.chrome.enabled")} to ${bold("true")}. ${dim("(first time only)")}`,
+    "",
+    `${bold("2.")} Open the ${bold("Browser Console")}: ${cyan(process.platform === "darwin" ? "⌘⇧J" : "Ctrl+Shift+J")}.`,
     `   ${dim("(the Browser Console, not the page's web console)")}`,
+    "",
     `${bold("3.")} Paste the snippet printed below and press ${bold("Enter")}.`,
     "",
     dim("The token comes back over localhost only and is saved to"),
@@ -164,7 +183,9 @@ async function captureToken(error: string | null = null): Promise<string | null>
   ];
   const title = cyan("🦊 foxhole-vpn");
   // centered in the box's inner width (row width minus "│ " and " │")
-  steps[0] = centerIn(status, vw(box(steps, { title })[0]) - 4);
+  const inner = vw(box(steps, { title })[0]) - 4;
+  steps[0] = centerIn(status, inner);
+  if (email) steps[1] = centerIn(green(`(${email})`), inner);
   const boxed = box(steps, { title });
   // No border around the code: box characters would end up in what the user copies.
   const lines = rec.snippet.split("\n");
@@ -191,16 +212,10 @@ async function captureToken(error: string | null = null): Promise<string | null>
     ? setInterval(() => process.stdout.write(`\x1b7\x1b[${up}A\r${rows[(shown = !shown) ? 0 : 1]}\x1b8`), 500)
     : undefined;
 
-  // Raw mode so q works without Enter; it also turns Ctrl+C into a 0x03 byte instead of SIGINT.
-  let cancel = () => {};
-  const cancelled = new Promise<null>((resolve) => (cancel = () => resolve(null)));
-  const onKey = (b: Buffer) => [3, 0x71, 0x51].includes(b[0]) && cancel(); // Ctrl+C, q, Q
-  process.once("SIGINT", cancel);
-  process.stdin.on("data", onKey).setRawMode(true).resume();
+  const keys = cancelKeys();
   const timedOut = Symbol();
-  const token = await Promise.race([rec.token.catch(() => timedOut), cancelled]);
-  process.removeListener("SIGINT", cancel);
-  process.stdin.removeListener("data", onKey).setRawMode(false).pause();
+  const token = await Promise.race([rec.token.catch(() => timedOut), keys.cancelled]);
+  keys.stop();
   rec.close();
   if (blinker) {
     clearInterval(blinker);
@@ -315,8 +330,8 @@ function openBrowser(url: string) {
     const firefox = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]
       .map((dir) => dir && `${dir}\\Mozilla Firefox\\firefox.exe`)
       .find((p) => p && existsSync(p));
+    // no default-browser fallback: only Firefox opens about: pages
     if (firefox) spawn(firefox, [url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
-    else openUrl(url); // the default browser
     return;
   }
   const candidates = [
@@ -334,9 +349,47 @@ async function cmdLogin() {
     console.log(green(`Already signed in to Firefox as ${account.email ?? "your account"}.`));
     return;
   }
-  console.log("Opening Firefox so you can sign in to your Firefox Account…");
-  openBrowser("https://accounts.firefox.com/");
-  console.log(dim("After signing in, re-run your command."));
+  // The browser itself must be signed in (that's what its VPN uses); signing in on
+  // accounts.firefox.com only signs in the website, so open the browser's own sign-in page.
+  openBrowser("about:preferences#sync");
+  console.log(
+    "\n" +
+      box(
+        [
+          bold("Sign in inside the Firefox browser, not on a website."),
+          "",
+          `Firefox is opening its ${bold("Sync")} settings: click ${bold("Sign in")} there.`,
+          dim(`(didn't open? In Firefox: menu ${bold("☰")} → ${bold("Sign in")})`),
+          "",
+          `${bold("Sync is optional")}: foxhole only needs the sign-in, so you can`,
+          `turn off everything on the ${bold("Choose what to sync")} screen.`,
+        ],
+        { title: cyan("🦊 foxhole login") },
+      ).join("\n") +
+      "\n",
+  );
+  if (!process.stdin.isTTY) return void console.log(dim("After signing in, re-run your command."));
+
+  console.log(dim(`Waiting for Firefox to sign in (up to 5 minutes) · press ${under("q")} or ${under("Ctrl+C")} to cancel`));
+  const keys = cancelKeys();
+  let timer: NodeJS.Timeout | undefined;
+  let ticks = 0;
+  const found = new Promise<AccountState | "timeout">((resolve) => {
+    timer = setInterval(() => {
+      const a = findAccount();
+      if (a?.signedIn) resolve(a);
+      else if (++ticks >= 300) resolve("timeout");
+    }, 1000);
+  });
+  const result = await Promise.race([found, keys.cancelled]);
+  clearInterval(timer);
+  keys.stop();
+  if (result === null) return void console.log(yellow("Cancelled."));
+  if (result === "timeout") {
+    console.log(yellow("Firefox still isn't signed in. Signed in on a website instead? Sign in inside the browser, then run foxhole login again."));
+    process.exit(1);
+  }
+  console.log(green(`✓ Firefox is signed in as ${result.email ?? "your account"}.`));
 }
 
 async function cmdProxy() {
@@ -431,7 +484,7 @@ ${bold("Commands:")}
   countries            List available countries (free vs paid)
   usage                Show remaining data this month
   status | doctor      Check Firefox login, server list, entitlement, data
-  login                Open Firefox to sign in to your Firefox Account
+  login                Sign in to the Firefox browser (its VPN needs it)
   proxy [--country XX] [--port N] [--host H]
                        Run a local SOCKS5 + HTTP proxy through the VPN
   global [--country XX] [--force]

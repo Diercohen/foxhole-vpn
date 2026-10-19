@@ -63,7 +63,7 @@ npm install -g foxhole-vpn
 
 foxhole                     # interactive TUI (default)
 foxhole countries           # list countries (no login needed)
-foxhole login               # open Firefox to sign in
+foxhole login               # sign in to the Firefox browser (sync optional)
 foxhole usage               # remaining data this month
 foxhole doctor              # check login, server list, entitlement
 foxhole proxy --country US  # local SOCKS5 + HTTP proxy through the US
