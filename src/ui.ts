@@ -40,10 +40,10 @@ export function countryName(code: string, fallback: string): string {
   }
 }
 
-/** Formats a byte count as GB with one decimal. */
+/** Formats a byte count as GB the way Firefox shows the VPN quota: 1 GB = 1024³ bytes, "50 GB", "47.4 GB". */
 export function gb(bytes: bigint): string {
-  const n = Number(bytes) / 1e9;
-  return `${n.toFixed(1)} GB`;
+  const n = Number(bytes) / 1024 ** 3;
+  return `${n.toFixed(1).replace(/\.0$/, "")} GB`;
 }
 
 /** A short date like "Nov 1". */

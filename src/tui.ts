@@ -344,7 +344,7 @@ export class Tui {
       ? dim("unknown")
       : u.unlimited
         ? green("unlimited")
-        : `${bold(gb(u.remaining))} / ${gb(u.max)}` + (u.reset ? dim(` · resets ${shortDate(u.reset)}`) : "");
+        : `${bold(gb(u.remaining).replace(" GB", ""))} of ${gb(u.max)} left` + (u.reset ? dim(` · resets ${shortDate(u.reset)}`) : ""); // as Firefox shows it
     const gc = this.#globalCountry;
     const state = this.#global
       ? green(`● GLOBAL ${flag(gc!.code)} ${countryName(gc!.code, gc!.name)}`)

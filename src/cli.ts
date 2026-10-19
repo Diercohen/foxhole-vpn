@@ -112,7 +112,7 @@ async function ensureAuth(): Promise<Authenticator> {
     return requireAuth(); // non-interactive: keep the plain error
   }
   const token = await captureToken(error);
-  if (!token) return requireAuth();
+  if (!token) process.exit(130); // cancelled or timed out: the app can't connect without a token
   saveToken(token);
   return new StaticAuth(token);
 }
@@ -171,7 +171,7 @@ async function captureToken(error: string | null = null): Promise<string | null>
   const token = await Promise.race([rec.token.catch(() => null), cancelled]);
   rec.close();
   if (token) console.log(green("✓ token received — saved for next time."));
-  else console.log(yellow("cancelled — no token."));
+  else console.log(yellow("No token received. foxhole needs one to connect — run it again when you're ready."));
   return token;
 }
 
