@@ -6,12 +6,13 @@ import { fetchServerList } from "./serverlist.js";
 import { findAccount } from "./profile.js";
 import { FirefoxAuth, StaticAuth, NotImplementedError, type Authenticator } from "./auth.js";
 import { Connection, findCountry } from "./connection.js";
-import { fetchEntitlement } from "./guardian.js";
+import { fetchEntitlement, GuardianError } from "./guardian.js";
 import { startProxy } from "./proxy.js";
 import { runGlobal } from "./global.js";
 import { Tui } from "./tui.js";
 import { checkUpdate, updateNotice, versionLines } from "./update.js";
-import { bold, dim, green, red, yellow, flag, countryName, gb, shortDate } from "./ui.js";
+import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenFile } from "./tokenserver.js";
+import { bold, dim, green, red, yellow, cyan, under, flag, countryName, gb, shortDate, box } from "./ui.js";
 
 // Node gives each server address only 250 ms before moving on; far VPN servers
 // take 600-900 ms to answer, so every attempt failed with a blank AggregateError.
@@ -34,10 +35,27 @@ function tokenTtl(jwt: string): number | null {
   }
 }
 
-/** The manual access-token env var, if set; overrides the Firefox session. */
+const ENV_TOKEN = "FOXHOLE_ACCESS_TOKEN";
+
+/** The access token to use: the env var if set, else the one saved from Firefox. */
 function tokenEnv(): { name: string; value: string } | null {
-  const value = process.env.FOXHOLE_ACCESS_TOKEN;
-  return value ? { name: "FOXHOLE_ACCESS_TOKEN", value } : null;
+  const value = process.env[ENV_TOKEN];
+  if (value) return { name: ENV_TOKEN, value };
+  const saved = loadSavedToken();
+  return saved ? { name: "saved token", value: saved } : null;
+}
+
+/** Why a token can't be used ("has expired", "was rejected…"), or null if it looks fine. */
+async function tokenProblem(token: string): Promise<string | null> {
+  const ttl = tokenTtl(token);
+  if (ttl !== null && ttl <= 0) return "has expired";
+  try {
+    await fetchEntitlement(token, AbortSignal.timeout(8000));
+  } catch (err) {
+    // Only a 401 means the token is bad; offline or a slow server shouldn't block startup.
+    if (err instanceof GuardianError && err.status === 401) return "was rejected by Mozilla (expired or revoked)";
+  }
+  return null;
 }
 
 /** Warns about a pasted access token that is expired or short-lived. */
@@ -69,6 +87,70 @@ function requireAuth(): Authenticator {
     process.exit(1);
   }
   return auth;
+}
+
+/**
+ * Like requireAuth, but when nothing is configured and we have a terminal, show
+ * the Firefox token-capture window and wait for the token instead of exiting.
+ */
+async function ensureAuth(): Promise<Authenticator> {
+  // A Firefox login alone isn't enough: FirefoxAuth can't mint a token yet (AUTH.md).
+  const env = tokenEnv();
+  let error: string | null = null;
+  if (env) {
+    const problem = await tokenProblem(env.value);
+    if (!problem) return new StaticAuth(env.value);
+    if (env.name === ENV_TOKEN) {
+      error = `${ENV_TOKEN} ${problem}. Unset it so the new token below is used next time.`;
+    } else {
+      forgetToken();
+      error = `Your saved token ${problem}. Get a new one below.`;
+    }
+  }
+  if (!process.stdin.isTTY) {
+    if (error) console.error(red(error));
+    return requireAuth(); // non-interactive: keep the plain error
+  }
+  const token = await captureToken(error);
+  if (!token) return requireAuth();
+  saveToken(token);
+  return new StaticAuth(token);
+}
+
+/**
+ * Runs a loopback receiver and shows the steps to copy a snippet into Firefox's
+ * Browser Console, which posts the VPN token straight back. Returns the token,
+ * or null if the user cancels (Ctrl+C) or the wait times out.
+ */
+async function captureToken(error: string | null = null): Promise<string | null> {
+  const rec = await startTokenReceiver();
+  const steps = [
+    ...(error ? [red(`✗ ${error}`), ""] : []),
+    bold(error ? "Let's grab a new token from Firefox." : "No VPN token yet — let's grab one from Firefox."),
+    "",
+    `${bold("1.")} In Firefox open ${cyan("about:config")} and set`,
+    `   ${cyan("devtools.chrome.enabled")} to ${bold("true")}.`,
+    `${bold("2.")} Open the ${bold("Browser Console")}: ${cyan("⌘⇧J")} (mac) / ${cyan("Ctrl+Shift+J")}.`,
+    `   ${dim("(the Browser Console, not the page's web console)")}`,
+    `${bold("3.")} Paste the snippet printed below and press ${bold("Enter")}.`,
+    "",
+    dim("The token comes back over localhost only and is saved to"),
+    dim(`${tokenFile()} (readable only by you) for next time.`),
+  ];
+  process.stdout.write("\n" + box(steps, { title: cyan("🦊 foxhole-vpn") }).join("\n") + "\n\n");
+  process.stdout.write(dim("── paste this into the Browser Console ──") + "\n" + rec.snippet + "\n\n");
+  process.stdout.write(dim(`waiting for the token on ${rec.url.replace(/\/[0-9a-f]+$/, "/…")} · ${under("Ctrl+C")} to cancel\n`));
+
+  const cancelled = new Promise<null>((resolve) => {
+    const onInt = () => resolve(null);
+    process.once("SIGINT", onInt);
+    rec.token.finally(() => process.removeListener("SIGINT", onInt));
+  });
+  const token = await Promise.race([rec.token.catch(() => null), cancelled]);
+  rec.close();
+  if (token) console.log(green("✓ token received — saved for next time."));
+  else console.log(yellow("cancelled — no token."));
+  return token;
 }
 
 function handleAuthError(err: unknown): never {
@@ -188,7 +270,7 @@ async function cmdLogin() {
 }
 
 async function cmdProxy() {
-  const conn = new Connection(requireAuth());
+  const conn = new Connection(await ensureAuth());
   const code = arg("country");
   const country = code ? await findCountry(code) : null;
   if (code && !country) {
@@ -224,11 +306,11 @@ async function cmdProxy() {
 async function cmdTui() {
   const host = arg("host") ?? "127.0.0.1";
   const port = Number(arg("port") ?? 1080);
-  await new Tui(new Connection(requireAuth()), host, port).run();
+  await new Tui(new Connection(await ensureAuth()), host, port).run();
 }
 
 async function cmdGlobal() {
-  const conn = new Connection(requireAuth());
+  const conn = new Connection(await ensureAuth());
   const code = arg("country");
   const country = code ? await findCountry(code) : null;
   if (code && !country) {
@@ -269,7 +351,7 @@ ${dim("global: run as  sudo -E foxhole global  · Ctrl+C restores networking.")}
 ${dim("Stop any other active VPN first (or pass --force).")}
 
 ${bold("Environment:")}
-  FOXHOLE_ACCESS_TOKEN   Use this VPN access token instead of the Firefox login
+  FOXHOLE_ACCESS_TOKEN   Use this VPN access token instead of the saved one (~/.config/foxhole-vpn/token)
 `;
 
 /** After a quick command, print the yellow update notice if a newer version is out. */

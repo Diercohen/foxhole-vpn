@@ -62,6 +62,13 @@ function bearer(accessToken: string): Record<string, string> {
   };
 }
 
+/** A non-200 Guardian response; `status` lets callers spot 401 (token rejected). */
+export class GuardianError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
 /** Human-readable reason for a non-200 Guardian status. */
 function statusError(status: number): string {
   switch (status) {
@@ -89,7 +96,7 @@ export async function fetchPass(
     signal,
   });
   const usage = parseUsage(res.headers);
-  if (!res.ok) throw new Error(`Proxy pass: ${statusError(res.status)}`);
+  if (!res.ok) throw new GuardianError(`Proxy pass: ${statusError(res.status)}`, res.status);
   const data = (await res.json()) as { token?: string };
   if (!data.token) throw new Error("Proxy pass response had no token");
   const { nbf, exp } = parseJwtTimes(data.token);
@@ -120,7 +127,7 @@ export async function fetchEntitlement(
     signal,
   });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`Status: ${statusError(res.status)}`);
+  if (!res.ok) throw new GuardianError(`Status: ${statusError(res.status)}`, res.status);
   const d = (await res.json()) as {
     subscribed?: boolean;
     uid?: number;

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 
 // When run under sudo, look in the invoking user's home, not root's.
-function userHome(): string {
+export function userHome(): string {
   if (process.env.SUDO_USER && (process.env.HOME === "/root" || process.getuid?.() === 0)) {
     return join(process.platform === "darwin" ? "/Users" : "/home", process.env.SUDO_USER);
   }

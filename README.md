@@ -76,37 +76,41 @@ TCP, and restores all of it on Ctrl+C.
 If all three are blocked, grab the binary yourself from
 <https://github.com/xjasonlyu/tun2socks/releases> and drop it on your `PATH`.
 
-### Testing before the token exchange is implemented
+### Getting a token
 
-Until `AUTH.md` is filled in, you can supply a VPN access token yourself to
-exercise the entire proxy / TUI / global stack:
+Until the token exchange in `AUTH.md` is implemented, foxhole-vpn needs a VPN
+access token from Firefox. You only do this once per token:
+
+1. Run `foxhole` (or `foxhole proxy` / `foxhole global`) in a terminal. With no
+   usable token it opens a window with the steps and a ready-made snippet.
+2. In Firefox, set `devtools.chrome.enabled` to `true` in `about:config`.
+3. Open the **Browser Console** (⌘⇧J on macOS, Ctrl+Shift+J on Linux — not the
+   page's web console), paste the snippet and press Enter.
+
+The snippet sends the token back to foxhole-vpn, which saves it to
+`~/.config/foxhole-vpn/token` (readable only by you, mode 0600) and uses it on
+every later run, so you don't repeat the steps.
+
+The token lasts about a day. On each start foxhole-vpn checks it; if it has
+expired or Mozilla rejects it, the window appears again with a red error and
+the old token is deleted. If it's rejected while the TUI is running, the TUI
+says so in red — quit and start `foxhole` again to get a new one.
+
+**How the token gets back safely:** while the window is open, foxhole-vpn runs a
+one-shot HTTP receiver on `127.0.0.1:47380` (a random port if that one is
+busy). The snippet posts to a path containing a random 192-bit secret, and the
+receiver sends no CORS headers, so web pages can't reach it. It accepts only a
+well-formed, unexpired token with the VPN scope, never logs it, and shuts down
+as soon as one arrives (or after 5 minutes). Another program running as you on
+the same machine could still read the terminal and use the secret.
+
+**Using your own token instead:** set `FOXHOLE_ACCESS_TOKEN`. It takes priority
+over the saved token. If it has expired, the window tells you to unset it.
 
 ```sh
 export FOXHOLE_ACCESS_TOKEN=<an FxA access token with the VPN scope>
 foxhole doctor   # should print entitlement + remaining data
 ```
-
-When set, every command uses that token instead of the Firefox session.
-
-**Getting a token from Firefox:** set `devtools.chrome.enabled` to `true` in
-`about:config`, open the **Browser Console** (Ctrl+Shift+J / ⌘⇧J — not the
-page's web console), and run:
-
-```js
-(async () => {
-  const m = ChromeUtils.importESModule("resource://gre/modules/FxAccounts.sys.mjs");
-  const fxa = m.getFxAccountsSingleton?.() ?? m.fxAccounts;
-  const token = await fxa.getOAuthToken({
-    scope: ["profile", "https://identity.mozilla.com/apps/vpn"],
-  });
-  copy(token);
-  console.log("token copied to clipboard");
-})();
-```
-
-Then `export FOXHOLE_ACCESS_TOKEN="$(pbpaste)"` (macOS) or
-`"$(wl-paste)"` / `"$(xclip -o -sel clip)"` (Linux). The token is short-lived —
-rerun the snippet when it expires. Treat it like a password.
 
 Free-tier countries: 🇺🇸 US · 🇩🇪 DE · 🇯🇵 JP · 🇦🇺 AU · 🇦🇷 AR · 🇿🇦 ZA.
 
