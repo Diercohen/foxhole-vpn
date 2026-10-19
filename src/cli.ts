@@ -101,10 +101,10 @@ async function ensureAuth(): Promise<Authenticator> {
     const problem = await tokenProblem(env.value);
     if (!problem) return new StaticAuth(env.value);
     if (env.name === ENV_TOKEN) {
-      error = `${ENV_TOKEN} ${problem}. Unset it so the new token below is used next time.`;
+      error = `${ENV_TOKEN} ${problem}.\nUnset it so the new token below is used next time.`;
     } else {
       forgetToken();
-      error = `Your saved token ${problem}. Get a new one below.`;
+      error = `Your saved token ${problem}.\nGet a new one below.`;
     }
   }
   if (!process.stdin.isTTY) {
@@ -139,7 +139,8 @@ function highlight(line: string): string {
 async function captureToken(error: string | null = null): Promise<string | null> {
   const rec = await startTokenReceiver();
   const steps = [
-    ...(error ? [red(`✗ ${error}`), ""] : []),
+    // one box line per sentence, so the window stays narrow enough for an 80-column terminal
+    ...(error ? [...error.split("\n").map((l, i) => red(`${i ? " " : "✗"} ${l}`)), ""] : []),
     bold(error ? "Let's grab a new token from Firefox." : "No VPN token yet — let's grab one from Firefox."),
     "",
     `${bold("1.")} In Firefox open ${cyan("about:config")} and set`,
@@ -301,9 +302,10 @@ async function cmdProxy() {
   const host = arg("host") ?? "127.0.0.1";
   const port = Number(arg("port") ?? 1080);
   const handle = await startProxy(conn, host, port);
-  console.log(green(`\nSOCKS5 proxy on ${bold(`${host}:${handle.port}`)}  →  ${where}`));
+  console.log(green(`\nProxy on ${bold(`${host}:${handle.port}`)} (SOCKS5 and HTTP)  →  ${where}`));
   console.log(dim(`upstream ${server.hostname}:${server.port}`));
-  console.log(dim(`e.g.  export ALL_PROXY=socks5://${host}:${handle.port}\n`));
+  console.log(dim(`e.g.  export ALL_PROXY=socks5://${host}:${handle.port}`));
+  console.log(dim(`  or  export HTTPS_PROXY=http://${host}:${handle.port} HTTP_PROXY=http://${host}:${handle.port}\n`));
   // Warm the pass so auth errors surface immediately, not on first request.
   try {
     await conn.currentPass();
@@ -359,11 +361,15 @@ ${bold("Commands:")}
   status | doctor      Check Firefox login, server list, entitlement, data
   login                Open Firefox to sign in to your Firefox Account
   proxy [--country XX] [--port N] [--host H]
-                       Run a local SOCKS5 proxy through the VPN
+                       Run a local SOCKS5 + HTTP proxy through the VPN
   global [--country XX] [--force]
                        Route ALL system traffic through the VPN (needs sudo)
   -v, --version        Show the version and whether an update is available
   help                 Show this help
+
+${bold("Options:")}
+  --verbose            Also show per-connection errors (e.g. ports the VPN
+                       refuses) and tun2socks logs
 
 ${dim("global: run as  sudo -E foxhole global  · Ctrl+C restores networking.")}
 ${dim("Stop any other active VPN first (or pass --force).")}
@@ -380,7 +386,7 @@ async function notice() {
 
 async function main() {
   checkUpdate(); // fire while the command runs; shown afterwards
-  const cmd = process.argv[2] ?? "tui";
+  const cmd = process.argv.slice(2).find((a) => a !== "--verbose") ?? "tui"; // --verbose can go anywhere
   if (cmd === "-v" || cmd === "--version" || cmd === "version") {
     await checkUpdate();
     console.log(versionLines().join("\n"));

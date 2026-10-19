@@ -98,7 +98,55 @@ async function scenario(name, dropFirst, expectedAttempts) {
   console.log(`ok - ${name}`);
 }
 
+// HTTP proxy on the same port: CONNECT (https:// sites) and a plain http:// GET.
+async function httpScenarios() {
+  const { server } = makeUpstream(0);
+  const upstreamPort = await listen(server);
+  const conn = {
+    server: { hostname: "127.0.0.1", port: upstreamPort },
+    async currentPass() {
+      return { token: "faketoken", notBefore: 0, expires: 2 ** 31 };
+    },
+  };
+  const handle = await startProxy(conn, "127.0.0.1", 0);
+
+  // CONNECT: 200 Connection Established, then raw bytes round-trip.
+  const c = net.connect(handle.port, "127.0.0.1");
+  c.on("error", () => {});
+  await write(c, `CONNECT 127.0.0.1:${targetPort} HTTP/1.1\r\nHost: 127.0.0.1:${targetPort}\r\n\r\n`);
+  const est = (await read(c)).toString();
+  assert.match(est, /^HTTP\/1\.1 200 /, "CONNECT answered 200");
+  await write(c, "ping over http CONNECT");
+  assert.equal((await read(c)).toString(), "ping over http CONNECT", "CONNECT tunnel round-trips");
+  c.destroy();
+
+  // Plain GET in absolute form: forwarded as origin-form, proxy headers dropped.
+  // The echo target sends back exactly what reached it.
+  const g = net.connect(handle.port, "127.0.0.1");
+  g.on("error", () => {});
+  await write(g, `GET http://127.0.0.1:${targetPort}/path?x=1 HTTP/1.1\r\nHost: 127.0.0.1\r\n` +
+    `Proxy-Authorization: Basic secret\r\nProxy-Connection: keep-alive\r\n\r\n`);
+  const got = (await read(g)).toString();
+  assert.match(got, /^GET \/path\?x=1 HTTP\/1\.1\r\n/, "origin-form request line");
+  assert.match(got, /\r\nHost: 127\.0\.0\.1\r\n/, "other headers kept");
+  assert.match(got, /\r\nConnection: close\r\n/, "one request per connection");
+  assert.doesNotMatch(got, /Proxy-/i, "proxy headers not forwarded");
+  g.destroy();
+
+  // Garbage that is neither SOCKS5 nor a valid HTTP proxy request: 400.
+  const b = net.connect(handle.port, "127.0.0.1");
+  b.on("error", () => {});
+  await write(b, "GET /relative HTTP/1.1\r\n\r\n");
+  assert.match((await read(b)).toString(), /^HTTP\/1\.1 400 /, "non-proxy request refused");
+  b.destroy();
+
+  await handle.close();
+  server.close();
+  console.log("ok - HTTP proxy (CONNECT and plain GET) works on the same port");
+}
+
 await scenario("SOCKS5 bridge tunnels TCP through an authenticated upstream CONNECT", 0, 1);
+await httpScenarios();
 await scenario("a dropped upstream connection is retried automatically", 1, 2);
 target.close();
 process.exit(0);

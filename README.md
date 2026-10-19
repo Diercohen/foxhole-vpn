@@ -15,7 +15,7 @@ foxhole-vpn:
 
 1. reads your Firefox Account login from your local Firefox profile,
 2. exchanges it for a short-lived **proxy pass** from Mozilla's Guardian API,
-3. runs a local **SOCKS5 proxy** that tunnels through the Fastly server, and
+3. runs a local **SOCKS5 + HTTP proxy** (one port) that tunnels through the Fastly server, and
 4. (optionally) routes the whole system through that proxy.
 
 ## Status
@@ -24,7 +24,7 @@ foxhole-vpn:
 |---|---|
 | Country list (free vs paid) | ✅ working |
 | Remaining-data / usage | ✅ working (needs token) |
-| Local SOCKS5 proxy | ✅ working + tested |
+| Local SOCKS5 + HTTP proxy | ✅ working + tested |
 | Firefox login detection / open | ✅ working |
 | Interactive TUI | ✅ working |
 | Whole-system (TUN) routing | ✅ built + unit-tested (needs sudo; untested live) |
@@ -44,8 +44,9 @@ foxhole countries           # list countries (no login needed)
 foxhole login               # open Firefox to sign in
 foxhole usage               # remaining data this month
 foxhole doctor              # check login, server list, entitlement
-foxhole proxy --country US  # local SOCKS5 proxy through the US
+foxhole proxy --country US  # local SOCKS5 + HTTP proxy through the US
 sudo -E foxhole global --country US   # route the whole system
+foxhole --verbose                  # also show per-connection errors and tun2socks logs
 ```
 
 `foxhole-vpn` works too, as an alias. From a checkout: `npm install && npm run build`,
@@ -56,11 +57,17 @@ through it — foxhole-vpn asks for your sudo password in-app (no need to launch
 the whole app with `sudo`), and `g` again turns it back off. Only the networking
 is elevated; the proxy and your Firefox login stay unprivileged.
 
-Point a single app at the proxy:
+Point a single app at the proxy. The same port speaks **SOCKS5 and HTTP**
+(foxhole-vpn tells them apart by the first byte), so use whichever the app
+supports:
 
 ```sh
-export ALL_PROXY=socks5://127.0.0.1:1080
+export ALL_PROXY=socks5://127.0.0.1:1080                 # SOCKS5
+export HTTPS_PROXY=http://127.0.0.1:1080 HTTP_PROXY=http://127.0.0.1:1080   # HTTP
 ```
+
+The HTTP proxy carries `https://` sites through `CONNECT`, so they stay
+end-to-end encrypted. You don't need an `https://` proxy address.
 
 `global` mode sends everything through the VPN: it runs a local proxy, obtains
 `tun2socks` (see below), creates a `foxhole0` TUN device, routes the default

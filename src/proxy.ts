@@ -1,18 +1,25 @@
 import net from "node:net";
 import tls from "node:tls";
 import type { Connection } from "./connection.js";
-import { red } from "./ui.js";
+import { red, verbose } from "./ui.js";
 
 // Throttled stderr: a browser opens many connections, so don't repeat the same
 // failure more than once every few seconds.
 let lastWarn = "";
 let lastWarnAt = 0;
+let sink = (msg: string) => console.error(red(`proxy: ${msg}`));
+
+/** Sends proxy warnings elsewhere; the TUI shows them in its status row, since writing to the terminal would scroll its screen. */
+export function onProxyWarning(fn: (msg: string) => void): void {
+  sink = fn;
+}
 function warn(msg: string): void {
+  if (!verbose) return; // e.g. "Destination IP Prohibited" for a blocked port: noise in normal use
   const now = Date.now();
   if (msg === lastWarn && now - lastWarnAt < 5000) return;
   lastWarn = msg;
   lastWarnAt = now;
-  console.error(red(`proxy: ${msg}`));
+  sink(msg);
 }
 
 const UPSTREAM_ATTEMPTS = 3;
@@ -38,9 +45,10 @@ function describe(err: unknown): string {
   return e?.message || e?.code || String(err);
 }
 
-// Local SOCKS5 proxy (TCP CONNECT only — the upstream is HTTP CONNECT, which is
-// TCP-only). Each client connection is tunnelled to the chosen Fastly server
-// over TLS using the current proxy pass. No external dependencies.
+// Local proxy on one port that speaks both SOCKS5 and HTTP, told apart by the
+// first byte (SOCKS5 always opens with 0x05; HTTP opens with a method name).
+// TCP only — the upstream is HTTP CONNECT. Each client connection is tunnelled
+// to the chosen Fastly server over TLS using the current proxy pass.
 
 const SOCKS_VERSION = 0x05;
 const CMD_CONNECT = 0x01;
@@ -53,14 +61,10 @@ interface Target {
   port: number;
 }
 
-function readHandshake(socket: net.Socket): Promise<void> {
+/** The next chunk a client sends. */
+function nextChunk(socket: net.Socket): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    socket.once("data", (buf) => {
-      if (buf[0] !== SOCKS_VERSION) return reject(new Error("Not SOCKS5"));
-      // Reply: version 5, no authentication required.
-      socket.write(Buffer.from([SOCKS_VERSION, 0x00]));
-      resolve();
-    });
+    socket.once("data", resolve);
     socket.once("error", reject);
   });
 }
@@ -191,44 +195,112 @@ async function openUpstreamWithRetry(
   throw lastErr;
 }
 
-async function handleClient(socket: net.Socket, conn: Connection): Promise<void> {
-  socket.on("error", () => socket.destroy());
-  await readHandshake(socket);
-  const target = await readRequest(socket);
+/** Opens the VPN tunnel to `target`, or null (with a warning) if it can't. */
+async function dial(conn: Connection, target: Target): Promise<tls.TLSSocket | null> {
   const server = conn.server;
-  if (!server) {
-    replyFailure(socket);
-    socket.destroy();
-    return;
-  }
+  if (!server) return null;
   let pass;
   try {
     pass = await conn.currentPass();
   } catch (err) {
     warn(`cannot get a VPN pass: ${(err as Error).message}`);
-    replyFailure(socket);
-    socket.destroy();
-    return;
+    return null;
   }
-  let up: tls.TLSSocket;
   try {
-    up = await openUpstreamWithRetry(server, pass.token, target);
+    return await openUpstreamWithRetry(server, pass.token, target);
   } catch (err) {
     warn(`upstream connect failed for ${target.host}:${target.port}: ${describe(err)}`);
+    return null;
+  }
+}
+
+/** Pipes two sockets into each other until either side closes. */
+function splice(a: net.Socket, b: net.Socket): void {
+  a.pipe(b);
+  b.pipe(a);
+  const close = () => {
+    a.destroy();
+    b.destroy();
+  };
+  a.once("close", close);
+  b.once("close", close);
+  b.once("error", close);
+}
+
+async function handleClient(socket: net.Socket, conn: Connection): Promise<void> {
+  socket.on("error", () => socket.destroy());
+  const first = await nextChunk(socket);
+  return first[0] === SOCKS_VERSION ? handleSocks(socket, conn) : handleHttp(socket, conn, first);
+}
+
+async function handleSocks(socket: net.Socket, conn: Connection): Promise<void> {
+  socket.write(Buffer.from([SOCKS_VERSION, 0x00])); // no authentication required
+  const target = await readRequest(socket);
+  const up = await dial(conn, target);
+  if (!up) {
     replyFailure(socket);
     socket.destroy();
     return;
   }
   replySuccess(socket);
-  socket.pipe(up);
-  up.pipe(socket);
-  const close = () => {
-    socket.destroy();
-    up.destroy();
-  };
-  socket.once("close", close);
-  up.once("close", close);
-  up.once("error", close);
+  splice(socket, up);
+}
+
+const HTTP_MAX_HEAD = 64 * 1024;
+
+/** Ends an HTTP client connection with a status line. */
+function httpError(socket: net.Socket, status: string): void {
+  socket.end(`HTTP/1.1 ${status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+}
+
+/**
+ * HTTP proxy: CONNECT host:port (https:// sites — end-to-end TLS, we only see
+ * the host) and plain http:// requests in absolute form, which are sent on as
+ * origin-form with the proxy headers removed. One request per connection:
+ * "Connection: close" keeps a reused client socket from reaching the wrong host.
+ */
+async function handleHttp(socket: net.Socket, conn: Connection, first: Buffer): Promise<void> {
+  let head = first;
+  while (head.indexOf("\r\n\r\n") < 0) {
+    if (head.length > HTTP_MAX_HEAD) return httpError(socket, "431 Request Header Fields Too Large");
+    head = Buffer.concat([head, await nextChunk(socket)]);
+  }
+  socket.pause(); // hold any body bytes until the tunnel is up (pipe resumes)
+  const end = head.indexOf("\r\n\r\n");
+  const lines = head.toString("latin1", 0, end).split("\r\n");
+  const [method, url, version = "HTTP/1.1"] = lines[0].split(" ");
+  const rest = head.subarray(end + 4);
+
+  let target: Target;
+  let request: Buffer | null = null; // what to send upstream; null = tunnel (CONNECT)
+  if (method === "CONNECT") {
+    const m = url?.match(/^(?:\[([^\]]+)\]|([^:]+)):(\d+)$/);
+    if (!m) return httpError(socket, "400 Bad Request");
+    target = { host: m[1] ?? m[2], port: Number(m[3]) };
+  } else {
+    let u: URL;
+    try {
+      u = new URL(url ?? "");
+    } catch {
+      return httpError(socket, "400 Bad Request");
+    }
+    if (u.protocol !== "http:") return httpError(socket, "400 Bad Request");
+    target = { host: u.hostname.replace(/^\[|\]$/g, ""), port: Number(u.port || 80) };
+    const headers = lines.slice(1).filter((l) => !/^(proxy-[^:]*|connection|keep-alive):/i.test(l));
+    request = Buffer.concat([
+      Buffer.from(`${method} ${u.pathname}${u.search} ${version}\r\n${[...headers, "Connection: close"].join("\r\n")}\r\n\r\n`, "latin1"),
+      rest,
+    ]);
+  }
+
+  const up = await dial(conn, target);
+  if (!up) return httpError(socket, "502 Bad Gateway");
+  if (request) up.write(request);
+  else {
+    socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    if (rest.length) up.write(rest);
+  }
+  splice(socket, up);
 }
 
 export interface ProxyHandle {
@@ -236,7 +308,7 @@ export interface ProxyHandle {
   close(): Promise<void>;
 }
 
-/** Starts the local SOCKS5 proxy. Resolves once it is listening. */
+/** Starts the local SOCKS5 + HTTP proxy. Resolves once it is listening. */
 export function startProxy(conn: Connection, host = "127.0.0.1", port = 1080): Promise<ProxyHandle> {
   const server = net.createServer((socket) => {
     handleClient(socket, conn).catch(() => socket.destroy());

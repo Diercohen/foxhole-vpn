@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import type { Connection } from "./connection.js";
 import { startProxy } from "./proxy.js";
 import { startDnsForwarder, type DnsForwarder } from "./dns.js";
-import { dim, green, red, yellow, bold } from "./ui.js";
+import { dim, green, red, yellow, bold, verbose } from "./ui.js";
 import { DarwinRouting } from "./global-darwin.js";
 
 const exec = promisify(execFile);
@@ -209,7 +209,7 @@ export interface Priv {
 export function directPriv(): Priv {
   return {
     run,
-    spawn: (argv) => spawn(argv[0], argv.slice(1), { stdio: ["ignore", "ignore", "inherit"] }),
+    spawn: (argv) => spawn(argv[0], argv.slice(1), { stdio: ["ignore", "ignore", verbose ? "inherit" : "ignore"] }),
   };
 }
 
@@ -465,7 +465,7 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
       console.log(
         ip
           ? green(`  exit IP is now ${bold(ip)}`)
-          : yellow("  couldn't reach the internet through the tunnel — check the tun2socks output above."),
+          : yellow(`  couldn't reach the internet through the tunnel — ${verbose ? "check the tun2socks output above" : "run with --verbose for details"}.`),
       );
     }
     console.log(dim(`  DNS ${dns} · IPv6 blackholed · Ctrl+C restores.\n`));

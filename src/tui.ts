@@ -1,17 +1,27 @@
 import readline from "node:readline";
+import { PassThrough } from "node:stream";
 import { fetchServerList, type Country } from "./serverlist.js";
 import { Connection } from "./connection.js";
 import { NotImplementedError } from "./auth.js";
 import { GuardianError } from "./guardian.js";
 import { forgetToken } from "./tokenserver.js";
-import { startProxy, type ProxyHandle } from "./proxy.js";
+import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { GlobalSession, sudoPriv, validateSudo, ensureTun2socks } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, versionLines } from "./update.js";
-import { bold, dim, under, strike, green, red, yellow, cyan, flag, countryName, gb, shortDate, vw, box, grid, centerIn, draw } from "./ui.js";
+import { bold, dim, under, strike, green, red, yellow, cyan, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, repoLink, REPO_URL, linkAt, openUrl } from "./ui.js";
 
 const ESC = "\x1b[";
-const ALT_ON = `${ESC}?1049h${ESC}?25l`;
-const ALT_OFF = `${ESC}?25h${ESC}?1049l`;
+// alternate screen + hidden cursor + mouse reports (SGR), so the repo link can be clicked
+const ALT_ON = `${ESC}?1049h${ESC}?25l${ESC}?1000h${ESC}?1006h`;
+const ALT_OFF = `${ESC}?1000l${ESC}?1006l${ESC}?25h${ESC}?1049l`;
+let screenOn = false;
+/** Back to the normal screen with mouse reports off; also runs on exit, so a crash doesn't leave them on. */
+function leaveScreen(): void {
+  if (!screenOn) return;
+  screenOn = false;
+  process.stdout.write(ALT_OFF);
+}
+process.on("exit", leaveScreen);
 const HOME_CLEAR = `${ESC}H${ESC}2J`;
 
 /** Sort order: free & usable first, then paid, each alphabetical. */
@@ -45,6 +55,11 @@ export class Tui {
   }
 
   async run(): Promise<void> {
+    onProxyWarning((msg) => {
+      this.#message = red(`proxy: ${msg}`);
+      this.#render();
+    });
+    screenOn = true;
     process.stdout.write(ALT_ON);
     this.#message = dim("loading…");
     this.#render();
@@ -76,14 +91,27 @@ export class Tui {
 
   #loop(): Promise<void> {
     return new Promise((resolve) => {
-      readline.emitKeypressEvents(process.stdin);
+      // stdin minus mouse reports: readline would split those into stray keypresses ("0", ";", "M"…).
+      // SGR mouse report: ESC [ < button ; col ; row (M = press, m = release)
+      // ponytail: assumes a report never straddles two reads, true for terminals in practice
+      const input = new PassThrough();
+      readline.emitKeypressEvents(input);
+      const onData = (buf: Buffer) => {
+        const rest = buf.toString().replace(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/g, (_, b: string, x: string, y: string, kind: string) => {
+          if (kind === "M" && b === "0" && linkAt(Number(x) - 1, Number(y) - 1)) openUrl(REPO_URL);
+          return "";
+        });
+        if (rest) input.write(rest);
+      };
+      process.stdin.on("data", onData);
       if (process.stdin.isTTY) process.stdin.setRawMode(true);
       process.stdin.resume();
       const onResize = () => this.#render();
       process.stdout.on("resize", onResize);
 
       const quit = async (action?: "update") => {
-        process.stdin.removeListener("keypress", onKey);
+        input.removeListener("keypress", onKey);
+        process.stdin.removeListener("data", onData);
         process.stdout.removeListener("resize", onResize);
         if (process.stdin.isTTY) process.stdin.setRawMode(false);
         process.stdin.pause();
@@ -92,7 +120,7 @@ export class Tui {
           await this.#global.stop().catch(() => {});
         }
         await this.#proxy?.close();
-        process.stdout.write(ALT_OFF);
+        leaveScreen();
         if (action === "update") {
           runUpdate(); // runs npm in this terminal (asks for sudo if needed)
           console.log(green("\nUpdated. Start foxhole-vpn again to use the new version."));
@@ -134,7 +162,7 @@ export class Tui {
         }
         this.#render();
       };
-      process.stdin.on("keypress", onKey);
+      input.on("keypress", onKey);
     });
   }
 
@@ -149,7 +177,7 @@ export class Tui {
       if (!this.#proxy) this.#proxy = await startProxy(this.#conn, this.#host, this.#port);
       await this.#conn.currentPass(); // warm the pass; surfaces auth/quota errors now
       this.#active = country;
-      this.#message = green(`connected · ${this.#proxyAddr()}`);
+      this.#message = green("connected");
     } catch (err) {
       if (err instanceof NotImplementedError) {
         this.#message = yellow("can't connect: token step not implemented (see AUTH.md)");
@@ -284,8 +312,9 @@ export class Tui {
     }
   }
 
+  /** The proxy address; one port serves both SOCKS5 and HTTP. */
   #proxyAddr(): string {
-    return `socks5://${this.#host}:${this.#proxy?.port ?? this.#port}`;
+    return `${this.#host}:${this.#proxy?.port ?? this.#port}`;
   }
 
   #render(): void {
@@ -304,16 +333,18 @@ export class Tui {
     const route = this.#global
       ? green("all system traffic → VPN")
       : this.#active
-        ? cyan(this.#proxyAddr())
+        ? `${cyan(this.#proxyAddr())}  ${dim("SOCKS5 or HTTP")}`
         : dim("—");
     // The sudo prompt takes the status row, so nothing else on screen moves.
     const status = this.#pwMode
       ? `${yellow("sudo password:")} ${"•".repeat(this.#pw.length)}${cyan("▏")}  ${dim("enter submit · esc cancel")}`
       : this.#message;
-    const headLines = [`${dim("data  ")}  ${data}`, `${dim("route ")}  ${route}`, `${dim("status")}  ${status}`];
+    // A long status (e.g. a --verbose proxy error) would widen the box past the terminal and wrap.
+    const room4status = (process.stdout.columns || 80) - 14;
+    const headLines = [`${dim("data  ")}  ${data}`, `${dim("route ")}  ${route}`, `${dim("status")}  ${fit(status, room4status)}`];
 
     const version = versionLines(true);
-    const room = Math.max(3, (process.stdout.rows || 24) - 14 - version.length);
+    const room = Math.max(3, (process.stdout.rows || 24) - 15 - version.length);
     const { start, slice } = window(this.#sel, this.#countries.length, room);
     const label = (c: Country) => `${flag(c.code)} ${countryName(c.code, c.name)}`;
     const body = slice.map((i) => {
@@ -349,6 +380,7 @@ export class Tui {
       centerIn(buttons, width),
       "",
       ...version.map((l) => centerIn(l, width)),
+      centerIn(dim(repoLink), width),
     ]);
   }
 }
