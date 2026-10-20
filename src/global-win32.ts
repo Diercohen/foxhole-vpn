@@ -9,7 +9,8 @@ import { execFile, type spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { lookup } from "node:dns/promises";
 import { startDnsForwarder, type DnsForwarder } from "./dns.js";
-import { PRIVATE_CIDRS, DOH_HOST, stopProcess, type GlobalSessionOptions, type Priv } from "./global.js";
+import { PRIVATE_CIDRS, DOH_HOST, stopProcess, type GlobalSessionOptions, type Priv, type Rerouter } from "./global.js";
+import { GUARDIAN_HOST, pinGuardian } from "./guardian.js";
 
 const exec = promisify(execFile);
 
@@ -68,6 +69,34 @@ export function parseWinUplink(json: string): WinRoute | null {
   }
 }
 
+/**
+ * For the network-change check, in one PowerShell run: the uplink past our own adapter
+ * (its 0/1 routes would win Find-NetRoute), and the adapter the VPN server routes via.
+ */
+export const watchPs = (serverIp: string): string =>
+  [
+    "$i = { param($n) Get-NetIPInterface -InterfaceIndex $n -AddressFamily IPv4 -ErrorAction SilentlyContinue }",
+    `$r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -ne '${TUN}' -and (& $i $_.ifIndex).ConnectionState -eq 'Connected' } | Sort-Object { $_.RouteMetric + (& $i $_.ifIndex).InterfaceMetric } | Select-Object -First 1`,
+    `$v = (Find-NetRoute -RemoteIPAddress '${serverIp}' -ErrorAction SilentlyContinue | Where-Object { $_.NextHop } | Select-Object -First 1).InterfaceAlias`,
+    "if ($r) { [pscustomobject]@{ ifIndex = $r.ifIndex; alias = $r.InterfaceAlias; gw = $r.NextHop; via = [string]$v } | ConvertTo-Json -Compress }",
+  ].join("; ");
+
+export interface WinWatch {
+  up: WinRoute;
+  via: string; // the adapter the VPN server routes through now
+}
+
+/** Parses watchPs's JSON; null when offline. Pure. */
+export function parseWinWatch(json: string): WinWatch | null {
+  const up = parseWinUplink(json);
+  return up ? { up, via: (JSON.parse(json) as { via?: string }).via ?? "" } : null;
+}
+
+/** True when the pins no longer lead out through the uplink: it moved, or the server routes into our adapter. Pure. */
+export function winNeedsRepin(pinnedTo: WinRoute, now: WinWatch): boolean {
+  return now.up.ifIndex !== pinnedTo.ifIndex || now.up.gw !== pinnedTo.gw || now.via === TUN;
+}
+
 /** Adapter name/description of a VPN (we must not treat it as the real uplink). Pure. */
 export function isWinVpnAdapter(alias: string, desc: string): boolean {
   return /wintun|wireguard|tap-windows|openvpn|tunnel|vpn|nordlynx|proton|fortinet|cisco anyconnect|globalprotect|pangp|juniper|zerotier|tailscale/i
@@ -114,9 +143,13 @@ export async function restoreWindows(priv: Priv): Promise<void> {
   await priv.run(["taskkill", "/F", "/IM", "tun2socks.exe"], true);
 }
 
-export class WindowsRouting {
+export class WindowsRouting implements Rerouter<WinWatch> {
   readonly #o: GlobalSessionOptions;
   #undo: string[][] = []; // privileged commands reversing what start() did
+  #pinUndo: string[][] = []; // the same for the routes tied to the uplink, redone on a network change
+  #directDns = false; // DNS not tunnelled: the resolvers are pinned too
+  #orig: WinRoute | null = null;
+  #pinnedIps: string[] = []; // VPN server + Guardian, kept across re-pins
   #t2s: ReturnType<typeof spawn> | null = null;
   #dns: DnsForwarder | null = null;
 
@@ -135,17 +168,17 @@ export class WindowsRouting {
 
     const serverIp = (await lookup(server.hostname, { family: 4 })).address;
     server.ip = serverIp;
+    // Guardian too, while DNS still works: renewing the pass must not need the tunnel.
+    const guardianIp = (await lookup(GUARDIAN_HOST, { family: 4 })).address;
+    pinGuardian(guardianIp);
+    this.#pinnedIps = [...new Set([serverIp, guardianIp])];
+    this.#orig = up;
 
     const step = async (add: string[], del: string[]) => {
       await priv.run(add);
       this.#undo.push(del);
     };
-    await step(pinRoute("add", serverIp, up), pinRoute("delete", serverIp, up));
-    for (const cidr of PRIVATE_CIDRS) {
-      await step(pinRoute("add", cidr, up), pinRoute("delete", cidr, up)).catch(() => {
-        /* route already present */
-      });
-    }
+    await this.#pin(up);
 
     this.#t2s = priv.spawn([this.#o.tun2socksPath, "--device", TUN, "--proxy", `socks5://${proxyHost}:${proxyPort}`]);
     this.#t2s.on("exit", onExit);
@@ -159,11 +192,8 @@ export class WindowsRouting {
       dns = `tunnelled (DoH via ${DOH_HOST})`;
     } catch (err) {
       // Fall back to pinning the current resolvers to the real uplink (a DNS leak).
-      const out = await psOut(
-        "Get-DnsClientServerAddress -AddressFamily IPv4 | ForEach-Object { $_.ServerAddresses } | Sort-Object -Unique",
-      ).catch(() => "");
-      const ips = out.split(/\s+/).filter((ip) => /^\d{1,3}(\.\d{1,3}){3}$/.test(ip) && !ip.startsWith("127."));
-      for (const ip of ips) await step(pinRoute("add", ip, up), pinRoute("delete", ip, up)).catch(() => {});
+      this.#directDns = true;
+      const ips = await this.#pinResolvers(up);
       dns = `direct: ${ips.join(", ") || "system"} (${(err as Error).message} — DNS may be visible locally)`;
     }
 
@@ -190,6 +220,56 @@ export class WindowsRouting {
     return { serverIp, dns };
   }
 
+  /** Routes `prefix` out the uplink, recording how to undo it in #pinUndo. */
+  async #pinRoute(prefix: string, up: WinRoute): Promise<void> {
+    await this.#o.priv.run(pinRoute("add", prefix, up));
+    this.#pinUndo.push(pinRoute("delete", prefix, up));
+  }
+
+  /** Pins the VPN server, Guardian and the private ranges to the uplink. */
+  async #pin(up: WinRoute): Promise<void> {
+    for (const ip of this.#pinnedIps) await this.#pinRoute(ip, up);
+    for (const cidr of PRIVATE_CIDRS) {
+      await this.#pinRoute(cidr, up).catch(() => {
+        /* route already present */
+      });
+    }
+  }
+
+  /** Pins the resolvers the system uses now (direct DNS); returns them. */
+  async #pinResolvers(up: WinRoute): Promise<string[]> {
+    const out = await psOut(
+      "Get-DnsClientServerAddress -AddressFamily IPv4 | ForEach-Object { $_.ServerAddresses } | Sort-Object -Unique",
+    ).catch(() => "");
+    const ips = out.split(/\s+/).filter((ip) => /^\d{1,3}(\.\d{1,3}){3}$/.test(ip) && !ip.startsWith("127."));
+    for (const ip of ips) await this.#pinRoute(ip, up).catch(() => {});
+    return ips;
+  }
+
+  async uplink(): Promise<WinWatch | null> {
+    return parseWinWatch(await psOut(watchPs(this.#pinnedIps[0])).catch(() => ""));
+  }
+
+  async broken(now: WinWatch): Promise<boolean> {
+    return winNeedsRepin(this.#orig!, now);
+  }
+
+  // DNS needs nothing here: the NRPT rule and the firewall rules aren't tied to an adapter.
+  async repin({ up }: WinWatch): Promise<void> {
+    const { priv } = this.#o;
+    // Stale pins may survive (same adapter, old gateway); clear them so the adds below can't collide.
+    for (const argv of this.#pinUndo.reverse()) await priv.run(argv, true);
+    this.#pinUndo = [];
+    await this.#pin(up);
+    if (this.#directDns) await this.#pinResolvers(up);
+    this.#orig = up;
+    await priv.run(ps("Clear-DnsClientCache"), true); // drop failures cached while offline
+  }
+
+  label({ up }: WinWatch): string {
+    return `${up.alias}${up.gw ? ` (${up.gw})` : ""}`;
+  }
+
   /** Runs the DoH forwarder on 127.0.0.1:53 and sends every lookup there with an NRPT rule. */
   async #tunnelDns(): Promise<void> {
     const { priv, proxyHost, proxyPort } = this.#o;
@@ -213,8 +293,9 @@ export class WindowsRouting {
   /** Restores DNS, firewall and routing, stops tun2socks. Best-effort. */
   async stop(): Promise<void> {
     const { priv } = this.#o;
-    for (const argv of this.#undo.reverse()) await priv.run(argv, true);
+    for (const argv of [...this.#undo.reverse(), ...this.#pinUndo.reverse()]) await priv.run(argv, true);
     this.#undo = [];
+    this.#pinUndo = [];
     await this.#dns?.close();
     this.#dns = null;
     // Stopping tun2socks removes the adapter (and any route still on it).

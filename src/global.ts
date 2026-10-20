@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import type { Connection } from "./connection.js";
 import { startProxy } from "./proxy.js";
 import { startDnsForwarder, type DnsForwarder } from "./dns.js";
+import { GUARDIAN_HOST, pinGuardian } from "./guardian.js";
 import { dim, green, red, yellow, bold, verbose } from "./ui.js";
 import { DarwinRouting } from "./global-darwin.js";
 import { WindowsRouting, isWindowsAdmin } from "./global-win32.js";
@@ -32,19 +33,39 @@ export const PRIVATE_CIDRS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "
 // forwarder listens here; systemd-resolved is pointed at it.
 export const DOH_HOST = "cloudflare-dns.com";
 const DOH_PORT = 5353;
+const WATCH_MS = 3000; // how often global mode checks for a network change (Wi-Fi switch)
 
 export interface DefaultRoute {
   gw: string | null;
   dev: string;
 }
 
-/** Parses `ip route` output for the IPv4 default route. Pure. */
-export function parseDefaultRoute(ipRoute: string): DefaultRoute | null {
+/** Parses `ip route` output for the IPv4 default route, ignoring any on `skipDev`. Pure. */
+export function parseDefaultRoute(ipRoute: string, skipDev?: string): DefaultRoute | null {
   for (const line of ipRoute.split("\n")) {
     const m = line.match(/^default(?:\s+via\s+(\S+))?\s+dev\s+(\S+)/);
-    if (m) return { gw: m[1] ?? null, dev: m[2] };
+    if (m && m[2] !== skipDev) return { gw: m[1] ?? null, dev: m[2] };
   }
   return null;
+}
+
+/** `ip route add` argv sending `dest` out the real uplink, around the tun. Pure. */
+export function pinCmd(dest: string, orig: DefaultRoute): string[] {
+  return orig.gw
+    ? ["ip", "route", "add", dest, "via", orig.gw, "dev", orig.dev]
+    : ["ip", "route", "add", dest, "dev", orig.dev];
+}
+
+/**
+ * True when a network change (Wi-Fi switch, reconnect) broke global mode's pins: the
+ * uplink moved, the VPN server now routes into the tun (`serverRoute`: `ip route get`),
+ * or the network manager reset the link's DNS (`linkDns`: `resolvectl dns <dev>`, null
+ * when DNS isn't tunnelled). Pure.
+ */
+export function needsRepin(pinnedTo: DefaultRoute, uplink: DefaultRoute, serverRoute: string, linkDns: string | null): boolean {
+  if (uplink.dev !== pinnedTo.dev || uplink.gw !== pinnedTo.gw) return true;
+  if (new RegExp(`\\bdev ${TUN}\\b`).test(serverRoute)) return true;
+  return linkDns !== null && !linkDns.includes(`127.0.0.1:${DOH_PORT}`);
 }
 
 /** True for virtual/VPN interfaces we must not treat as the real uplink. Pure. */
@@ -54,19 +75,15 @@ export function isVpnDev(dev: string): boolean {
 
 /**
  * Builds the `ip` command sequence to route everything through the tun. Pure.
- * `bypassIps` (the VPN server and the DNS resolvers) are pinned to the real
+ * `bypassIps` (the VPN server, Guardian and the DNS resolvers) are pinned to the real
  * uplink so they don't loop through — or get refused by — the tunnel.
  */
 export function planSetup(bypassIps: string[], orig: DefaultRoute): string[][] {
-  const pin = (ip: string) =>
-    orig.gw
-      ? ["ip", "route", "add", ip, "via", orig.gw, "dev", orig.dev]
-      : ["ip", "route", "add", ip, "dev", orig.dev];
   return [
     ["ip", "tuntap", "add", "mode", "tun", "dev", TUN],
     ["ip", "addr", "add", `${TUN_ADDR}/15`, "dev", TUN],
     ["ip", "link", "set", "dev", TUN, "up"],
-    ...bypassIps.map(pin),
+    ...bypassIps.map((ip) => pinCmd(ip, orig)),
     ["ip", "route", "add", "default", "dev", TUN, "metric", "1"],
     // The upstream is IPv4-only; blackhole IPv6 so apps can't leak around it
     // over native IPv6 (they fall back to IPv4, which goes through the tun).
@@ -311,6 +328,18 @@ export function sudoPriv(password: string): Priv {
 // ── Shared global session: the privileged half, usable by the CLI and the TUI.
 // The caller runs the SOCKS proxy (as the user) and selects conn.server first.
 
+/** How a platform follows the real uplink across network changes (Wi-Fi switch, reconnect). */
+export interface Rerouter<U> {
+  /** The real uplink (not our tunnel), or null while offline. */
+  uplink(): Promise<U | null>;
+  /** True when the bypass routes (or DNS) no longer lead out through `uplink`. */
+  broken(uplink: U): Promise<boolean>;
+  /** Moves the bypass routes (and DNS where it's per-network) to `uplink`. The tunnel stays up, so nothing leaks. */
+  repin(uplink: U): Promise<void>;
+  /** "en0 (192.168.1.1)", for messages. */
+  label(uplink: U): string;
+}
+
 export interface GlobalSessionOptions {
   priv: Priv;
   server: { hostname: string; ip?: string };
@@ -329,7 +358,12 @@ export class GlobalSession {
   #dnsDev: string | null = null;
   #t2s: ReturnType<typeof spawn> | null = null;
   #exitCb: ((code: number | null) => void) | null = null;
+  #netCb: ((event: "lost" | "restored", detail: string) => void) | null = null;
   #stopped = false;
+  #orig: DefaultRoute | null = null; // the uplink the pins currently go through
+  #pinnedIps: string[] = []; // VPN server + Guardian, kept across re-pins
+  #watchTimer: NodeJS.Timeout | null = null;
+  #tick: Promise<void> | null = null;
   readonly #mac: DarwinRouting | WindowsRouting | null;
 
   constructor(o: GlobalSessionOptions) {
@@ -342,9 +376,18 @@ export class GlobalSession {
     this.#exitCb = cb;
   }
 
+  /** Called when a network change breaks the routing ("lost", repeated if the reason changes) and once it's fixed ("restored"). */
+  onNetworkChange(cb: (event: "lost" | "restored", detail: string) => void): void {
+    this.#netCb = cb;
+  }
+
   /** Sets up routing + tun2socks. Returns the pinned server IP and DNS mode. */
   async start(): Promise<{ serverIp: string; dns: string }> {
-    if (this.#mac) return this.#mac.start((code) => this.#exitCb?.(code));
+    if (this.#mac) {
+      const res = await this.#mac.start((code) => this.#exitCb?.(code));
+      this.#arm(this.#mac as Rerouter<unknown>);
+      return res;
+    }
     if (process.platform !== "linux") throw new Error("global mode needs Linux, macOS or Windows; use `proxy` instead");
     const { priv, server, force } = this.#o;
     const { stdout: routeOut } = await exec("ip", ["route"]); // reading needs no root
@@ -359,6 +402,12 @@ export class GlobalSession {
     // through the tun (Fastly is anycast; a second lookup could pick another IP).
     const serverIp = (await lookup(server.hostname, { family: 4 })).address;
     server.ip = serverIp;
+    // Guardian too, while DNS still works: renewing the pass must not need the tunnel.
+    const guardianIp = (await lookup(GUARDIAN_HOST, { family: 4 })).address;
+    pinGuardian(guardianIp);
+    const pinned = [...new Set([serverIp, guardianIp])];
+    this.#pinnedIps = pinned;
+    this.#orig = orig;
 
     // DNS: resolve through the tunnel via DoH so lookups aren't done on (and
     // can't be blocked by) the local network. Point systemd-resolved at a local
@@ -376,34 +425,19 @@ export class GlobalSession {
       await priv.run(["resolvectl", "dns", orig.dev, `127.0.0.1:${DOH_PORT}`]);
       await priv.run(["resolvectl", "domain", orig.dev, "~."]);
       this.#dnsDev = orig.dev;
-      this.#bypassIps = [serverIp];
+      this.#bypassIps = pinned;
       dns = `tunnelled (DoH via ${DOH_HOST})`;
     } catch {
       await this.#dns?.close();
       this.#dns = null;
       const dnsIps = await dnsUpstreams();
       if (dnsIps.length === 0) dnsIps.push("1.1.1.1");
-      this.#bypassIps = [...new Set([serverIp, ...dnsIps])];
+      this.#bypassIps = [...new Set([...pinned, ...dnsIps])];
       dns = `direct: ${dnsIps.join(", ")} (no systemd-resolved — DNS may be visible locally)`;
     }
 
     for (const step of planSetup(this.#bypassIps, orig)) await priv.run(step);
-
-    // Keep private/LAN ranges off the tunnel. Best-effort: a range that already
-    // has a route (e.g. Docker) fails to add — skip it, and only remove on
-    // teardown the ones we actually added.
-    const pin = (dest: string) =>
-      orig.gw
-        ? ["ip", "route", "add", dest, "via", orig.gw, "dev", orig.dev]
-        : ["ip", "route", "add", dest, "dev", orig.dev];
-    for (const cidr of PRIVATE_CIDRS) {
-      try {
-        await priv.run(pin(cidr));
-        this.#addedPrivate.push(cidr);
-      } catch {
-        /* route already present */
-      }
-    }
+    await this.#pinPrivate(orig);
 
     // Reject UDP into the tunnel: it's TCP-only, so QUIC (Chrome's HTTP/3 over
     // UDP 443) would otherwise hang instead of falling back to TCP. The REJECT
@@ -424,7 +458,90 @@ export class GlobalSession {
       `socks5://${this.#o.proxyHost}:${this.#o.proxyPort}`,
     ]);
     this.#t2s.on("exit", (code) => this.#exitCb?.(code));
+    this.#arm({
+      uplink: async () => parseDefaultRoute((await exec("ip", ["route"])).stdout, TUN),
+      broken: (up) => this.#broken(up),
+      repin: (up) => this.#repin(up),
+      label: (up) => `${up.dev}${up.gw ? ` (${up.gw})` : ""}`,
+    });
     return { serverIp, dns };
+  }
+
+  /**
+   * Keep private/LAN ranges off the tunnel. Best-effort: a range that already
+   * has a route (e.g. Docker) fails to add — skip it, and only remove on
+   * teardown the ones we actually added.
+   */
+  async #pinPrivate(orig: DefaultRoute): Promise<void> {
+    for (const cidr of PRIVATE_CIDRS) {
+      try {
+        await this.#o.priv.run(pinCmd(cidr, orig));
+        this.#addedPrivate.push(cidr);
+      } catch {
+        /* route already present */
+      }
+    }
+  }
+
+  /** Checks for a network change every WATCH_MS and re-pins after one, until stop(). */
+  #arm<U>(r: Rerouter<U>): void {
+    let told = ""; // the last problem reported, so each is told once
+    const tell = (msg: string) => void (msg !== told && this.#netCb?.("lost", (told = msg)));
+    const fixed = (up: U) => {
+      told = "";
+      this.#netCb?.("restored", `via ${r.label(up)}`);
+    };
+    const tick = async () => {
+      try {
+        const up = await r.uplink();
+        // No network yet: the tunnel's routes stay, so traffic fails instead of leaking.
+        if (!up) return tell("network down — waiting for it to come back");
+        if (!(await r.broken(up))) return void (told && fixed(up)); // a blip that left the pins intact
+        if (!told.startsWith("rerouting failed")) tell(`network changed (${r.label(up)}) — rerouting…`);
+        await r.repin(up);
+        fixed(up);
+      } catch (err) {
+        tell(`rerouting failed: ${(err as Error).message} — retrying`);
+      }
+    };
+    // Chained, not an interval: a slow re-pin must not overlap the next check.
+    const loop = () => {
+      if (this.#stopped) return;
+      this.#tick = tick().finally(() => {
+        this.#tick = null;
+        if (!this.#stopped) this.#watchTimer = setTimeout(loop, WATCH_MS);
+      });
+    };
+    this.#watchTimer = setTimeout(loop, WATCH_MS);
+  }
+
+  async #broken(uplink: DefaultRoute): Promise<boolean> {
+    const serverRoute = (await exec("ip", ["route", "get", this.#pinnedIps[0]])).stdout;
+    const linkDns = this.#dnsDev ? await exec("resolvectl", ["dns", this.#dnsDev]).then((r) => r.stdout, () => "") : null;
+    return needsRepin(this.#orig!, uplink, serverRoute, linkDns);
+  }
+
+  /** Moves the pins and DNS to a new uplink. The tun and its default route stay up meanwhile, so nothing leaks. */
+  async #repin(orig: DefaultRoute): Promise<void> {
+    const { priv } = this.#o;
+    // Stale pins may survive (same device, old gateway); clear them so the adds below can't collide.
+    for (const ip of this.#bypassIps) await priv.run(["ip", "route", "del", ip], true);
+    for (const cidr of this.#addedPrivate) await priv.run(["ip", "route", "del", cidr], true);
+    this.#addedPrivate = [];
+    if (this.#dnsDev) {
+      await priv.run(["resolvectl", "revert", this.#dnsDev], true);
+      await priv.run(["resolvectl", "dns", orig.dev, `127.0.0.1:${DOH_PORT}`]);
+      await priv.run(["resolvectl", "domain", orig.dev, "~."]);
+      this.#dnsDev = orig.dev;
+    } else {
+      // Direct DNS: the new network brings its own resolvers.
+      const dnsIps = await dnsUpstreams();
+      if (dnsIps.length === 0) dnsIps.push("1.1.1.1");
+      this.#bypassIps = [...new Set([...this.#pinnedIps, ...dnsIps])];
+    }
+    for (const ip of this.#bypassIps) await priv.run(pinCmd(ip, orig));
+    await this.#pinPrivate(orig);
+    this.#orig = orig;
   }
 
   /** The public exit IP (confirms the tunnel works), or null if unreachable. */
@@ -441,6 +558,8 @@ export class GlobalSession {
   async stop(): Promise<void> {
     if (this.#stopped) return;
     this.#stopped = true;
+    if (this.#watchTimer) clearTimeout(this.#watchTimer);
+    await this.#tick; // a re-pin in flight would add routes after the teardown below
     if (this.#mac) return this.#mac.stop();
     if (this.#dnsDev) await this.#o.priv.run(["resolvectl", "revert", this.#dnsDev], true);
     await this.#dns?.close();
@@ -513,6 +632,7 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
     dead = true;
     console.error(red(`tun2socks exited (${code}) — traffic is not being tunnelled.`));
   });
+  session.onNetworkChange((event, detail) => console.log(event === "lost" ? yellow(`  ${detail}`) : green(`  rerouted ${detail}`)));
 
   const cleanup = async () => {
     await session.stop();

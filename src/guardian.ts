@@ -1,7 +1,18 @@
 // Client for Mozilla's Guardian service, the backend behind Firefox's built-in
 // VPN. Every call authenticates with an FxA access token (VPN scope) that the
 // auth module provides; see auth.ts.
-const GUARDIAN = "https://vpn.mozilla.org";
+import https from "node:https";
+
+export const GUARDIAN_HOST = "vpn.mozilla.org";
+
+// Global mode routes this IPv4 around the tunnel. The tunnel needs a pass from Guardian,
+// so getting one must not need the tunnel, nor the DNS that goes through it.
+let pinnedIp: string | null = null;
+
+/** Sends every later Guardian request to `ip` instead of looking the host up (global mode). */
+export function pinGuardian(ip: string): void {
+  pinnedIp = ip;
+}
 
 /** A proxy pass: the short-lived JWT the proxy servers accept. */
 export interface ProxyPass {
@@ -62,6 +73,43 @@ function bearer(accessToken: string): Record<string, string> {
   };
 }
 
+/**
+ * fetch() for Guardian, able to dial the pinned IP while TLS and the Host header keep
+ * the hostname (as proxy.ts does for the VPN server). fetch() has no option for that.
+ */
+function request(method: "GET" | "HEAD", path: string, accessToken: string, signal?: AbortSignal): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const fail = (err: Error) => reject(new Error(`can't reach ${GUARDIAN_HOST}`, { cause: err }));
+    const req = https.request(
+      {
+        host: pinnedIp ?? GUARDIAN_HOST,
+        servername: GUARDIAN_HOST,
+        path,
+        method,
+        headers: { Host: GUARDIAN_HOST, ...bearer(accessToken) },
+        signal,
+        timeout: 10_000, // like fetch's connect timeout; a dead pinned IP would hang for minutes
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("error", fail);
+        res.on("end", () => {
+          try {
+            const headers = new Headers();
+            for (let i = 0; i < res.rawHeaders.length; i += 2) headers.append(res.rawHeaders[i], res.rawHeaders[i + 1]);
+            const body = chunks.length ? Buffer.concat(chunks).toString() : null;
+            resolve(new Response(body, { status: res.statusCode, headers }));
+          } catch (err) {
+            fail(err as Error); // a status or header Response refuses
+          }
+        });
+      },
+    );
+    req.on("timeout", () => req.destroy(new Error("timed out"))).on("error", fail).end();
+  });
+}
+
 /** A non-200 Guardian response; `status` lets callers spot 401 (token rejected). */
 export class GuardianError extends Error {
   constructor(message: string, readonly status: number) {
@@ -90,11 +138,7 @@ export async function fetchPass(
   accessToken: string,
   signal?: AbortSignal,
 ): Promise<{ pass: ProxyPass; usage: Usage | null }> {
-  const res = await fetch(`${GUARDIAN}/api/v1/fpn/token`, {
-    method: "GET",
-    headers: bearer(accessToken),
-    signal,
-  });
+  const res = await request("GET", "/api/v1/fpn/token", accessToken, signal);
   const usage = parseUsage(res.headers);
   if (!res.ok) throw new GuardianError(`Proxy pass: ${statusError(res.status)}`, res.status);
   const data = (await res.json()) as { token?: string };
@@ -108,11 +152,7 @@ export async function fetchUsage(
   accessToken: string,
   signal?: AbortSignal,
 ): Promise<Usage | null> {
-  const res = await fetch(`${GUARDIAN}/api/v1/fpn/token`, {
-    method: "HEAD",
-    headers: bearer(accessToken),
-    signal,
-  });
+  const res = await request("HEAD", "/api/v1/fpn/token", accessToken, signal);
   return res.ok ? parseUsage(res.headers) : null;
 }
 
@@ -121,11 +161,7 @@ export async function fetchEntitlement(
   accessToken: string,
   signal?: AbortSignal,
 ): Promise<Entitlement | null> {
-  const res = await fetch(`${GUARDIAN}/api/v1/fpn/status`, {
-    method: "GET",
-    headers: bearer(accessToken),
-    signal,
-  });
+  const res = await request("GET", "/api/v1/fpn/status", accessToken, signal);
   if (res.status === 404) return null;
   if (!res.ok) throw new GuardianError(`Status: ${statusError(res.status)}`, res.status);
   const d = (await res.json()) as {

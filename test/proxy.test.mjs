@@ -152,8 +152,32 @@ async function httpScenarios() {
   console.log("ok - HTTP proxy (CONNECT and plain GET) works on the same port");
 }
 
+// Global mode with its bypass route gone sends our own dial to the VPN server back
+// through the tun into the proxy. That must be refused, not dialed again (a loop).
+async function loopGuard() {
+  const { server, state } = makeUpstream(0);
+  const upstreamPort = await listen(server);
+  const conn = {
+    server: { hostname: "localhost", ip: "127.0.0.1", port: upstreamPort },
+    async currentPass() {
+      return { token: "faketoken", notBefore: 0, expires: 2 ** 31 };
+    },
+  };
+  const handle = await startProxy(conn, "127.0.0.1", 0);
+  const c = net.connect(handle.port, "127.0.0.1");
+  c.on("error", () => {});
+  await write(c, `CONNECT 127.0.0.1:${upstreamPort} HTTP/1.1\r\n\r\n`);
+  assert.match((await read(c)).toString(), /^HTTP\/1\.1 502 /, "dial to the VPN server's own IP refused");
+  assert.equal(state.connections, 0, "upstream never dialed");
+  c.destroy();
+  await handle.close();
+  server.close();
+  console.log("ok - a dial that loops back to the VPN server is refused");
+}
+
 await scenario("SOCKS5 bridge tunnels TCP through an authenticated upstream CONNECT", 0, 1);
 await httpScenarios();
 await scenario("a dropped upstream connection is retried automatically", 1, 2);
+await loopGuard();
 target.close();
 process.exit(0);

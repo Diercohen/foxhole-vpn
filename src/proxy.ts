@@ -201,6 +201,9 @@ async function openUpstreamWithRetry(
 async function dial(conn: Connection, target: Target): Promise<tls.TLSSocket | null> {
   const server = conn.server;
   if (!server) return null;
+  // Global mode with its bypass route gone (network change): our own upstream dial came
+  // back through the tun. Dialing again would loop, a new connection each turn.
+  if (target.host === server.ip) return null;
   let pass;
   try {
     pass = await conn.currentPass();

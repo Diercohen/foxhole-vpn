@@ -6,7 +6,8 @@ import { execFile, type spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { lookup } from "node:dns/promises";
 import { connect } from "node:net";
-import { PRIVATE_CIDRS, DOH_HOST, isVpnDev, stopProcess, type GlobalSessionOptions } from "./global.js";
+import { PRIVATE_CIDRS, DOH_HOST, isVpnDev, stopProcess, type GlobalSessionOptions, type Rerouter } from "./global.js";
+import { GUARDIAN_HOST, pinGuardian } from "./guardian.js";
 
 const exec = promisify(execFile);
 
@@ -40,6 +41,29 @@ export function dnsRestoreArgs(out: string): string[] {
   return ips.length ? ips : ["Empty"];
 }
 
+/**
+ * The primary IPv4 default in `netstat -rn -f inet`, skipping `skipDev` (our utun).
+ * `route get default` can't be trusted once our 0/1 routes exist. Pure.
+ */
+export function parseNetstatDefault(netstat: string, skipDev: string): MacRoute | null {
+  let scoped: MacRoute | null = null;
+  for (const line of netstat.split("\n")) {
+    const [dest, gw, flags, ...rest] = line.trim().split(/\s+/);
+    const dev = rest.find((t) => /^[a-z]+\d+$/i.test(t)); // Netif; older macOS adds Refs/Use columns first
+    if (dest !== "default" || !dev || dev === skipDev) continue;
+    const route = { gw: /^\d{1,3}(\.\d{1,3}){3}$/.test(gw) ? gw : null, dev }; // "link#4": on-link
+    if (!flags.includes("I")) return route; // I: scoped to a non-primary interface
+    scoped ??= route;
+  }
+  return scoped;
+}
+
+/** True when the pins no longer lead out through `uplink`: it moved, or the server routes into our utun (`route -n get <server>`). Pure. */
+export function macNeedsRepin(pinnedTo: MacRoute, uplink: MacRoute, serverRouteGet: string): boolean {
+  if (uplink.dev !== pinnedTo.dev || uplink.gw !== pinnedTo.gw) return true;
+  return parseRouteGet(serverRouteGet)?.dev === UTUN;
+}
+
 /** Another full-tunnel VPN: default on a utun, or 0/1 + 128.0/1 split routes in `netstat -rn -f inet`. Pure. */
 export function macConflictingVpn(netstat: string, orig: MacRoute): boolean {
   return isVpnDev(orig.dev) || /^(0|128\.0)\/1\s/m.test(netstat);
@@ -64,12 +88,16 @@ const tcpProbe = (port: number) =>
     s.on("error", reject);
   });
 
-export class DarwinRouting {
+export class DarwinRouting implements Rerouter<MacRoute> {
   readonly #o: GlobalSessionOptions;
   #undo: string[][] = []; // privileged commands reversing what start() did
+  #pinUndo: string[][] = []; // the same for the routes tied to the uplink, redone on a network change
   #procs: ReturnType<typeof spawn>[] = [];
   #dnsService: string | null = null;
   #dnsRestore: string[] = [];
+  #directDns = false; // DNS not tunnelled: the resolvers are pinned too
+  #orig: MacRoute | null = null;
+  #pinnedIps: string[] = []; // VPN server + Guardian, kept across re-pins
 
   constructor(o: GlobalSessionOptions) {
     this.#o = o;
@@ -85,20 +113,17 @@ export class DarwinRouting {
     }
     const serverIp = (await lookup(server.hostname, { family: 4 })).address;
     server.ip = serverIp;
+    // Guardian too, while DNS still works: renewing the pass must not need the tunnel.
+    const guardianIp = (await lookup(GUARDIAN_HOST, { family: 4 })).address;
+    pinGuardian(guardianIp);
+    this.#pinnedIps = [...new Set([serverIp, guardianIp])];
+    this.#orig = orig;
 
     const step = async (add: string[], del: string[]) => {
       await priv.run(add);
       this.#undo.push(del);
     };
-    const viaUplink = (kind: "-host" | "-net", dest: string) =>
-      ["route", "-n", "add", kind, dest, ...(orig.gw ? [orig.gw] : ["-interface", orig.dev])];
-
-    await step(viaUplink("-host", serverIp), ["route", "-n", "delete", "-host", serverIp]);
-    for (const cidr of PRIVATE_CIDRS) {
-      await step(viaUplink("-net", cidr), ["route", "-n", "delete", "-net", cidr]).catch(() => {
-        /* route already present */
-      });
-    }
+    await this.#pin(orig);
 
     const t2s = priv.spawn([this.#o.tun2socksPath, "--device", UTUN, "--proxy", `socks5://${proxyHost}:${proxyPort}`]);
     t2s.on("exit", onExit);
@@ -112,13 +137,9 @@ export class DarwinRouting {
       dns = `tunnelled (DoH via ${DOH_HOST})`;
     } catch (err) {
       // Fall back to pinning the current resolvers to the real uplink (a DNS leak).
-      const { stdout } = await exec("scutil", ["--dns"]);
-      const ips = new Set([...stdout.matchAll(/nameserver\[\d+\]\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})/g)].map((m) => m[1]));
-      for (const ip of ips) {
-        if (ip.startsWith("127.")) continue;
-        await step(viaUplink("-host", ip), ["route", "-n", "delete", "-host", ip]).catch(() => {});
-      }
-      dns = `direct: ${[...ips].join(", ")} (${(err as Error).message} — DNS may be visible locally)`;
+      this.#directDns = true;
+      const ips = await this.#pinResolvers(orig);
+      dns = `direct: ${ips.join(", ")} (${(err as Error).message} — DNS may be visible locally)`;
     }
 
     for (const half of ["0.0.0.0/1", "128.0.0.0/1"]) {
@@ -136,6 +157,67 @@ export class DarwinRouting {
     return { serverIp, dns };
   }
 
+  /** Routes `dest` out the real uplink, recording how to undo it in #pinUndo. */
+  async #pinRoute(kind: "-host" | "-net", dest: string, up: MacRoute): Promise<void> {
+    await this.#o.priv.run(["route", "-n", "add", kind, dest, ...(up.gw ? [up.gw] : ["-interface", up.dev])]);
+    this.#pinUndo.push(["route", "-n", "delete", kind, dest]);
+  }
+
+  /** Pins the VPN server, Guardian and the private ranges to the uplink. */
+  async #pin(up: MacRoute): Promise<void> {
+    for (const ip of this.#pinnedIps) await this.#pinRoute("-host", ip, up);
+    for (const cidr of PRIVATE_CIDRS) {
+      await this.#pinRoute("-net", cidr, up).catch(() => {
+        /* route already present */
+      });
+    }
+  }
+
+  /** Pins the resolvers the system uses now (direct DNS); returns them. */
+  async #pinResolvers(up: MacRoute): Promise<string[]> {
+    const { stdout } = await exec("scutil", ["--dns"]);
+    const ips = [...new Set([...stdout.matchAll(/nameserver\[\d+\]\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})/g)].map((m) => m[1]))];
+    for (const ip of ips) {
+      if (ip.startsWith("127.")) continue;
+      await this.#pinRoute("-host", ip, up).catch(() => {});
+    }
+    return ips;
+  }
+
+  async uplink(): Promise<MacRoute | null> {
+    return parseNetstatDefault((await exec("netstat", ["-rn", "-f", "inet"])).stdout, UTUN);
+  }
+
+  async broken(up: MacRoute): Promise<boolean> {
+    const { stdout } = await exec("route", ["-n", "get", this.#pinnedIps[0]]);
+    return macNeedsRepin(this.#orig!, up, stdout);
+  }
+
+  async repin(up: MacRoute): Promise<void> {
+    const { priv } = this.#o;
+    // Stale pins may survive (same device, old gateway); clear them so the adds below can't collide.
+    for (const argv of this.#pinUndo.reverse()) await priv.run(argv, true);
+    this.#pinUndo = [];
+    await this.#pin(up);
+    if (this.#directDns) await this.#pinResolvers(up);
+    // The DNS setting belongs to the network service ("Wi-Fi"), so it survives a Wi-Fi
+    // switch; only a move to another service (Ethernet) has to carry it over.
+    if (this.#dnsService) {
+      const service = serviceForDevice((await exec("networksetup", ["-listnetworkserviceorder"])).stdout, up.dev);
+      if (!service) throw new Error(`no network service for ${up.dev}`);
+      if (service !== this.#dnsService) {
+        await priv.run(["networksetup", "-setdnsservers", this.#dnsService, ...this.#dnsRestore], true);
+        await this.#pointDns(service);
+      }
+    }
+    this.#orig = up;
+    await priv.run(["killall", "-HUP", "mDNSResponder"], true); // drop answers cached while offline
+  }
+
+  label(up: MacRoute): string {
+    return `${up.dev}${up.gw ? ` (${up.gw})` : ""}`;
+  }
+
   /** Runs the DoH forwarder as root on :53 and points the uplink's service at it. */
   async #tunnelDns(dev: string): Promise<void> {
     const { priv, proxyHost, proxyPort } = this.#o;
@@ -150,6 +232,12 @@ export class DarwinRouting {
       ]),
     );
     await waitFor("the DNS relay", () => tcpProbe(53));
+    await this.#pointDns(service);
+  }
+
+  /** Points a network service's DNS at the relay, remembering what to restore. */
+  async #pointDns(service: string): Promise<void> {
+    const { priv } = this.#o;
     this.#dnsRestore = dnsRestoreArgs((await exec("networksetup", ["-getdnsservers", service])).stdout);
     await priv.run(["networksetup", "-setdnsservers", service, "127.0.0.1"]);
     this.#dnsService = service;
@@ -160,8 +248,9 @@ export class DarwinRouting {
   async stop(): Promise<void> {
     const { priv } = this.#o;
     if (this.#dnsService) await priv.run(["networksetup", "-setdnsservers", this.#dnsService, ...this.#dnsRestore], true);
-    for (const argv of this.#undo.reverse()) await priv.run(argv, true);
+    for (const argv of [...this.#undo.reverse(), ...this.#pinUndo.reverse()]) await priv.run(argv, true);
     this.#undo = [];
+    this.#pinUndo = [];
     // sudo children may outlive the signal. The [x] keeps pkill from matching its own sudo.
     const pkill = async () => {
       await priv.run(["pkill", "-f", `${UTUN.slice(0, -1)}[${UTUN.slice(-1)}]`], true);

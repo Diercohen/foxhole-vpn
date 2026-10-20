@@ -1,5 +1,8 @@
 import readline from "node:readline";
 import { PassThrough } from "node:stream";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { userHome } from "./profile.js";
 import { fetchServerList, type Country } from "./serverlist.js";
 import { Connection } from "./connection.js";
 import { NotImplementedError } from "./auth.js";
@@ -23,6 +26,28 @@ function leaveScreen(): void {
   process.stdout.write(ALT_OFF);
 }
 process.on("exit", leaveScreen);
+
+const REFRESHING = dim("refreshing…");
+
+/** The last country connected to; the next start puts the cursor on it. */
+const lastCountryFile = () => join(userHome(), ".config", "foxhole-vpn", "country");
+
+function loadLastCountry(): string | null {
+  try {
+    return readFileSync(lastCountryFile(), "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function saveLastCountry(code: string): void {
+  try {
+    mkdirSync(dirname(lastCountryFile()), { recursive: true, mode: 0o700 });
+    writeFileSync(lastCountryFile(), code);
+  } catch {
+    // only a convenience; never fail a connect over it
+  }
+}
 
 /** Sort order: free & usable first, then paid, each alphabetical. */
 function order(list: Country[]): Country[] {
@@ -70,6 +95,7 @@ export class Tui {
     this.#render();
     try {
       this.#countries = order(await fetchServerList());
+      this.#sel = Math.max(0, this.#countries.findIndex((c) => c.code === loadLastCountry()));
       this.#message = "";
     } catch (err) {
       this.#message = red(`server list failed: ${(err as Error).message}`);
@@ -83,7 +109,11 @@ export class Tui {
   #refreshUsage(): void {
     this.#conn
       .refreshUsage()
-      .then(() => this.#render())
+      .then((usage) => {
+        // only replace our own "refreshing…"; the startup call must not wipe other messages
+        if (this.#message === REFRESHING) this.#message = usage ? dim("usage updated") : yellow("usage unavailable");
+        this.#render();
+      })
       .catch((err) => {
         if (err instanceof NotImplementedError) {
           this.#message = yellow("token step not implemented — see AUTH.md (data unknown)");
@@ -177,7 +207,7 @@ export class Tui {
             if (canUpdate()) return void quit("update");
             break;
           case "r":
-            this.#message = dim("refreshing…");
+            this.#message = REFRESHING;
             this.#refreshUsage();
             break;
         }
@@ -198,6 +228,7 @@ export class Tui {
       if (!this.#proxy) this.#proxy = await startProxy(this.#conn, this.#host, this.#port);
       await this.#conn.currentPass(); // warm the pass; surfaces auth/quota errors now
       this.#active = country;
+      saveLastCountry(country.code);
       this.#message = green("connected");
     } catch (err) {
       if (err instanceof NotImplementedError) {
@@ -206,7 +237,9 @@ export class Tui {
         forgetToken(); // so the next start shows the token window
         this.#message = red("token rejected (expired) — quit and run foxhole again to get a new one");
       } else {
-        this.#message = red(`connect failed: ${(err as Error).message}`);
+        // fetch's own message is just "fetch failed"; the network reason is in its cause
+        const cause = (err as Error).cause as { code?: string; message?: string } | undefined;
+        this.#message = red(`connect failed: ${(err as Error).message}${cause ? ` (${cause.code ?? cause.message})` : ""}`);
       }
       if (this.#proxy && !this.#active) {
         await this.#proxy.close();
@@ -314,6 +347,10 @@ export class Tui {
           this.#message = red(`tun2socks stopped (${code}) — global off`);
           this.#render();
         });
+      });
+      session.onNetworkChange((event, detail) => {
+        this.#message = event === "lost" ? yellow(`global: ${detail}`) : green(`global ON · rerouted ${detail}`);
+        this.#render();
       });
       await session.start();
       this.#global = session;
