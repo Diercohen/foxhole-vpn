@@ -70,19 +70,10 @@ const socks = net.createServer((c) => {
 });
 const socksPort = await listen(socks);
 
-const fwd = await startDnsForwarder({
-  socksHost: "127.0.0.1",
-  socksPort,
-  dohHost: "cloudflare-dns.com",
-  host: "127.0.0.1",
-  port: 0,
-});
-// port:0 picked an ephemeral port; read it back from the underlying sockets is
-// awkward, so bind explicitly on a high port instead.
-await fwd.close();
-
-const PORT = 15353;
-const f = await startDnsForwarder({ socksHost: "127.0.0.1", socksPort, dohHost: "cloudflare-dns.com", host: "127.0.0.1", port: PORT });
+// port 0: the forwarder picks a port free for both UDP and TCP, and says which.
+const f = await startDnsForwarder({ socksHost: "127.0.0.1", socksPort, dohHost: "cloudflare-dns.com", host: "127.0.0.1", port: 0 });
+const PORT = f.port;
+assert.ok(PORT > 0, "picked port reported");
 
 // UDP query -> answer.
 const QUERY = Buffer.from([0xab, 0xcd, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]);

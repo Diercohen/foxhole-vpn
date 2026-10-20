@@ -12,7 +12,7 @@ import { loadSettings, saveSettings, proxyHost, validPort, type Settings } from 
 import { forgetToken } from "./tokenserver.js";
 import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { logLines, onLog } from "./log.js";
-import { GlobalSession, sudoPriv, directPriv, isPrivileged, validateSudo, ensureTun2socks } from "./global.js";
+import { GlobalSession, sudoPriv, directPriv, isPrivileged, validateSudo, ensureTun2socks, dialHost } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, versionLines } from "./update.js";
 import { bold, dim, under, strike, green, red, yellow, cyan, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl } from "./ui.js";
 
@@ -140,7 +140,7 @@ export class Tui {
     const country = this.#global ? this.#globalCountry : this.#active;
     // Proxy mode: ask through the proxy. Global mode tunnels the direct check already.
     const proxy = this.#proxy && this.#active && !this.#global
-      ? { host: ["0.0.0.0", "::", ""].includes(this.#host) ? "127.0.0.1" : this.#host, port: this.#proxy.port }
+      ? { host: dialHost(this.#host), port: this.#proxy.port }
       : undefined;
     this.#ip = undefined;
     void wifiName().then((w) => {

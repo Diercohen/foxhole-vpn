@@ -129,6 +129,7 @@ export class DohClient {
 }
 
 export interface DnsForwarder {
+  port: number; // the port it listens on, UDP and TCP (the one picked, when asked for 0)
   close(): Promise<void>;
 }
 
@@ -137,7 +138,7 @@ export interface DnsForwarderOptions {
   socksPort: number;
   dohHost: string;
   host: string;
-  port: number;
+  port: number; // 0: any port free for both UDP and TCP
   /** Parallel DoH connections; each serialises its queries. Default 1. */
   connections?: number;
 }
@@ -159,14 +160,7 @@ export async function startDnsForwarder(o: DnsForwarderOptions): Promise<DnsForw
     }
   };
 
-  const udp = dgram.createSocket("udp4");
-  udp.on("message", (msg, rinfo) => {
-    query(msg)
-      .then((ans) => udp.send(ans, rinfo.port, rinfo.address))
-      .catch(() => {});
-  });
-
-  const tcp = net.createServer((sock) => {
+  const onTcp = (sock: net.Socket) => {
     let buf = Buffer.alloc(0);
     sock.on("data", (d) => {
       buf = Buffer.concat([buf, d]);
@@ -186,22 +180,43 @@ export async function startDnsForwarder(o: DnsForwarderOptions): Promise<DnsForw
       }
     });
     sock.on("error", () => sock.destroy());
-  });
-
-  await new Promise<void>((res, rej) => {
-    udp.once("error", rej);
-    udp.bind(o.port, o.host, res);
-  });
-  await new Promise<void>((res, rej) => {
-    tcp.once("error", rej);
-    tcp.listen(o.port, o.host, res);
-  });
-
-  return {
-    close: async () => {
-      for (const c of pool) c.doh.close();
-      udp.close();
-      await new Promise<void>((r) => tcp.close(() => r()));
-    },
   };
+
+  for (let attempt = 1; ; attempt++) {
+    const tcp = net.createServer(onTcp);
+    const udp = dgram.createSocket("udp4");
+    udp.on("message", (msg, rinfo) => {
+      query(msg)
+        .then((ans) => udp.send(ans, rinfo.port, rinfo.address))
+        .catch(() => {});
+    });
+    try {
+      await new Promise<void>((res, rej) => {
+        tcp.once("error", rej);
+        tcp.listen(o.port, o.host, res);
+      });
+      const port = (tcp.address() as net.AddressInfo).port;
+      await new Promise<void>((res, rej) => {
+        udp.once("error", rej);
+        udp.bind(port, o.host, res);
+      });
+      return {
+        port,
+        close: async () => {
+          for (const c of pool) c.doh.close();
+          udp.close();
+          await new Promise<void>((r) => tcp.close(() => r()));
+        },
+      };
+    } catch (err) {
+      tcp.close();
+      try {
+        udp.close();
+      } catch {
+        /* never bound */
+      }
+      // A free TCP port's UDP twin can still be taken (e.g. by mDNS on 5353): pick another.
+      if (o.port !== 0 || attempt >= 5) throw err;
+    }
+  }
 }

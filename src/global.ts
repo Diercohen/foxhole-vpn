@@ -13,6 +13,7 @@ import type { Connection } from "./connection.js";
 import { startProxy } from "./proxy.js";
 import { startDnsForwarder, type DnsForwarder } from "./dns.js";
 import { GUARDIAN_HOST, pinGuardian } from "./guardian.js";
+import { publicIp } from "./netinfo.js";
 import { dim, green, red, yellow, bold, verbose } from "./ui.js";
 import { DarwinRouting } from "./global-darwin.js";
 import { WindowsRouting, isWindowsAdmin } from "./global-win32.js";
@@ -29,10 +30,9 @@ const RESOLV = "/etc/resolv.conf";
 // ("Destination IP Prohibited") and tunnelling them would break LAN access.
 export const PRIVATE_CIDRS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"];
 
-// DNS is resolved through the tunnel via DoH (the VPN forbids port 53). The
-// forwarder listens here; systemd-resolved is pointed at it.
+// DNS is resolved through the tunnel via DoH (the VPN forbids port 53). On Linux the
+// forwarder listens on a free port it picks; systemd-resolved is pointed at it.
 export const DOH_HOST = "cloudflare-dns.com";
-const DOH_PORT = 5353;
 const WATCH_MS = 3000; // how often global mode checks for a network change (Wi-Fi switch)
 
 export interface DefaultRoute {
@@ -60,13 +60,16 @@ export function pinCmd(dest: string, orig: DefaultRoute): string[] {
  * True when a network change (Wi-Fi switch, reconnect) broke global mode's pins: the
  * uplink moved, the VPN server now routes into the tun (`serverRoute`: `ip route get`),
  * or the network manager reset the link's DNS (`linkDns`: `resolvectl dns <dev>`, null
- * when DNS isn't tunnelled). Pure.
+ * when DNS isn't tunnelled; `dohPort`: where the DoH forwarder listens). Pure.
  */
-export function needsRepin(pinnedTo: DefaultRoute, uplink: DefaultRoute, serverRoute: string, linkDns: string | null): boolean {
+export function needsRepin(pinnedTo: DefaultRoute, uplink: DefaultRoute, serverRoute: string, linkDns: string | null, dohPort: number): boolean {
   if (uplink.dev !== pinnedTo.dev || uplink.gw !== pinnedTo.gw) return true;
   if (new RegExp(`\\bdev ${TUN}\\b`).test(serverRoute)) return true;
-  return linkDns !== null && !linkDns.includes(`127.0.0.1:${DOH_PORT}`);
+  return linkDns !== null && !new RegExp(`\\b127\\.0\\.0\\.1:${dohPort}\\b`).test(linkDns);
 }
+
+/** An address to dial the local proxy on: a listen-on-all address (sharing on the network) isn't one on Windows. */
+export const dialHost = (host: string): string => (["0.0.0.0", "::", ""].includes(host) ? "127.0.0.1" : host);
 
 /** True for virtual/VPN interfaces we must not treat as the real uplink. Pure. */
 export function isVpnDev(dev: string): boolean {
@@ -367,8 +370,9 @@ export class GlobalSession {
   readonly #mac: DarwinRouting | WindowsRouting | null;
 
   constructor(o: GlobalSessionOptions) {
-    this.#o = o;
-    this.#mac = process.platform === "darwin" ? new DarwinRouting(o) : IS_WIN ? new WindowsRouting(o) : null;
+    // tun2socks and the DNS forwarder dial the proxy, even when it listens on all addresses
+    this.#o = { ...o, proxyHost: dialHost(o.proxyHost) };
+    this.#mac = process.platform === "darwin" ? new DarwinRouting(this.#o) : IS_WIN ? new WindowsRouting(this.#o) : null;
   }
 
   /** Called if tun2socks dies unexpectedly. */
@@ -420,20 +424,20 @@ export class GlobalSession {
         socksPort: this.#o.proxyPort,
         dohHost: DOH_HOST,
         host: "127.0.0.1",
-        port: DOH_PORT,
+        port: 0, // a fixed port can be taken: 5353 is mDNS's (avahi)
       });
-      await priv.run(["resolvectl", "dns", orig.dev, `127.0.0.1:${DOH_PORT}`]);
+      await priv.run(["resolvectl", "dns", orig.dev, `127.0.0.1:${this.#dns.port}`]);
       await priv.run(["resolvectl", "domain", orig.dev, "~."]);
       this.#dnsDev = orig.dev;
       this.#bypassIps = pinned;
       dns = `tunnelled (DoH via ${DOH_HOST})`;
-    } catch {
+    } catch (err) {
       await this.#dns?.close();
       this.#dns = null;
       const dnsIps = await dnsUpstreams();
       if (dnsIps.length === 0) dnsIps.push("1.1.1.1");
       this.#bypassIps = [...new Set([...pinned, ...dnsIps])];
-      dns = `direct: ${dnsIps.join(", ")} (no systemd-resolved — DNS may be visible locally)`;
+      dns = `direct: ${dnsIps.join(", ")} (${(err as Error).message} — DNS may be visible locally)`;
     }
 
     for (const step of planSetup(this.#bypassIps, orig)) await priv.run(step);
@@ -518,7 +522,7 @@ export class GlobalSession {
   async #broken(uplink: DefaultRoute): Promise<boolean> {
     const serverRoute = (await exec("ip", ["route", "get", this.#pinnedIps[0]])).stdout;
     const linkDns = this.#dnsDev ? await exec("resolvectl", ["dns", this.#dnsDev]).then((r) => r.stdout, () => "") : null;
-    return needsRepin(this.#orig!, uplink, serverRoute, linkDns);
+    return needsRepin(this.#orig!, uplink, serverRoute, linkDns, this.#dns?.port ?? 0);
   }
 
   /** Moves the pins and DNS to a new uplink. The tun and its default route stay up meanwhile, so nothing leaks. */
@@ -530,7 +534,7 @@ export class GlobalSession {
     this.#addedPrivate = [];
     if (this.#dnsDev) {
       await priv.run(["resolvectl", "revert", this.#dnsDev], true);
-      await priv.run(["resolvectl", "dns", orig.dev, `127.0.0.1:${DOH_PORT}`]);
+      await priv.run(["resolvectl", "dns", orig.dev, `127.0.0.1:${this.#dns!.port}`]);
       await priv.run(["resolvectl", "domain", orig.dev, "~."]);
       this.#dnsDev = orig.dev;
     } else {
@@ -546,12 +550,7 @@ export class GlobalSession {
 
   /** The public exit IP (confirms the tunnel works), or null if unreachable. */
   async verifyExitIp(): Promise<string | null> {
-    try {
-      const res = await fetch("https://api.ipify.org", { signal: AbortSignal.timeout(8000) });
-      return (await res.text()).trim();
-    } catch {
-      return null;
-    }
+    return publicIp(); // retries: right after start, tun2socks may not be reading the tun yet
   }
 
   /** Restores routing and stops tun2socks. Best-effort, idempotent. */

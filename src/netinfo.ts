@@ -53,9 +53,18 @@ const isIp = (s: string) => /^[0-9a-f.:]+$/i.test(s) && s.length <= 45;
 /**
  * The public IP the internet sees. With `proxy`, asks through foxhole's own HTTP
  * proxy, so it's the VPN exit's; without, it's whatever the system routes (global
- * mode tunnels that too). Null if unreachable.
+ * mode tunnels that too). Tries `tries` times, 1.5s apart: the first check often
+ * races a tunnel that's still coming up. Null if unreachable.
  */
-export async function publicIp(proxy?: { host: string; port: number }): Promise<string | null> {
+export async function publicIp(proxy?: { host: string; port: number }, tries = 3): Promise<string | null> {
+  for (let i = 1; ; i++) {
+    const ip = await publicIpOnce(proxy);
+    if (ip || i >= tries) return ip;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
+
+async function publicIpOnce(proxy?: { host: string; port: number }): Promise<string | null> {
   try {
     if (!proxy) {
       const text = (await (await fetch(`https://${IP_HOST}`, { signal: AbortSignal.timeout(8000) })).text()).trim();
