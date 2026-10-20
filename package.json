@@ -21,7 +21,7 @@
   ],
   "scripts": {
     "build": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\" && tsc && node -e \"fs.chmodSync('dist/cli.js', 0o755)\"",
-    "test": "npm run build && node test/global.test.mjs && node test/proxy.test.mjs && node test/dns.test.mjs && node test/update.test.mjs && node test/darwin.test.mjs && node test/win32.test.mjs && node test/tokenserver.test.mjs && node test/guardian.test.mjs",
+    "test": "npm run build && node test/global.test.mjs && node test/proxy.test.mjs && node test/dns.test.mjs && node test/update.test.mjs && node test/darwin.test.mjs && node test/win32.test.mjs && node test/tokenserver.test.mjs && node test/guardian.test.mjs && node test/netinfo.test.mjs",
     "prepack": "npm run build"
   },
   "engines": {

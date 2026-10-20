@@ -7,6 +7,7 @@ import { fetchServerList, type Country } from "./serverlist.js";
 import { Connection } from "./connection.js";
 import { NotImplementedError } from "./auth.js";
 import { GuardianError } from "./guardian.js";
+import { wifiName, publicIp } from "./netinfo.js";
 import { forgetToken } from "./tokenserver.js";
 import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { logLines, onLog } from "./log.js";
@@ -76,6 +77,10 @@ export class Tui {
   #pwChecking = false;
   #logsOpen = false; // the Logs popup is open
   #renderTimer: NodeJS.Timeout | null = null;
+  #wifi: string | null | undefined; // undefined: not read yet
+  #ip: string | null | undefined; // undefined: checking
+  #ipNote = "";
+  #netSeq = 0; // drops answers from an older check
 
   constructor(conn: Connection, host: string, port: number) {
     this.#conn = conn;
@@ -101,9 +106,38 @@ export class Tui {
       this.#message = red(`server list failed: ${(err as Error).message}`);
     }
     this.#refreshUsage();
+    this.#refreshNet();
+    // A Wi-Fi switch changes the public IP too; the name is cheap to poll.
+    setInterval(() => {
+      void wifiName().then((w) => {
+        if (this.#wifi !== undefined && w !== this.#wifi) this.#refreshNet();
+      });
+    }, 5000).unref();
     void checkUpdate().then(() => this.#render()); // show the update notice once npm answers
     this.#render();
     await this.#loop();
+  }
+
+  /** Re-reads the Wi-Fi name and the public IP: the VPN exit's when connected, else the real one. */
+  #refreshNet(): void {
+    const seq = ++this.#netSeq;
+    const country = this.#global ? this.#globalCountry : this.#active;
+    // Proxy mode: ask through the proxy. Global mode tunnels the direct check already.
+    const proxy = this.#proxy && this.#active && !this.#global
+      ? { host: ["0.0.0.0", "::", ""].includes(this.#host) ? "127.0.0.1" : this.#host, port: this.#proxy.port }
+      : undefined;
+    this.#ip = undefined;
+    void wifiName().then((w) => {
+      if (seq !== this.#netSeq) return;
+      this.#wifi = w;
+      this.#render();
+    });
+    void publicIp(proxy).then((ip) => {
+      if (seq !== this.#netSeq) return;
+      this.#ip = ip;
+      this.#ipNote = country ? `VPN · ${flag(country.code)} ${countryName(country.code, country.name)}` : "your real IP";
+      this.#render();
+    });
   }
 
   #refreshUsage(): void {
@@ -209,6 +243,7 @@ export class Tui {
           case "r":
             this.#message = REFRESHING;
             this.#refreshUsage();
+            this.#refreshNet();
             break;
         }
         this.#render();
@@ -247,6 +282,7 @@ export class Tui {
       }
     } finally {
       this.#busy = false;
+      this.#refreshNet();
       this.#render();
     }
   }
@@ -258,6 +294,7 @@ export class Tui {
     this.#proxy = null;
     this.#active = null;
     this.#message = dim("disconnected");
+    this.#refreshNet();
     this.#render();
   }
 
@@ -345,11 +382,13 @@ export class Tui {
         this.#render();
         void session?.stop().finally(() => {
           this.#message = red(`tun2socks stopped (${code}) — global off`);
+          this.#refreshNet();
           this.#render();
         });
       });
       session.onNetworkChange((event, detail) => {
         this.#message = event === "lost" ? yellow(`global: ${detail}`) : green(`global ON · rerouted ${detail}`);
+        if (event === "restored") this.#refreshNet();
         this.#render();
       });
       await session.start();
@@ -367,6 +406,7 @@ export class Tui {
       this.#global = null;
     } finally {
       this.#busy = false;
+      this.#refreshNet();
       this.#render();
     }
   }
@@ -384,6 +424,7 @@ export class Tui {
       this.#message = dim("global off (SOCKS proxy still on)");
     } finally {
       this.#busy = false;
+      this.#refreshNet();
       this.#render();
     }
   }
@@ -423,10 +464,18 @@ export class Tui {
     const status = this.#message;
     // A long status (e.g. a --verbose proxy error) would widen the box past the terminal and wrap.
     const room4status = (process.stdout.columns || 80) - 14;
-    const headLines = [`${dim("data  ")}  ${data}`, `${dim("route ")}  ${route}`, `${dim("status")}  ${fit(status, room4status)}`];
+    const wifi = this.#wifi === undefined ? dim("checking…") : this.#wifi === null ? dim("not on Wi-Fi") : this.#wifi;
+    const ip = this.#ip === undefined ? dim("checking…") : this.#ip === null ? yellow("unreachable") : `${bold(this.#ip)}  ${dim(this.#ipNote)}`;
+    const headLines = [
+      `${dim("data  ")}  ${data}`,
+      `${dim("wifi  ")}  ${wifi}`,
+      `${dim("ip    ")}  ${ip}`,
+      `${dim("route ")}  ${route}`,
+      `${dim("status")}  ${fit(status, room4status)}`,
+    ];
 
     const version = versionLines(true);
-    const room = Math.max(3, (process.stdout.rows || 24) - 15 - version.length);
+    const room = Math.max(3, (process.stdout.rows || 24) - 17 - version.length);
     const { start, slice } = window(this.#sel, this.#countries.length, room);
     const label = (c: Country) => `${flag(c.code)} ${countryName(c.code, c.name)}`;
     const body = slice.map((i) => {
