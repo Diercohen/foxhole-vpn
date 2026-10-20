@@ -90,6 +90,7 @@ export class Tui {
   #pwError = "";
   #pwChecking = false;
   #logsOpen = false; // the Logs popup is open
+  #restoring = false; // quitting: global mode's routes are being put back
   #renderTimer: NodeJS.Timeout | null = null;
   #wifi: string | null | undefined; // undefined: not read yet
   #ip: string | null | undefined; // undefined: checking
@@ -183,7 +184,7 @@ export class Tui {
       readline.emitKeypressEvents(input);
       const onData = (buf: Buffer) => {
         const rest = buf.toString().replace(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/g, (_, b: string, x: string, y: string, kind: string) => {
-          if (kind === "M" && b === "0" && !this.#pwMode && !this.#logsOpen && !this.#settingsOpen && linkAt(Number(x) - 1, Number(y) - 1)) openUrl(REPO_URL);
+          if (kind === "M" && b === "0" && !this.#pwMode && !this.#logsOpen && !this.#settingsOpen && !this.#restoring && linkAt(Number(x) - 1, Number(y) - 1)) openUrl(REPO_URL);
           return "";
         });
         if (rest) input.write(rest);
@@ -203,18 +204,19 @@ export class Tui {
 
       const quit = async (action?: "update") => {
         for (const sig of signals) process.removeListener(sig, onSignal);
-        input.removeListener("keypress", onKey);
+        input.removeListener("keypress", onKey); // keys now do nothing (and a second quit can't start)
+        if (this.#global) {
+          // Stay on our screen with a popup: stdin is still read raw and swallowed, so
+          // keys and clicks pressed meanwhile aren't echoed as ^[[<0;… junk.
+          this.#restoring = true;
+          this.#render();
+          await this.#global.stop().catch(() => {});
+        }
         process.stdin.removeListener("data", onData);
         process.stdout.removeListener("resize", onResize);
         if (process.stdin.isTTY) process.stdin.setRawMode(false);
         process.stdin.pause();
-        // Give the terminal back first (mouse reports off): if cleanup is slow, clicks
-        // and keys must not be echoed as ^[[<0;… junk, and text selection must work.
         leaveScreen();
-        if (this.#global) {
-          console.log("restoring networking…");
-          await this.#global.stop().catch(() => {});
-        }
         await this.#proxy?.close();
         if (action === "update") {
           runUpdate(); // runs npm in this terminal (asks for sudo if needed)
@@ -657,7 +659,9 @@ export class Tui {
       centerIn(dim(repoLink), width),
     ];
     draw(
-      this.#pwMode
+      this.#restoring
+        ? overlay(frame, this.#restoringPopup(), width)
+        : this.#pwMode
         ? overlay(frame, this.#passwordPopup(), width)
         : this.#settingsOpen
           ? overlay(frame, this.#settingsPopup(), width)
@@ -681,6 +685,25 @@ export class Tui {
   }
 
   /** The popup asking for the sudo password (sudo wants the user's own login password). */
+  #restoringPopup(): string[] {
+    return box(
+      [
+        "",
+        "Restoring networking…",
+        "",
+        "🦊 The fox is putting your routes and DNS",
+        "   back exactly where it found them.",
+        "",
+        yellow("Please don't force quit: a half-tidied"),
+        yellow("den means no internet until you reboot."),
+        "",
+        dim("Just a moment, then foxhole closes by itself."),
+        "",
+      ],
+      { title: bold(yellow("Quitting")), width: 48 },
+    );
+  }
+
   #passwordPopup(): string[] {
     const field = "•".repeat(this.#pw.length) + (this.#pwChecking ? "" : cyan("▏"));
     const note = this.#pwChecking ? dim("checking…") : this.#pwError ? red(this.#pwError) : "";
