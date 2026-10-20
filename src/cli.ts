@@ -9,6 +9,7 @@ import { Connection, findCountry } from "./connection.js";
 import { fetchEntitlement, GuardianError } from "./guardian.js";
 import { startProxy } from "./proxy.js";
 import { runGlobal, directPriv, isPrivileged } from "./global.js";
+import { loadSettings, proxyHost } from "./settings.js";
 import { restoreWindows } from "./global-win32.js";
 import { Tui } from "./tui.js";
 import { checkUpdate, updateNotice, versionLines } from "./update.js";
@@ -403,8 +404,8 @@ async function cmdProxy() {
   const server = await conn.selectServer(country);
   noteTokenTtl();
   const where = country ? `${flag(country.code)} ${countryName(country.code, country.name)}` : "recommended";
-  const host = arg("host") ?? "127.0.0.1";
-  const port = Number(arg("port") ?? 1080);
+  const host = arg("host") ?? proxyHost(loadSettings());
+  const port = Number(arg("port") ?? loadSettings().port);
   const handle = await startProxy(conn, host, port);
   console.log(green(`\nProxy on ${bold(`${host}:${handle.port}`)} (SOCKS5 and HTTP)  →  ${where}`));
   console.log(dim(`upstream ${server.hostname}:${server.port}`));
@@ -428,8 +429,8 @@ async function cmdProxy() {
 }
 
 async function cmdTui() {
-  const host = arg("host") ?? "127.0.0.1";
-  const port = Number(arg("port") ?? 1080);
+  const host = arg("host") ?? proxyHost(loadSettings());
+  const port = Number(arg("port") ?? loadSettings().port);
   await new Tui(new Connection(await ensureAuth()), host, port).run();
 }
 
@@ -450,8 +451,8 @@ async function cmdGlobal() {
   await notice();
   try {
     await runGlobal(conn, {
-      host: arg("host") ?? "127.0.0.1",
-      port: Number(arg("port") ?? 1080),
+      host: arg("host") ?? proxyHost(loadSettings()),
+      port: Number(arg("port") ?? loadSettings().port),
       force: process.argv.includes("--force"),
     });
   } catch (err) {

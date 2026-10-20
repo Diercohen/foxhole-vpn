@@ -7,7 +7,8 @@ import { fetchServerList, type Country } from "./serverlist.js";
 import { Connection } from "./connection.js";
 import { NotImplementedError } from "./auth.js";
 import { GuardianError } from "./guardian.js";
-import { wifiName, publicIp } from "./netinfo.js";
+import { wifiName, publicIp, lanIp } from "./netinfo.js";
+import { loadSettings, saveSettings, proxyHost, validPort, type Settings } from "./settings.js";
 import { forgetToken } from "./tokenserver.js";
 import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { logLines, onLog } from "./log.js";
@@ -29,6 +30,13 @@ function leaveScreen(): void {
 process.on("exit", leaveScreen);
 
 const REFRESHING = dim("refreshing…");
+
+/** The Settings popup's rows, in order. */
+const SETTINGS = [
+  { key: "share", label: "Share with devices on this network" },
+  { key: "port", label: "Proxy port" },
+  { key: "autoConnect", label: "Connect on start" },
+] as const;
 
 /** The last country connected to; the next start puts the cursor on it. */
 const lastCountryFile = () => join(userHome(), ".config", "foxhole-vpn", "country");
@@ -60,8 +68,14 @@ function order(list: Country[]): Country[] {
 
 export class Tui {
   readonly #conn: Connection;
-  readonly #host: string;
-  readonly #port: number;
+  #host: string;
+  #port: number;
+  #settings: Settings = loadSettings();
+  #settingsOpen = false; // the Settings popup is open
+  #setSel = 0;
+  #portEdit: string | null = null; // the port being typed, while editing it
+  #settingsNote = "";
+  #proxyStale = false; // the running proxy still has the old address (changed during global mode)
   #countries: Country[] = [];
   #sel = 0;
   #proxy: ProxyHandle | null = null;
@@ -105,6 +119,8 @@ export class Tui {
     } catch (err) {
       this.#message = red(`server list failed: ${(err as Error).message}`);
     }
+    // Only to a country actually remembered, never to whatever sorts first.
+    if (this.#settings.autoConnect && this.#countries[this.#sel]?.code === loadLastCountry()) void this.#connect();
     this.#refreshUsage();
     this.#refreshNet();
     // A Wi-Fi switch changes the public IP too; the name is cheap to poll.
@@ -167,7 +183,7 @@ export class Tui {
       readline.emitKeypressEvents(input);
       const onData = (buf: Buffer) => {
         const rest = buf.toString().replace(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/g, (_, b: string, x: string, y: string, kind: string) => {
-          if (kind === "M" && b === "0" && !this.#pwMode && !this.#logsOpen && linkAt(Number(x) - 1, Number(y) - 1)) openUrl(REPO_URL);
+          if (kind === "M" && b === "0" && !this.#pwMode && !this.#logsOpen && !this.#settingsOpen && linkAt(Number(x) - 1, Number(y) - 1)) openUrl(REPO_URL);
           return "";
         });
         if (rest) input.write(rest);
@@ -216,9 +232,15 @@ export class Tui {
           if (key.name === "escape" || key.name === "l") (this.#logsOpen = false), this.#render();
           return;
         }
+        if (this.#settingsOpen) return this.#settingsKey(s, key);
         if (key.name === "q") return void quit();
         if (key.name === "l") return void ((this.#logsOpen = true), this.#render());
         if (this.#busy) return;
+        if (key.name === "s") {
+          this.#settingsOpen = true;
+          this.#settingsNote = "";
+          return this.#render();
+        }
         switch (key.name) {
           case "up":
           case "k":
@@ -292,6 +314,7 @@ export class Tui {
     if (!this.#proxy) return;
     await this.#proxy.close();
     this.#proxy = null;
+    this.#proxyStale = false;
     this.#active = null;
     this.#message = dim("disconnected");
     this.#refreshNet();
@@ -427,11 +450,131 @@ export class Tui {
       this.#refreshNet();
       this.#render();
     }
+    if (this.#proxyStale) await this.#restartProxy();
   }
 
-  /** The proxy address; one port serves both SOCKS5 and HTTP. */
+  /** The proxy address; one port serves both SOCKS5 and HTTP. Shared: the one other devices use. */
   #proxyAddr(): string {
-    return `${this.#host}:${this.#proxy?.port ?? this.#port}`;
+    const host = this.#host === "0.0.0.0" ? (lanIp() ?? this.#host) : this.#host;
+    return `${host}:${this.#proxy?.port ?? this.#port}`;
+  }
+
+  /** Keystrokes while the Settings popup is open. */
+  #settingsKey(s: string, key: readline.Key): void {
+    if (this.#portEdit !== null) {
+      if (key.name === "escape") this.#portEdit = null;
+      else if (key.name === "backspace") this.#portEdit = this.#portEdit.slice(0, -1);
+      else if (key.name === "return") {
+        const port = Number(this.#portEdit);
+        if (!validPort(port)) this.#settingsNote = red("A port is a number from 1 to 65535.");
+        else {
+          this.#portEdit = null;
+          return void this.#changeSetting({ port });
+        }
+      } else if (/^\d$/.test(s) && this.#portEdit.length < 5) this.#portEdit += s;
+      return this.#render();
+    }
+    switch (key.name) {
+      case "escape":
+      case "s":
+        this.#settingsOpen = false;
+        break;
+      case "up":
+      case "k":
+        this.#setSel = (this.#setSel - 1 + SETTINGS.length) % SETTINGS.length;
+        break;
+      case "down":
+      case "j":
+        this.#setSel = (this.#setSel + 1) % SETTINGS.length;
+        break;
+      case "return":
+      case "space": {
+        const item = SETTINGS[this.#setSel].key;
+        if (item === "port") {
+          this.#portEdit = "";
+          this.#settingsNote = "";
+        } else return void this.#changeSetting({ [item]: !this.#settings[item] });
+      }
+    }
+    this.#render();
+  }
+
+  /** Saves a change and applies it: a new address or port restarts a running proxy. */
+  async #changeSetting(patch: Partial<Settings>): Promise<void> {
+    const next = { ...this.#settings, ...patch };
+    try {
+      saveSettings(next);
+    } catch (err) {
+      this.#settingsNote = red(`Couldn't save: ${(err as Error).message}`);
+      return this.#render();
+    }
+    this.#settings = next;
+    this.#settingsNote = "";
+    if ("share" in patch || "port" in patch) {
+      this.#host = proxyHost(next);
+      this.#port = next.port;
+      await this.#restartProxy();
+    }
+    this.#render();
+  }
+
+  /** Moves a running proxy to the current address and port. Not in global mode: tun2socks is tied to the old one. */
+  async #restartProxy(): Promise<void> {
+    if (!this.#proxy) return;
+    if (this.#global) {
+      this.#proxyStale = true;
+      this.#settingsNote = yellow("Applies when global mode is turned off.");
+      return;
+    }
+    this.#proxyStale = false;
+    this.#busy = true;
+    this.#render();
+    try {
+      await this.#proxy.close();
+      this.#proxy = null;
+      this.#proxy = await startProxy(this.#conn, this.#host, this.#port);
+      this.#message = green(`proxy now on ${this.#proxyAddr()}`);
+    } catch (err) {
+      // e.g. the port is taken: nothing listens now, so say disconnected
+      this.#active = null;
+      this.#message = red(`proxy couldn't start on ${this.#host}:${this.#port}: ${(err as Error).message} — disconnected`);
+    } finally {
+      this.#busy = false;
+      this.#refreshNet();
+    }
+  }
+
+  #settingsPopup(): string[] {
+    const s = this.#settings;
+    const onOff = (v: boolean) => (v ? green("on") : dim("off"));
+    const values = [
+      onOff(s.share),
+      this.#portEdit !== null ? `${this.#portEdit}${cyan("▏")}` : String(s.port),
+      onOff(s.autoConnect),
+    ];
+    const w = Math.max(...SETTINGS.map((it) => it.label.length));
+    const rows = SETTINGS.map((it, i) => {
+      const here = i === this.#setSel;
+      const label = it.label.padEnd(w);
+      return `${here ? cyan("❯") : " "} ${here ? bold(label) : label}   ${values[i]}`;
+    });
+    const last = this.#countries.find((c) => c.code === loadLastCountry());
+    const help = {
+      share: s.share
+        ? [
+            `Set your phone's Wi-Fi proxy to ${bold(cyan(`${lanIp() ?? "this computer's IP"}:${s.port}`))}.`,
+            yellow("No password: anyone on this network can use it, and your data."),
+          ]
+        : [dim("Only this computer can use the proxy."), dim("Turn on to use the VPN from your phone, on the same Wi-Fi.")],
+      port: this.#portEdit !== null
+        ? [dim("Type the new port · enter save · esc cancel")]
+        : [dim("One port serves SOCKS5 and HTTP. Default 1080.")],
+      autoConnect: [dim(last ? `Connects to ${flag(last.code)} ${countryName(last.code, last.name)} when foxhole opens.` : "Connects to the last country you used when foxhole opens.")],
+    }[SETTINGS[this.#setSel].key];
+    return box(
+      ["", ...rows, "", ...help, this.#settingsNote, "", dim("↑↓ select · enter change · esc close")],
+      { title: bold(cyan("⚙ Settings")), width: 66 },
+    );
   }
 
   /** Redraws at most every 100 ms: tun2socks can log many lines a second while the Logs popup is open. */
@@ -459,7 +602,7 @@ export class Tui {
     const route = this.#global
       ? green("all system traffic → VPN")
       : this.#active
-        ? `${cyan(this.#proxyAddr())}  ${dim("SOCKS5 or HTTP")}`
+        ? `${cyan(this.#proxyAddr())}  ${dim(this.#host === "0.0.0.0" ? "SOCKS5 or HTTP · shared on this network" : "SOCKS5 or HTTP")}`
         : dim("—");
     const status = this.#message;
     // A long status (e.g. a --verbose proxy error) would widen the box past the terminal and wrap.
@@ -495,13 +638,13 @@ export class Tui {
       : `${this.#countries.length} countries`;
 
     const title = bold(cyan("🦊 foxhole-vpn"));
-    const key = (k: string, rest: string) => `[ ${under(k)}${rest} ]`;
-    const buttons = [bold(cyan("[ ⏎ Connect ]")), dim(key("G", "lobal")), dim(key("D", "isconnect")), dim(key("R", "efresh Usage")), dim(key("L", "ogs")), dim(key("Q", "uit"))].join("  ");
+    const key = (k: string, rest: string) => `[${under(k)}${rest}]`;
+    const buttons = [bold(cyan("[⏎ Connect]")), dim(key("G", "lobal")), dim(key("D", "isconnect")), dim(key("R", "efresh")), dim(key("S", "ettings")), dim(key("L", "ogs")), dim(key("Q", "uit"))].join("  ");
     const headW = vw(box(headLines, { title, right: state })[0]);
     const table = grid(["", "Code", "Tier", "Country"], body, {
       caption: bold("Locations"),
       captionRight: dim(range),
-      minWidth: Math.max(headW, vw(buttons)), // the button row is 80 wide: fits an 80-column terminal
+      minWidth: Math.max(headW, vw(buttons)), // the button row is 74 wide: fits an 80-column terminal
     });
     const width = vw(table[0]);
     const frame = [
@@ -516,7 +659,9 @@ export class Tui {
     draw(
       this.#pwMode
         ? overlay(frame, this.#passwordPopup(), width)
-        : this.#logsOpen
+        : this.#settingsOpen
+          ? overlay(frame, this.#settingsPopup(), width)
+          : this.#logsOpen
           ? overlay(frame, this.#logsPopup(width, frame.length), width)
           : frame,
     );

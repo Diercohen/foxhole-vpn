@@ -3,6 +3,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import http from "node:http";
+import { networkInterfaces } from "node:os";
 
 const exec = promisify(execFile);
 
@@ -32,6 +33,16 @@ export async function wifiName(): Promise<string | null> {
   for (const dev of parseIwDev(await run("iw", ["dev"]))) {
     const ssid = parseSsid(await run("iw", ["dev", dev, "link"]));
     if (ssid) return ssid;
+  }
+  return null;
+}
+
+/** This computer's address on the local network (for other devices to reach the proxy), skipping VPN, container and loopback interfaces. */
+export function lanIp(ifaces: ReturnType<typeof networkInterfaces> = networkInterfaces()): string | null {
+  for (const [name, addrs] of Object.entries(ifaces)) {
+    if (/^(lo|docker|br-|veth|virbr|tun|tap|wg|utun|ppp|tailscale|zt|foxhole|vEthernet|Loopback)/i.test(name)) continue;
+    const a = addrs?.find((x) => x.family === "IPv4" && !x.internal && !x.address.startsWith("169.254."));
+    if (a) return a.address;
   }
   return null;
 }
