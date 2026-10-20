@@ -124,10 +124,14 @@ export class Tui {
     if (this.#settings.autoConnect && this.#countries[this.#sel]?.code === loadLastCountry()) void this.#connect();
     this.#refreshUsage();
     this.#refreshNet();
-    // A Wi-Fi switch changes the public IP too; the name is cheap to poll.
+    // A Wi-Fi switch changes the public IP too; the name is cheap to poll. The LAN
+    // address catches switches the name can't show (macOS hides it).
+    let lan = lanIp();
     setInterval(() => {
       void wifiName().then((w) => {
-        if (this.#wifi !== undefined && w !== this.#wifi) this.#refreshNet();
+        const was = lan;
+        lan = lanIp();
+        if (this.#wifi !== undefined && (w !== this.#wifi || lan !== was)) this.#refreshNet();
       });
     }, 5000).unref();
     void checkUpdate().then(() => this.#render()); // show the update notice once npm answers
@@ -611,16 +615,21 @@ export class Tui {
     const room4status = (process.stdout.columns || 80) - 14;
     const wifi = this.#wifi === undefined ? dim("checking…") : this.#wifi === null ? dim("not on Wi-Fi") : this.#wifi;
     const ip = this.#ip === undefined ? dim("checking…") : this.#ip === null ? yellow("unreachable") : `${bold(this.#ip)}  ${dim(this.#ipNote)}`;
+    const last = this.#settings.autoConnect && this.#countries.find((c) => c.code === loadLastCountry());
+    const onStart = !this.#settings.autoConnect
+      ? dim("connect on start off · S to change")
+      : green("connect on start") + (last ? ` ${flag(last.code)} ${countryName(last.code, last.name)}` : dim(" · last country used"));
     const headLines = [
       `${dim("data  ")}  ${data}`,
       `${dim("wifi  ")}  ${wifi}`,
       `${dim("ip    ")}  ${ip}`,
       `${dim("route ")}  ${route}`,
+      `${dim("start ")}  ${onStart}`,
       `${dim("status")}  ${fit(status, room4status)}`,
     ];
 
     const version = versionLines(true);
-    const room = Math.max(3, (process.stdout.rows || 24) - 17 - version.length);
+    const room = Math.max(3, (process.stdout.rows || 24) - 21 - version.length);
     const { start, slice } = window(this.#sel, this.#countries.length, room);
     const label = (c: Country) => `${flag(c.code)} ${countryName(c.code, c.name)}`;
     const body = slice.map((i) => {
@@ -652,6 +661,10 @@ export class Tui {
     const frame = [
       ...box(headLines, { title, right: state, width: width - 4 }),
       ...table,
+      // The free locations' IPs are shared widely, so picky sites flag them.
+      centerIn(dim("💡 Claude, ChatGPT, Gemini, Netflix, YouTube Music, Spotify and banks"), width),
+      centerIn(dim("often block shared VPN IPs: pick a paid location for them."), width),
+      centerIn(dim(`Foxhole made the paid servers ${green("free")} for you 🦊`), width),
       "",
       centerIn(buttons, width),
       "",
@@ -684,7 +697,7 @@ export class Tui {
     return box([...padded, dim(`esc close · ${count}`)], { title: bold(cyan("Logs")), width: inner });
   }
 
-  /** The popup asking for the sudo password (sudo wants the user's own login password). */
+  /** The popup shown while quitting restores global mode's routes and DNS. */
   #restoringPopup(): string[] {
     return box(
       [
@@ -704,6 +717,7 @@ export class Tui {
     );
   }
 
+  /** The popup asking for the sudo password (sudo wants the user's own login password). */
   #passwordPopup(): string[] {
     const field = "•".repeat(this.#pw.length) + (this.#pwChecking ? "" : cyan("▏"));
     const note = this.#pwChecking ? dim("checking…") : this.#pwError ? red(this.#pwError) : "";

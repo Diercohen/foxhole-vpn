@@ -28,7 +28,10 @@ export async function wifiName(): Promise<string | null> {
   if (process.platform === "darwin") {
     const ports = await run("networksetup", ["-listallhardwareports"]);
     const dev = ports.match(/Hardware Port: Wi-Fi\s*\nDevice:\s*(\S+)/)?.[1] ?? "en0";
-    return parseSsid(await run("ipconfig", ["getsummary", dev])) ?? parseSsid(await run("networksetup", ["-getairportnetwork", dev]));
+    const summary = await run("ipconfig", ["getsummary", dev]);
+    const ssid = parseSsid(summary) ?? parseSsid(await run("networksetup", ["-getairportnetwork", dev]));
+    // macOS 15+ redacts the name for apps without location access; still on Wi-Fi, though.
+    return ssid ?? (/^\s*SSID\s*:\s*<redacted>/m.test(summary) ? "connected (name hidden by macOS)" : null);
   }
   for (const dev of parseIwDev(await run("iw", ["dev"]))) {
     const ssid = parseSsid(await run("iw", ["dev", dev, "link"]));
