@@ -2,7 +2,7 @@ import readline from "node:readline";
 import { PassThrough } from "node:stream";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { userHome } from "./profile.js";
+import { userHome, findAccount } from "./profile.js";
 import { fetchServerList, type Country } from "./serverlist.js";
 import { Connection } from "./connection.js";
 import { NotImplementedError } from "./auth.js";
@@ -30,6 +30,7 @@ function leaveScreen(): void {
 process.on("exit", leaveScreen);
 
 const REFRESHING = dim("refreshing…");
+const LOGOUT_ASK = yellow("press O again to log out and switch accounts");
 const onOff = (v: boolean) => (v ? green("on") : dim("off"));
 
 /** The Settings popup's rows, in order. */
@@ -97,6 +98,7 @@ export class Tui {
   #ip: string | null | undefined; // undefined: checking
   #ipNote = "";
   #netSeq = 0; // drops answers from an older check
+  readonly #email = findAccount()?.email ?? null; // the Firefox account the token came from
 
   constructor(conn: Connection, host: string, port: number) {
     this.#conn = conn;
@@ -104,7 +106,8 @@ export class Tui {
     this.#port = port;
   }
 
-  async run(): Promise<void> {
+  /** Resolves "logout" when the user logged out, so the caller can forget the token. */
+  async run(): Promise<"logout" | undefined> {
     onLog(() => this.#logsOpen && this.#renderSoon());
     onProxyWarning((msg) => {
       this.#message = red(`proxy: ${msg}`);
@@ -137,7 +140,7 @@ export class Tui {
     }, 5000).unref();
     void checkUpdate().then(() => this.#render()); // show the update notice once npm answers
     this.#render();
-    await this.#loop();
+    return (await this.#loop()) === "logout" ? "logout" : undefined;
   }
 
   /** Re-reads the network and the public IP: the VPN exit's when connected, else the real one. */
@@ -180,7 +183,7 @@ export class Tui {
       });
   }
 
-  #loop(): Promise<void> {
+  #loop(): Promise<"update" | "logout" | undefined> {
     return new Promise((resolve) => {
       // stdin minus mouse reports: readline would split those into stray keypresses ("0", ";", "M"…).
       // SGR mouse report: ESC [ < button ; col ; row (M = press, m = release)
@@ -207,7 +210,7 @@ export class Tui {
       const onSignal = () => void quit();
       for (const sig of signals) process.on(sig, onSignal);
 
-      const quit = async (action?: "update") => {
+      const quit = async (action?: "update" | "logout") => {
         for (const sig of signals) process.removeListener(sig, onSignal);
         input.removeListener("keypress", onKey); // keys now do nothing (and a second quit can't start)
         if (this.#global) {
@@ -227,7 +230,7 @@ export class Tui {
           runUpdate(); // runs npm in this terminal (asks for sudo if needed)
           console.log(green("\nUpdated. Start foxhole-vpn again to use the new version."));
         }
-        resolve();
+        resolve(action);
       };
 
       const onKey = (s: string, key: readline.Key) => {
@@ -268,6 +271,11 @@ export class Tui {
             return;
           case "u":
             if (canUpdate()) return void quit("update");
+            break;
+          case "o":
+            // asks first: the token is gone after this, and getting a new one takes a few steps
+            if (this.#message === LOGOUT_ASK) return void quit("logout");
+            this.#message = LOGOUT_ASK;
             break;
           case "r":
             this.#message = REFRESHING;
@@ -619,7 +627,9 @@ export class Tui {
     const auto = !this.#settings.autoConnect
       ? `${onOff(false)}  ${dim("S to change")}`
       : `${onOff(true)}  ${dim(last ? `to ${flag(last.code)} ${countryName(last.code, last.name)}` : "to the last country used")}`;
+    const account = `${this.#email ?? dim("unknown")}  ${dim("O to log out")}`;
     const headLines = [
+      ["account", account],
       ["data", data],
       ["network", net],
       ["ip", ip],
@@ -629,7 +639,7 @@ export class Tui {
     ].map(([label, value]) => `${dim(label.padEnd(12))}  ${value}`);
 
     const version = versionLines(true);
-    const room = Math.max(3, (process.stdout.rows || 24) - 21 - version.length);
+    const room = Math.max(3, (process.stdout.rows || 24) - 22 - version.length);
     const { start, slice } = window(this.#sel, this.#countries.length, room);
     const label = (c: Country) => `${flag(c.code)} ${countryName(c.code, c.name)}`;
     const body = slice.map((i) => {

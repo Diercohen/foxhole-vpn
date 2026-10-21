@@ -174,7 +174,7 @@ async function captureToken(error: string | null = null): Promise<string | null>
     `${bold("1.")} In Firefox open ${cyan("about:config")} and set`,
     `   ${cyan("devtools.chrome.enabled")} to ${bold("true")}. ${dim("(first time only)")}`,
     "",
-    `${bold("2.")} Open the ${bold("Browser Console")}: ${cyan(process.platform === "darwin" ? "⌘⇧J" : "Ctrl+Shift+J")}.`,
+    `${bold("2.")} Open the ${bold("Browser Console")}: ${cyan(process.platform === "darwin" ? "⌘ ⇧ J" : "Ctrl+Shift+J")}.`,
     `   ${dim("(the Browser Console, not the page's web console)")}`,
     "",
     `${bold("3.")} Paste the snippet printed below and press ${bold("Enter")}.`,
@@ -431,7 +431,13 @@ async function cmdProxy() {
 async function cmdTui() {
   const host = arg("host") ?? proxyHost(loadSettings());
   const port = Number(arg("port") ?? loadSettings().port);
-  await new Tui(new Connection(await ensureAuth()), host, port).run();
+  if ((await new Tui(new Connection(await ensureAuth()), host, port).run()) !== "logout") return;
+  forgetToken();
+  openBrowser("about:preferences#sync");
+  console.log(green("\n✓ Logged out: the saved VPN token is deleted."));
+  console.log(`To switch accounts: in Firefox's ${bold("Sync")} settings click ${bold("Sign out")}, sign in with the other account,`);
+  console.log(`then run ${bold("foxhole")} again to get a new token.`);
+  if (tokenEnv()?.name === ENV_TOKEN) console.log(yellow(`Also unset ${ENV_TOKEN}: foxhole uses it before the saved token.`));
 }
 
 async function cmdGlobal() {

@@ -122,7 +122,7 @@ access token from Firefox. You only do this once per token:
 1. Run `foxhole` (or `foxhole proxy` / `foxhole global`) in a terminal. With no
    usable token it opens a window with the steps and a ready-made snippet.
 2. In Firefox, set `devtools.chrome.enabled` to `true` in `about:config`.
-3. Open the **Browser Console** (⌘⇧J on macOS, Ctrl+Shift+J on Linux and Windows — not the
+3. Open the **Browser Console** (⌘ ⇧ J on macOS, Ctrl+Shift+J on Linux and Windows — not the
    page's web console), paste the snippet and press Enter.
 
 The snippet sends the token back to foxhole-vpn, which saves it to
