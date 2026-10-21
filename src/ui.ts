@@ -177,8 +177,8 @@ export const openUrl = (url: string) =>
     .on("error", () => {})
     .unref();
 
-/** Redraws in place, centered: home, each line cleared to its end, then clear below (no flicker). */
-export function draw(lines: string[]): void {
+/** Redraws in place, centered: home, each line cleared to its end, then clear below (no flicker). Returns where the lines landed, for mouse clicks. */
+export function draw(lines: string[]): { top: number; left: number } {
   const cols = process.stdout.columns || 80, rows = process.stdout.rows || 24;
   const left = " ".repeat(Math.max(0, Math.floor((cols - Math.max(...lines.map(vw))) / 2)));
   const top = Math.max(0, Math.floor((rows - lines.length) / 2));
@@ -186,6 +186,7 @@ export function draw(lines: string[]): void {
   const i = screen.findIndex((l) => l.includes(REPO_URL));
   link = i < 0 ? null : { y: i, x: vw(screen[i].slice(0, screen[i].indexOf("\x1b]8;;"))) };
   process.stdout.write("\x1b[H" + screen.map(paint).join("\n") + "\x1b[J");
+  return { top, left: left.length };
 }
 
 // Terminals disagree on a flag's width (1 or 2 cells), which would shift everything after it.

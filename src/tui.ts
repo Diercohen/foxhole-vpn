@@ -17,7 +17,7 @@ import { checkUpdate, canUpdate, runUpdate, versionLines } from "./update.js";
 import { bold, dim, under, strike, green, red, yellow, cyan, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl } from "./ui.js";
 
 const ESC = "\x1b[";
-// alternate screen + hidden cursor + mouse reports (SGR), so the repo link can be clicked
+// alternate screen + hidden cursor + mouse reports (SGR): clicks and the wheel, see #mouse()
 const ALT_ON = `${ESC}?1049h${ESC}?25l${ESC}?1000h${ESC}?1006h`;
 const ALT_OFF = `${ESC}?1000l${ESC}?1006l${ESC}?25h${ESC}?1049l`;
 let screenOn = false;
@@ -98,6 +98,8 @@ export class Tui {
   #ip: string | null | undefined; // undefined: checking
   #ipNote = "";
   #netSeq = 0; // drops answers from an older check
+  // where the last render put the clickable parts; rows are frame lines, x columns in the frame
+  #hit = { top: 0, left: 0, rowsTop: 0, start: 0, rows: 0, width: 0, buttonsY: -1, buttons: "", setTop: -1, setX: 0, setW: 0 };
   readonly #email = findAccount()?.email ?? null; // the Firefox account the token came from
 
   constructor(conn: Connection, host: string, port: number) {
@@ -192,7 +194,8 @@ export class Tui {
       readline.emitKeypressEvents(input);
       const onData = (buf: Buffer) => {
         const rest = buf.toString().replace(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/g, (_, b: string, x: string, y: string, kind: string) => {
-          if (kind === "M" && b === "0" && !this.#pwMode && !this.#logsOpen && !this.#settingsOpen && !this.#restoring && linkAt(Number(x) - 1, Number(y) - 1)) openUrl(REPO_URL);
+          // as a keypress, so it goes where a key would (and nowhere once quitting)
+          if (kind === "M") this.#mouse(Number(b), Number(x) - 1, Number(y) - 1, (name) => input.emit("keypress", undefined, { name }));
           return "";
         });
         if (rest) input.write(rest);
@@ -287,6 +290,38 @@ export class Tui {
       };
       input.on("keypress", onKey);
     });
+  }
+
+  /**
+   * A mouse press at the 0-based screen cell (x, y). The wheel moves the selection; a click
+   * on a country selects it (again: connects), on a button or setting presses it.
+   */
+  #mouse(b: number, x: number, y: number, press: (name: string) => void): void {
+    if (b === 64 || b === 65) return press(b === 64 ? "up" : "down");
+    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#restoring) return;
+    const h = this.#hit;
+    const fx = x - h.left, fy = y - h.top;
+    if (this.#settingsOpen) {
+      const i = fy - h.setTop;
+      if (this.#portEdit !== null || i < 0 || i >= SETTINGS.length || fx < h.setX || fx >= h.setX + h.setW) return;
+      this.#setSel = i;
+      return press("return");
+    }
+    if (linkAt(x, y)) return openUrl(REPO_URL);
+    const k = fy - h.rowsTop;
+    if (k >= 0 && k < h.rows && fx >= 0 && fx < h.width) {
+      if (this.#busy) return;
+      if (h.start + k === this.#sel) return press("return");
+      this.#sel = h.start + k;
+      return this.#render();
+    }
+    if (fy === h.buttonsY) {
+      // the [...] around the click, if any
+      const a = h.buttons.lastIndexOf("[", fx), z = h.buttons.indexOf("]", fx);
+      if (a < 0 || z < 0 || h.buttons.lastIndexOf("]", fx - 1) > a) return;
+      const label = h.buttons.slice(a + 1, z);
+      press(label.startsWith("⏎") ? "return" : label[0].toLowerCase());
+    }
   }
 
   async #connect(): Promise<void> {
@@ -682,17 +717,28 @@ export class Tui {
       ...version.map((l) => centerIn(l, width)),
       centerIn(dim(repoLink), width),
     ];
-    draw(
-      this.#restoring
-        ? overlay(frame, this.#restoringPopup(), width)
-        : this.#pwMode
-        ? overlay(frame, this.#passwordPopup(), width)
+    const popup = this.#restoring
+      ? this.#restoringPopup()
+      : this.#pwMode
+        ? this.#passwordPopup()
         : this.#settingsOpen
-          ? overlay(frame, this.#settingsPopup(), width)
+          ? this.#settingsPopup()
           : this.#logsOpen
-          ? overlay(frame, this.#logsPopup(width, frame.length), width)
-          : frame,
-    );
+            ? this.#logsPopup(width, frame.length)
+            : null;
+    const { top, left } = draw(popup ? overlay(frame, popup, width) : frame);
+    const buttonsY = frame.length - version.length - 3;
+    // as overlay() places it: centered, with a 1-cell margin; the rows follow the border and a blank line
+    const setW = popup ? vw(popup[0]) : 0;
+    this.#hit = {
+      top, left, width, buttonsY, setW,
+      rowsTop: headLines.length + 2 + 5, // the head box, then the table's caption and headings
+      start,
+      rows: slice.length,
+      buttons: frame[buttonsY].replace(/\x1b\[[0-9;]*m/g, ""),
+      setTop: Math.floor((frame.length - (popup?.length ?? 0) - 2) / 2) + 3,
+      setX: Math.floor((width - setW - 2) / 2) + 1,
+    };
   }
 
   /** The Logs popup: the newest lines that fit, updated live while open. */
