@@ -7,7 +7,7 @@ import { fetchServerList, type Country } from "./serverlist.js";
 import { Connection } from "./connection.js";
 import { NotImplementedError } from "./auth.js";
 import { GuardianError } from "./guardian.js";
-import { wifiName, publicIp, lanIp } from "./netinfo.js";
+import { network, publicIp, lanIp } from "./netinfo.js";
 import { loadSettings, saveSettings, proxyHost, validPort, type Settings } from "./settings.js";
 import { forgetToken } from "./tokenserver.js";
 import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
@@ -30,12 +30,13 @@ function leaveScreen(): void {
 process.on("exit", leaveScreen);
 
 const REFRESHING = dim("refreshing…");
+const onOff = (v: boolean) => (v ? green("on") : dim("off"));
 
 /** The Settings popup's rows, in order. */
 const SETTINGS = [
   { key: "share", label: "Share with devices on this network" },
   { key: "port", label: "Proxy port" },
-  { key: "autoConnect", label: "Connect on start" },
+  { key: "autoConnect", label: "Auto connect" },
 ] as const;
 
 /** The last country connected to; the next start puts the cursor on it. */
@@ -92,7 +93,7 @@ export class Tui {
   #logsOpen = false; // the Logs popup is open
   #restoring = false; // quitting: global mode's routes are being put back
   #renderTimer: NodeJS.Timeout | null = null;
-  #wifi: string | null | undefined; // undefined: not read yet
+  #net: string | null | undefined; // undefined: not read yet
   #ip: string | null | undefined; // undefined: checking
   #ipNote = "";
   #netSeq = 0; // drops answers from an older check
@@ -124,14 +125,14 @@ export class Tui {
     if (this.#settings.autoConnect && this.#countries[this.#sel]?.code === loadLastCountry()) void this.#connect();
     this.#refreshUsage();
     this.#refreshNet();
-    // A Wi-Fi switch changes the public IP too; the name is cheap to poll. The LAN
-    // address catches switches the name can't show (macOS hides it).
+    // A network switch changes the public IP too; the network is cheap to poll. The
+    // LAN address catches switches the name can't show (when macOS hides it).
     let lan = lanIp();
     setInterval(() => {
-      void wifiName().then((w) => {
+      void network().then((n) => {
         const was = lan;
         lan = lanIp();
-        if (this.#wifi !== undefined && (w !== this.#wifi || lan !== was)) this.#refreshNet();
+        if (this.#net !== undefined && (n !== this.#net || lan !== was)) this.#refreshNet();
       });
     }, 5000).unref();
     void checkUpdate().then(() => this.#render()); // show the update notice once npm answers
@@ -139,7 +140,7 @@ export class Tui {
     await this.#loop();
   }
 
-  /** Re-reads the Wi-Fi name and the public IP: the VPN exit's when connected, else the real one. */
+  /** Re-reads the network and the public IP: the VPN exit's when connected, else the real one. */
   #refreshNet(): void {
     const seq = ++this.#netSeq;
     const country = this.#global ? this.#globalCountry : this.#active;
@@ -148,9 +149,9 @@ export class Tui {
       ? { host: dialHost(this.#host), port: this.#proxy.port }
       : undefined;
     this.#ip = undefined;
-    void wifiName().then((w) => {
+    void network().then((n) => {
       if (seq !== this.#netSeq) return;
-      this.#wifi = w;
+      this.#net = n;
       this.#render();
     });
     void publicIp(proxy).then((ip) => {
@@ -552,7 +553,6 @@ export class Tui {
 
   #settingsPopup(): string[] {
     const s = this.#settings;
-    const onOff = (v: boolean) => (v ? green("on") : dim("off"));
     const values = [
       onOff(s.share),
       this.#portEdit !== null ? `${this.#portEdit}${cyan("▏")}` : String(s.port),
@@ -612,21 +612,21 @@ export class Tui {
         : dim("—");
     const status = this.#message;
     // A long status (e.g. a --verbose proxy error) would widen the box past the terminal and wrap.
-    const room4status = (process.stdout.columns || 80) - 14;
-    const wifi = this.#wifi === undefined ? dim("checking…") : this.#wifi === null ? dim("not on Wi-Fi") : this.#wifi;
+    const room4status = (process.stdout.columns || 80) - 20; // label 12, gap 2, border 4, slack 2
+    const net = this.#net === undefined ? dim("checking…") : this.#net ?? yellow("offline");
     const ip = this.#ip === undefined ? dim("checking…") : this.#ip === null ? yellow("unreachable") : `${bold(this.#ip)}  ${dim(this.#ipNote)}`;
     const last = this.#settings.autoConnect && this.#countries.find((c) => c.code === loadLastCountry());
-    const onStart = !this.#settings.autoConnect
-      ? dim("connect on start off · S to change")
-      : green("connect on start") + (last ? ` ${flag(last.code)} ${countryName(last.code, last.name)}` : dim(" · last country used"));
+    const auto = !this.#settings.autoConnect
+      ? `${onOff(false)}  ${dim("S to change")}`
+      : `${onOff(true)}  ${dim(last ? `to ${flag(last.code)} ${countryName(last.code, last.name)}` : "to the last country used")}`;
     const headLines = [
-      `${dim("data  ")}  ${data}`,
-      `${dim("wifi  ")}  ${wifi}`,
-      `${dim("ip    ")}  ${ip}`,
-      `${dim("route ")}  ${route}`,
-      `${dim("start ")}  ${onStart}`,
-      `${dim("status")}  ${fit(status, room4status)}`,
-    ];
+      ["data", data],
+      ["network", net],
+      ["ip", ip],
+      ["route", route],
+      ["auto connect", auto],
+      ["status", fit(status, room4status)],
+    ].map(([label, value]) => `${dim(label.padEnd(12))}  ${value}`);
 
     const version = versionLines(true);
     const room = Math.max(3, (process.stdout.rows || 24) - 21 - version.length);

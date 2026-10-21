@@ -190,11 +190,17 @@ export function draw(lines: string[]): void {
 
 // Terminals disagree on a flag's width (1 or 2 cells), which would shift everything after it.
 // So draw the line with 2 spaces in its place, then jump back and paint the flag at its column.
+// Terminal.app also draws everything after a flag one cell to the left, over the space after
+// it: there a flag gets a spare third cell, which that shift takes back.
+// ponytail: so there a flag's line is a cell longer than it looks, and wraps in a terminal exactly as wide as the frame.
+const FLAG_CELLS = process.env.TERM_PROGRAM === "Apple_Terminal" ? 3 : 2;
 function paint(line: string): string {
   let flags = "";
+  let spare = 0; // cells the flags before this one took beyond their 2
   const text = line.replace(/[\u{1F1E6}-\u{1F1FF}]{2}/gu, (f: string, i: number) => {
-    flags += `\x1b[${vw(line.slice(0, i)) + 1}G${f}`;
-    return "  ";
+    flags += `\x1b[${vw(line.slice(0, i)) + spare + 1}G${f}`;
+    spare += FLAG_CELLS - 2;
+    return " ".repeat(FLAG_CELLS);
   });
   return text + "\x1b[K" + flags;
 }
