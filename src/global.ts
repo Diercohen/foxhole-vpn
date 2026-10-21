@@ -292,19 +292,45 @@ export async function isPrivileged(): Promise<boolean> {
   return IS_WIN ? isWindowsAdmin() : process.getuid?.() === 0;
 }
 
-/** Checks a sudo password without running anything. */
-export function validateSudo(password: string): Promise<boolean> {
+/** Runs `sudo -S <args>` with `input` on stdin; true if it succeeds. */
+function sudoOk(args: string[], input: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const p = spawn("sudo", ["-S", "-k", "-p", "", "-v"], { stdio: ["pipe", "ignore", "ignore"] });
+    const p = spawn("sudo", ["-S", "-p", "", ...args], { stdio: ["pipe", "ignore", "ignore"] });
     p.on("error", () => resolve(false));
     p.on("exit", (code) => resolve(code === 0));
-    p.stdin.end(password + "\n");
+    p.stdin.end(input);
   });
 }
 
-/** Elevates each command with `sudo -S`, feeding the password on stdin. */
+/** Checks a sudo password without running anything. */
+export const validateSudo = (password: string): Promise<boolean> => sudoOk(["-k", "-v"], password + "\n");
+
+/** True when a PAM config has an active pam_tid line: sudo takes a fingerprint (Touch ID). Pure. */
+export const pamTouchId = (pam: string): boolean => /^\s*auth\s+\S+\s+pam_tid\.so\b/m.test(pam);
+
+/** macOS set up to authorize sudo by Touch ID, where a typed password would go unused. */
+export function sudoUsesTouchId(): boolean {
+  if (process.platform !== "darwin") return false;
+  return ["/etc/pam.d/sudo_local", "/etc/pam.d/sudo"].some((f) => {
+    try {
+      return pamTouchId(readFileSync(f, "utf8"));
+    } catch {
+      return false; // missing or unreadable: ask for the password, as without Touch ID
+    }
+  });
+}
+
+/**
+ * Authorizes sudo by Touch ID (macOS shows its fingerprint prompt) and, unlike validateSudo,
+ * keeps it cached for the commands that follow. No password goes in, so a cancelled prompt
+ * (or no sensor: lid closed) fails instead of waiting for one.
+ */
+export const touchIdSudo = (): Promise<boolean> => sudoOk(["-v"], "");
+
+/** Elevates each command with `sudo -S`, feeding the password on stdin ("" after Touch ID: sudo uses what it cached). */
 export function sudoPriv(password: string): Priv {
-  const feed = (p: ReturnType<typeof spawn>) => p.stdin!.end(password + "\n");
+  // Nothing at all without a password: an empty line would count as a wrong attempt.
+  const feed = (p: ReturnType<typeof spawn>) => p.stdin!.end(password && password + "\n");
   return {
     run: (argv, quiet = false) =>
       new Promise<void>((resolve, reject) => {

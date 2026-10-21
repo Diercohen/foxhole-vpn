@@ -1,6 +1,7 @@
 // Pure-function checks for the macOS global-routing parsers. No root, no network.
 import assert from "node:assert";
 import { parseRouteGet, serviceForDevice, dnsRestoreArgs, macConflictingVpn, parseNetstatDefault, macNeedsRepin } from "../dist/global-darwin.js";
+import { pamTouchId } from "../dist/global.js";
 
 const routeGet = `   route to: default
 destination: default
@@ -55,5 +56,10 @@ const viaTun = "   route to: 151.101.1.1\n    gateway: 198.18.0.1\n  interface: 
 assert.equal(macNeedsRepin(home, home, viaEn0), false, "nothing changed");
 assert.equal(macNeedsRepin(home, { gw: "10.0.0.1", dev: "en0" }, viaEn0), true, "new gateway");
 assert.equal(macNeedsRepin(home, home, viaTun), true, "pin gone: server routes into the utun");
+
+// sudo's PAM config: Touch ID only when the pam_tid line is active.
+assert.equal(pamTouchId("# sudo: auth account password session\nauth       sufficient     pam_tid.so\nauth       include        sudo_local\n"), true, "Touch ID in /etc/pam.d/sudo");
+assert.equal(pamTouchId("# uncomment following line to enable Touch ID for sudo\n#auth       sufficient     pam_tid.so\n"), false, "commented out (sudo_local.template)");
+assert.equal(pamTouchId("auth       required       pam_opendirectory.so\n"), false, "password only");
 
 console.log("ok - macOS routing parsers");

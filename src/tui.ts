@@ -12,7 +12,7 @@ import { loadSettings, saveSettings, proxyHost, validPort, type Settings } from 
 import { forgetToken } from "./tokenserver.js";
 import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { logLines, onLog } from "./log.js";
-import { GlobalSession, sudoPriv, directPriv, isPrivileged, validateSudo, ensureTun2socks, dialHost } from "./global.js";
+import { GlobalSession, sudoPriv, directPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, versionLines } from "./update.js";
 import { bold, dim, under, strike, green, red, yellow, cyan, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl } from "./ui.js";
 
@@ -385,9 +385,21 @@ export class Tui {
       this.#message = yellow("global needs Administrator rights — quit, then run foxhole in Terminal (Admin)");
       return void this.#render();
     }
+    let note = "";
+    if (sudoUsesTouchId()) {
+      // sudo takes the fingerprint here, so a password typed in the popup would go unused
+      this.#busy = true;
+      this.#message = yellow("confirm with Touch ID to go global…");
+      this.#render();
+      const ok = await touchIdSudo();
+      this.#busy = false;
+      if (ok) return void this.#enableGlobal("");
+      this.#message = "";
+      note = "No Touch ID: type your password instead."; // cancelled, or no sensor (lid closed)
+    }
     this.#pwMode = true;
     this.#pw = "";
-    this.#pwError = "";
+    this.#pwError = note;
     this.#render();
   }
 
