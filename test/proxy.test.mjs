@@ -222,7 +222,40 @@ async function githubSsh() {
   console.log(`ok - SSH to GitHub goes to ssh.github.com:443${ip ? "" : " (IP case skipped: no DNS)"}`);
 }
 
+// Quitting closes the proxy while a tunnel may still be opening: that tunnel must close
+// too, or it keeps foxhole from exiting until the far end gives up on it.
+async function closeMidDial() {
+  let upClosed;
+  const closed = new Promise((r) => (upClosed = r));
+  const server = tls.createServer({ key: readFileSync(key), cert: readFileSync(cert) }, (s) => {
+    s.once("data", () => setTimeout(() => s.write("HTTP/1.1 200 OK\r\n\r\n"), 200)); // answers after the client left
+    s.on("error", () => {});
+    s.once("close", upClosed);
+  });
+  const upstreamPort = await listen(server);
+  const conn = {
+    server: { hostname: "127.0.0.1", port: upstreamPort },
+    async currentPass() {
+      return { token: "faketoken", notBefore: 0, expires: 2 ** 31 };
+    },
+  };
+  const handle = await startProxy(conn, "127.0.0.1", 0);
+  const c = net.connect(handle.port, "127.0.0.1");
+  c.on("error", () => {});
+  await write(c, Buffer.from([0x05, 0x01, 0x00]));
+  await read(c);
+  await write(c, Buffer.from([0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, targetPort >> 8, targetPort & 0xff]));
+  await new Promise((r) => setTimeout(r, 50)); // the dial is in flight
+  await handle.close();
+  const ok = await Promise.race([closed.then(() => true), new Promise((r) => setTimeout(r, 3000, false))]);
+  assert.ok(ok, "the tunnel closes with the proxy");
+  c.destroy();
+  server.close();
+  console.log("ok - closing the proxy mid-dial closes that tunnel too");
+}
+
 await scenario("SOCKS5 bridge tunnels TCP through an authenticated upstream CONNECT", 0, 1);
+await closeMidDial();
 await httpScenarios();
 await scenario("a dropped upstream connection is retried automatically", 1, 2);
 await loopGuard();

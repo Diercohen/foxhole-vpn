@@ -217,18 +217,18 @@ export class Tui {
         for (const sig of signals) process.removeListener(sig, onSignal);
         input.removeListener("keypress", onKey); // keys now do nothing (and a second quit can't start)
         if (this.#global) {
-          // Stay on our screen with a popup: stdin is still read raw and swallowed, so
-          // keys and clicks pressed meanwhile aren't echoed as ^[[<0;… junk.
+          // Stay on our screen with a popup until everything is closed: stdin is still read raw
+          // and swallowed, so keys and clicks pressed meanwhile aren't echoed as ^[[<0;… junk.
           this.#restoring = true;
           this.#render();
           await this.#global.stop().catch(() => {});
         }
+        await this.#proxy?.close();
         process.stdin.removeListener("data", onData);
         process.stdout.removeListener("resize", onResize);
         if (process.stdin.isTTY) process.stdin.setRawMode(false);
         process.stdin.pause();
         leaveScreen();
-        await this.#proxy?.close();
         if (action === "update") {
           runUpdate(); // runs npm in this terminal (asks for sudo if needed)
           console.log(green("\nUpdated. Start foxhole-vpn again to use the new version."));

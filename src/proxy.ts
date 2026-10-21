@@ -238,6 +238,9 @@ async function dial(conn: Connection, target: Target): Promise<tls.TLSSocket | n
 
 /** Pipes two sockets into each other until either side closes. */
 function splice(a: net.Socket, b: net.Socket): void {
+  // The client hung up while the tunnel was opening (tun2socks quitting, a cancelled
+  // connection): its "close" already fired, so nothing below would ever close the tunnel.
+  if (a.destroyed) return void b.destroy();
   a.pipe(b);
   b.pipe(a);
   const close = () => {

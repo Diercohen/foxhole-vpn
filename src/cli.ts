@@ -529,7 +529,10 @@ async function main() {
     // Long-running commands show the update notice themselves.
     case "tui":
     case "up":
-      return cmdTui();
+      await cmdTui();
+      // All closed: a dial or IP check still in flight (one the tunnel's teardown cut
+      // off waits for its timeout) must not keep the prompt from coming back.
+      process.exit(0);
     case "proxy":
       return cmdProxy();
     case "global":
