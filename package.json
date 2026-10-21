@@ -1,6 +1,6 @@
 {
   "name": "foxhole-vpn",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "Free system-wide VPN for Linux, macOS and Windows using Firefox's built-in VPN (IP Protection): SOCKS5/HTTP proxy + TUN routing, in a terminal UI (unofficial)",
   "homepage": "https://github.com/Diercohen/foxhole-vpn#readme",
   "repository": {
