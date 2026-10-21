@@ -663,8 +663,9 @@ export class Tui {
       ...table,
       // The free locations' IPs are shared widely, so picky sites flag them.
       centerIn(dim("💡 Claude, ChatGPT, Gemini, Netflix, YouTube Music, Spotify and banks"), width),
-      centerIn(dim("often block shared VPN IPs: pick a paid location for them."), width),
-      centerIn(dim(`Foxhole made the paid servers ${green("free")} for you 🦊`), width),
+      // Each part dimmed on its own: an inner style's reset would end an outer dim.
+      centerIn(["often block shared VPN IPs: pick a ", under("paid location"), " for them."].map(dim).join(""), width),
+      centerIn(["Foxhole made the paid servers ", green("free")].map(dim).join("") + " for you 🦊", width),
       "",
       centerIn(buttons, width),
       "",
