@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
+import { lookup } from "node:dns/promises";
 import { startProxy } from "../dist/proxy.js";
 
 setTimeout(() => {
@@ -175,9 +176,56 @@ async function loopGuard() {
   console.log("ok - a dial that loops back to the VPN server is refused");
 }
 
+// The VPN refuses port 22, so SSH to GitHub must go to ssh.github.com:443 instead.
+async function githubSsh() {
+  const seen = []; // the CONNECT line of each upstream dial
+  const server = tls.createServer({ key: readFileSync(key), cert: readFileSync(cert) }, (s) => {
+    s.once("data", (d) => {
+      seen.push(d.toString("latin1").split("\r\n")[0]);
+      s.end("HTTP/1.1 200 OK\r\n\r\n");
+    });
+  });
+  const upstreamPort = await listen(server);
+  const conn = {
+    server: { hostname: "127.0.0.1", port: upstreamPort },
+    async currentPass() {
+      return { token: "faketoken", notBefore: 0, expires: 2 ** 31 };
+    },
+  };
+  const handle = await startProxy(conn, "127.0.0.1", 0);
+  const dialed = async (hostPort) => {
+    const c = net.connect(handle.port, "127.0.0.1");
+    c.on("error", () => {});
+    await write(c, `CONNECT ${hostPort} HTTP/1.1\r\n\r\n`);
+    await read(c);
+    c.destroy();
+    return seen.at(-1);
+  };
+  assert.equal(await dialed("github.com:22"), "CONNECT ssh.github.com:443 HTTP/1.1", "GitHub SSH moved to 443");
+  assert.equal(await dialed("github.com:443"), "CONNECT github.com:443 HTTP/1.1", "GitHub HTTPS untouched");
+  assert.equal(await dialed("example.com:22"), "CONNECT example.com:22 HTTP/1.1", "other SSH servers untouched");
+
+  // Global mode: tun2socks sends only the IP that ssh resolved github.com to.
+  const ip = await lookup("github.com", { family: 4 }).then((a) => a.address, () => null);
+  if (ip) {
+    const c = net.connect(handle.port, "127.0.0.1");
+    c.on("error", () => {});
+    await write(c, Buffer.from([0x05, 0x01, 0x00]));
+    await read(c);
+    await write(c, Buffer.from([0x05, 0x01, 0x00, 0x01, ...ip.split(".").map(Number), 0, 22]));
+    await read(c);
+    c.destroy();
+    assert.equal(seen.at(-1), "CONNECT ssh.github.com:443 HTTP/1.1", "GitHub SSH by IP moved to 443");
+  }
+  await handle.close();
+  server.close();
+  console.log(`ok - SSH to GitHub goes to ssh.github.com:443${ip ? "" : " (IP case skipped: no DNS)"}`);
+}
+
 await scenario("SOCKS5 bridge tunnels TCP through an authenticated upstream CONNECT", 0, 1);
 await httpScenarios();
 await scenario("a dropped upstream connection is retried automatically", 1, 2);
 await loopGuard();
+await githubSsh();
 target.close();
 process.exit(0);

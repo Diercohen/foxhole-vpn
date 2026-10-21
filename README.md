@@ -164,8 +164,10 @@ Free-tier countries: 🇺🇸 US · 🇩🇪 DE · 🇯🇵 JP · 🇦🇺 AU ·
   inside the tunnel — not visible to, or blockable by, the local network. (On
   systems without systemd-resolved it falls back to pinning your resolvers to the
   real uplink, which *is* a DNS leak — a note is printed when that happens.)
-- Non-web ports may be refused by the VPN (e.g. Google's `:5228` push) — that's
-  the VPN's policy and doesn't affect normal browsing.
+- Non-web ports may be refused by the VPN (e.g. SSH's `:22`, Google's `:5228`
+  push) — that's the VPN's policy and doesn't affect normal browsing. git over
+  SSH to GitHub works anyway: foxhole-vpn sends it to `ssh.github.com:443`, which
+  has the same host key.
 - Conflicts with another active full-tunnel VPN — `global` refuses to start if it
   detects one (a VPN on the default route, or `0/1`+`128/1` split routes). Stop
   it first, or pass `--force`.

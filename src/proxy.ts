@@ -1,5 +1,6 @@
 import net from "node:net";
 import tls from "node:tls";
+import { lookup } from "node:dns/promises";
 import type { Connection } from "./connection.js";
 import { red, verbose } from "./ui.js";
 import { log } from "./log.js";
@@ -197,6 +198,21 @@ async function openUpstreamWithRetry(
   throw lastErr;
 }
 
+// The VPN refuses port 22, but GitHub serves the same SSH, with the same host key
+// (so ssh doesn't notice the switch), on ssh.github.com:443.
+const GITHUB_SSH: Target = { host: "ssh.github.com", port: 443 };
+
+/** True for SSH to github.com. tun2socks (global mode) gives only the IP, so match it against github.com's addresses: the lookup ssh itself just made. */
+async function isGithubSsh(target: Target): Promise<boolean> {
+  if (target.port !== 22) return false;
+  if (!net.isIP(target.host)) return target.host.toLowerCase() === "github.com";
+  try {
+    return (await lookup("github.com", { all: true })).some((a) => a.address === target.host);
+  } catch {
+    return false; // can't tell: dial it as asked
+  }
+}
+
 /** Opens the VPN tunnel to `target`, or null (with a warning) if it can't. */
 async function dial(conn: Connection, target: Target): Promise<tls.TLSSocket | null> {
   const server = conn.server;
@@ -204,6 +220,7 @@ async function dial(conn: Connection, target: Target): Promise<tls.TLSSocket | n
   // Global mode with its bypass route gone (network change): our own upstream dial came
   // back through the tun. Dialing again would loop, a new connection each turn.
   if (target.host === server.ip) return null;
+  if (await isGithubSsh(target)) target = GITHUB_SSH;
   let pass;
   try {
     pass = await conn.currentPass();
