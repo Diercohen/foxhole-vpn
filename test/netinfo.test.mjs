@@ -1,6 +1,23 @@
 // Wi-Fi name parsing for each OS's tool output, and the network row. No network.
 import assert from "node:assert";
-import { parseIwDev, parseSsid, describeNetwork } from "../dist/netinfo.js";
+import { parseIwDev, parseSsid, parseNmcliWifi, unescapeIw, describeNetwork, firewallCommands } from "../dist/netinfo.js";
+
+// Sharing the proxy: the command that opens its port in whichever firewall is on.
+assert.deepEqual(firewallCommands(true, null, 1080), ["sudo firewall-cmd --permanent --add-port=1080/tcp", "sudo firewall-cmd --reload"], "firewalld (Fedora)");
+assert.deepEqual(firewallCommands(false, "# comment\nENABLED=yes\nLOGLEVEL=low\n", 2080), ["sudo ufw allow 2080/tcp"], "ufw turned on");
+assert.equal(firewallCommands(false, "ENABLED=no\n", 1080), null, "ufw installed but off (Ubuntu's default)");
+assert.equal(firewallCommands(false, null, 1080), null, "no firewall");
+
+// NetworkManager (Ubuntu): the in-use network is starred; terse mode escapes ":" and "\".
+assert.equal(parseNmcliWifi(" :Neighbor\n*:Home 5G\n :\n"), "Home 5G", "nmcli: the starred one");
+assert.equal(parseNmcliWifi("*:Cafe\\:Guest\\\\2\n"), "Cafe:Guest\\2", "nmcli: escapes undone");
+assert.equal(parseNmcliWifi("*:خانه\n"), "خانه", "nmcli: a Persian name, as is");
+assert.equal(parseNmcliWifi(" :Neighbor\n"), null, "nmcli: not connected");
+assert.equal(parseNmcliWifi(""), null, "no nmcli");
+// iw escapes every non-ASCII byte: a Persian name comes back readable.
+assert.equal(unescapeIw("\\xd8\\xae\\xd8\\xa7\\xd9\\x86\\xd9\\x87"), "خانه", "iw: UTF-8 bytes");
+assert.equal(unescapeIw("Home 5G"), "Home 5G", "iw: plain ASCII untouched");
+assert.equal(unescapeIw("\\x20Lab\\x5c1"), " Lab\\1", "iw: edge space and backslash");
 
 assert.deepEqual(parseIwDev("phy#0\n\tInterface wlo1\n\t\tifindex 2\nphy#1\n\tInterface wlan1\n"), ["wlo1", "wlan1"], "iw dev");
 assert.equal(parseSsid("Connected to 2c:97:b1:a9:06:60 (on wlo1)\n\tSSID: Home 5G\n\tfreq: 5745.0\n"), "Home 5G", "iw link");

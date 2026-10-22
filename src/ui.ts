@@ -35,7 +35,9 @@ const displayNames =
 /** Friendly country name for a code, falling back to the given name. */
 export function countryName(code: string, fallback: string): string {
   try {
-    return displayNames?.of(code) ?? fallback;
+    // Fedora's Node has a minimal ICU: no names, so it echoes the code back
+    const name = displayNames?.of(code);
+    return name && name !== code ? name : fallback;
   } catch {
     return fallback;
   }

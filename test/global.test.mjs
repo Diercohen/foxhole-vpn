@@ -1,6 +1,6 @@
 // Pure-function checks for the global-routing planner. No root, no network.
 import assert from "node:assert";
-import { parseDefaultRoute, isVpnDev, planSetup, planTeardown, conflictingVpn, needsRepin, pinCmd, dialHost } from "../dist/global.js";
+import { parseDefaultRoute, isVpnDev, planSetup, planTeardown, planStaleCleanup, conflictingVpn, needsRepin, pinCmd, dialHost } from "../dist/global.js";
 import { Connection } from "../dist/connection.js";
 
 // Real-world `ip route` with a DHCP default plus extra routes.
@@ -24,12 +24,12 @@ assert.ok(!isVpnDev("wlo1") && !isVpnDev("eth0"), "real devs not flagged");
 const setup = planSetup(["151.101.1.1", "8.8.8.8"], { gw: "192.168.0.1", dev: "wlo1" });
 assert.deepEqual(
   setup.find((c) => c[3] === "151.101.1.1"),
-  ["ip", "route", "add", "151.101.1.1", "via", "192.168.0.1", "dev", "wlo1"],
-  "server IP pinned via real gateway",
+  ["ip", "route", "replace", "151.101.1.1", "via", "192.168.0.1", "dev", "wlo1"],
+  "server IP pinned via real gateway (replace: a leftover pin can't fail it)",
 );
 assert.deepEqual(
   setup.find((c) => c[3] === "8.8.8.8"),
-  ["ip", "route", "add", "8.8.8.8", "via", "192.168.0.1", "dev", "wlo1"],
+  ["ip", "route", "replace", "8.8.8.8", "via", "192.168.0.1", "dev", "wlo1"],
   "DNS resolver pinned via real gateway",
 );
 assert.ok(
@@ -41,15 +41,27 @@ assert.ok(
 const setupNoGw = planSetup(["151.101.1.1"], { gw: null, dev: "ppp0" });
 assert.deepEqual(
   setupNoGw.find((c) => c[3] === "151.101.1.1"),
-  ["ip", "route", "add", "151.101.1.1", "dev", "ppp0"],
+  ["ip", "route", "replace", "151.101.1.1", "dev", "ppp0"],
   "server IP pinned by device",
 );
 
 // IPv6 is blackholed so apps can't leak around the v4-only tunnel.
 assert.ok(
-  setup.some((c) => c.join(" ") === "ip -6 route add blackhole default metric 1"),
+  setup.some((c) => c.join(" ") === "ip -6 route replace blackhole default metric 1"),
   "IPv6 blackholed on setup",
 );
+
+// The tun comes from tun2socks (gone with it, routes and all), never `ip tuntap add` (it would outlive a crash).
+assert.ok(!setup.some((c) => c.includes("tuntap")), "setup doesn't create the tun");
+assert.ok(planTeardown([]).some((c) => c.join(" ") === "ip link del foxhole0"), "teardown removes a leftover tun");
+// A killed session's leftovers, cleared before a new one and by `foxhole restore`; pkill can't match its own sudo.
+const stale = planStaleCleanup().map((c) => c.join(" "));
+assert.ok(stale.includes("pkill -f --device foxhole[0]") && !"sudo -S -p  pkill -f --device foxhole[0]".match(/--device foxhole[0]/), "pkill spares its sudo");
+assert.ok(stale.includes("ip link del foxhole0") && stale.includes("ip -6 route del blackhole default metric 1"), "tun and IPv6 blackhole");
+assert.ok(stale.includes("iptables -D OUTPUT -o foxhole0 -p udp -j REJECT"), "UDP reject rule");
+const stalePins = planStaleCleanup({ gw: "192.168.0.1", dev: "wlo1" }).map((c) => c.join(" "));
+assert.ok(stalePins.includes("ip route del 10.0.0.0/8 via 192.168.0.1 dev wlo1 proto boot metric 0"), "private pins, only as foxhole adds them");
+assert.ok(!stale.some((c) => c.startsWith("ip route del 10.")), "no uplink known: private routes left alone");
 
 // Teardown removes the default, every pin, and the IPv6 blackhole.
 const teardown = planTeardown(["151.101.1.1", "8.8.8.8"]);

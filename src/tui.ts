@@ -1,13 +1,13 @@
 import readline from "node:readline";
 import { PassThrough } from "node:stream";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { userHome, findAccount } from "./profile.js";
 import { fetchServerList, type Country } from "./serverlist.js";
 import { Connection } from "./connection.js";
 import { NotImplementedError } from "./auth.js";
 import { GuardianError } from "./guardian.js";
-import { network, publicIp, lanIp } from "./netinfo.js";
+import { network, publicIp, lanIp, firewallHint } from "./netinfo.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor, type Settings } from "./settings.js";
 import { forgetToken } from "./tokenserver.js";
 import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
@@ -78,7 +78,9 @@ export class Tui {
   #edit: { key: "port" | "username" | "password"; text: string } | null = null; // the setting being typed
   readonly #login = (address: string | undefined) => loginFor(this.#settings, address); // live: a change applies to the next client
   #settingsNote = "";
+  #fwHint: string[] | null = null; // commands that open the proxy's port in an active firewall (Linux)
   #proxyStale = false; // the running proxy still has the old address (changed during global mode)
+  #proxyAt = ""; // the address the running proxy was started on
   #countries: Country[] = [];
   #sel = 0;
   #proxy: ProxyHandle | null = null;
@@ -117,6 +119,10 @@ export class Tui {
       this.#message = red(`proxy: ${msg}`);
       this.#render();
     });
+    // A closed terminal fails every write and read (EIO): that must not crash the quit that
+    // puts global mode's routes back (it comes as SIGHUP, with nothing left to draw on).
+    process.stdout.on("error", () => {});
+    process.stdin.on("error", () => {});
     screenOn = true;
     process.stdout.write(ALT_ON);
     this.#message = dim("loading…");
@@ -126,7 +132,9 @@ export class Tui {
       this.#sel = Math.max(0, this.#countries.findIndex((c) => c.code === loadLastCountry()));
       this.#message = "";
     } catch (err) {
-      this.#message = red(`server list failed: ${(err as Error).message}`);
+      this.#message = existsSync("/sys/class/net/foxhole0")
+        ? red("offline: a killed global session's routes are still on — quit and run  foxhole restore")
+        : red(`server list failed: ${(err as Error).message}`);
     }
     // Connects at once to the last country used; never to whatever sorts first (a first run waits for a pick).
     if (this.#countries[this.#sel]?.code === loadLastCountry()) void this.#connect();
@@ -216,7 +224,11 @@ export class Tui {
         await this.#proxy?.close();
         process.stdin.removeListener("data", onData);
         process.stdout.removeListener("resize", onResize);
-        if (process.stdin.isTTY) process.stdin.setRawMode(false);
+        try {
+          if (process.stdin.isTTY) process.stdin.setRawMode(false);
+        } catch {
+          /* the terminal is gone */
+        }
         process.stdin.pause();
         leaveScreen();
         if (action === "update") {
@@ -243,6 +255,7 @@ export class Tui {
         if (key.name === "s") {
           this.#settingsOpen = true;
           this.#settingsNote = "";
+          this.#checkFirewall();
           return this.#render();
         }
         switch (key.name) {
@@ -320,7 +333,7 @@ export class Tui {
       // Global on: the new server's IP is pinned first, or the proxy's dial to it would loop through the tunnel.
       const session = this.#global;
       await this.#conn.selectServer(country.locked ? country : country.available ? country : null, session ? (s) => session.addServer(s) : undefined);
-      if (!this.#proxy) this.#proxy = await startProxy(this.#conn, this.#host, this.#port, this.#login);
+      if (!this.#proxy) this.#proxy = await this.#startProxy();
       await this.#conn.currentPass(); // warm the pass; surfaces auth/quota errors now
       this.#active = country;
       if (this.#global) this.#globalCountry = country;
@@ -439,7 +452,9 @@ export class Tui {
     this.#render();
     let session: GlobalSession | null = null;
     try {
-      this.#tun2socksPath ??= await ensureTun2socks();
+      // a download goes through the VPN (GitHub can be slow or blocked), its progress in the status line
+      const via = { host: dialHost(this.#host), port: this.#proxy.port };
+      this.#tun2socksPath ??= await ensureTun2socks({ proxy: via, say: (msg) => ((this.#message = dim(msg)), this.#render()) });
       this.#message = dim("going global…");
       this.#render();
       session = new GlobalSession({
@@ -558,6 +573,11 @@ export class Tui {
     this.#render();
   }
 
+  /** Looks up, in the background, whether a firewall would keep other devices off the proxy's port. */
+  #checkFirewall(): void {
+    void firewallHint(this.#settings.port).then((hint) => ((this.#fwHint = hint), this.#render()));
+  }
+
   /** Saves a change and applies it: a new address or port restarts a running proxy. */
   async #changeSetting(patch: Partial<Settings>): Promise<void> {
     const next = { ...this.#settings, ...patch };
@@ -572,17 +592,25 @@ export class Tui {
     if ("share" in patch || "port" in patch) {
       this.#host = proxyHost(next);
       this.#port = next.port;
+      this.#checkFirewall();
       await this.#restartProxy();
     }
     this.#render();
   }
 
   /** Moves a running proxy to the current address and port. Not in global mode: tun2socks is tied to the old one. */
+  /** Starts the proxy on the current address, and remembers which that is. */
+  #startProxy(): Promise<ProxyHandle> {
+    this.#proxyAt = `${this.#host}:${this.#port}`;
+    return startProxy(this.#conn, this.#host, this.#port, this.#login);
+  }
+
   async #restartProxy(): Promise<void> {
     if (!this.#proxy) return;
     if (this.#global) {
-      this.#proxyStale = true;
-      this.#settingsNote = yellow("Applies when global mode is turned off.");
+      // only a real change waits for global off (sharing switched on and back off isn't one)
+      this.#proxyStale = `${this.#host}:${this.#port}` !== this.#proxyAt;
+      this.#settingsNote = this.#proxyStale ? yellow("Applies when global mode is turned off.") : "";
       return;
     }
     this.#proxyStale = false;
@@ -591,7 +619,7 @@ export class Tui {
     try {
       await this.#proxy.close();
       this.#proxy = null;
-      this.#proxy = await startProxy(this.#conn, this.#host, this.#port, this.#login);
+      this.#proxy = await this.#startProxy();
       this.#message = green(`proxy now on ${this.#proxyAddr()}`);
     } catch (err) {
       // e.g. the port is taken: nothing listens now, so say disconnected
@@ -630,6 +658,7 @@ export class Tui {
             s.username || s.password
               ? dim("Devices sign in with the username and password below.")
               : yellow("No password: anyone on this network can use it. Set one below."),
+            ...(this.#fwHint ? [dim("If they can't connect, open the port in the firewall:"), ...this.#fwHint.map((c) => cyan(c))] : []),
           ]
         : [dim("Only this computer can use the proxy."), dim("Turn on to use the VPN from your phone, on the same Wi-Fi.")],
       port: e?.key === "port"
@@ -704,7 +733,7 @@ export class Tui {
     if (!body.length) body.push(["   ", "", "", dim("loading…")]);
     const range = this.#countries.length > room
       ? `${start + 1}–${start + slice.length} of ${this.#countries.length}`
-      : `${this.#countries.length} countries`;
+      : this.#countries.length ? `${this.#countries.length} countries` : ""; // none yet: the list says loading…
 
     const title = bold(cyan("🦊 foxhole-vpn"));
     const key = (k: string, rest: string) => `[${under(k)}${rest}]`;

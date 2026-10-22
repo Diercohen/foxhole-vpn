@@ -1,5 +1,9 @@
 import { execFile } from "node:child_process";
 import { spawn } from "node:child_process";
+import http from "node:http";
+import https from "node:https";
+import tls from "node:tls";
+import type { Socket } from "node:net";
 import { promisify } from "node:util";
 import { lookup } from "node:dns/promises";
 import {
@@ -49,11 +53,14 @@ export function parseDefaultRoute(ipRoute: string, skipDev?: string): DefaultRou
   return null;
 }
 
-/** `ip route add` argv sending `dest` out the real uplink, around the tun. Pure. */
-export function pinCmd(dest: string, orig: DefaultRoute): string[] {
+/**
+ * `ip route` argv sending `dest` out the real uplink, around the tun. "replace" for our own pins
+ * (a crashed session's leftover mustn't fail the add); "add" where an existing route is the user's. Pure.
+ */
+export function pinCmd(dest: string, orig: DefaultRoute, verb: "add" | "replace" = "add"): string[] {
   return orig.gw
-    ? ["ip", "route", "add", dest, "via", orig.gw, "dev", orig.dev]
-    : ["ip", "route", "add", dest, "dev", orig.dev];
+    ? ["ip", "route", verb, dest, "via", orig.gw, "dev", orig.dev]
+    : ["ip", "route", verb, dest, "dev", orig.dev];
 }
 
 /**
@@ -82,26 +89,42 @@ export function isVpnDev(dev: string): boolean {
  * uplink so they don't loop through — or get refused by — the tunnel.
  */
 export function planSetup(bypassIps: string[], orig: DefaultRoute): string[][] {
+  // The tun itself comes from tun2socks (see start), so it and its routes vanish with it.
   return [
-    ["ip", "tuntap", "add", "mode", "tun", "dev", TUN],
     ["ip", "addr", "add", `${TUN_ADDR}/15`, "dev", TUN],
     ["ip", "link", "set", "dev", TUN, "up"],
-    ...bypassIps.map((ip) => pinCmd(ip, orig)),
+    ...bypassIps.map((ip) => pinCmd(ip, orig, "replace")),
     ["ip", "route", "add", "default", "dev", TUN, "metric", "1"],
     // The upstream is IPv4-only; blackhole IPv6 so apps can't leak around it
     // over native IPv6 (they fall back to IPv4, which goes through the tun).
-    ["ip", "-6", "route", "add", "blackhole", "default", "metric", "1"],
+    ["ip", "-6", "route", "replace", "blackhole", "default", "metric", "1"],
   ];
 }
 
-/** Reverse of planSetup, best-effort. Pure. */
+/** Reverse of planSetup, best-effort (the tun's own routes went with it). Pure. */
 export function planTeardown(bypassIps: string[]): string[][] {
   return [
     ["ip", "-6", "route", "del", "blackhole", "default", "metric", "1"],
     ["ip", "route", "del", "default", "dev", TUN, "metric", "1"],
     ...bypassIps.map((ip) => ["ip", "route", "del", ip]),
-    ["ip", "link", "set", "dev", TUN, "down"],
-    ["ip", "tuntap", "del", "mode", "tun", "dev", TUN],
+    ["ip", "link", "del", TUN],
+  ];
+}
+
+/**
+ * What a killed global session can leave (its tun2socks still holding the tun, so a dead default
+ * route keeps the computer offline; the IPv6 blackhole; the UDP reject; with the uplink `orig`,
+ * the private-range pins exactly as pinCmd adds them, never a user's own route for those ranges),
+ * each step best-effort. Run before a new session and by `foxhole restore`. The [0] keeps pkill
+ * off its own sudo. Pure.
+ */
+export function planStaleCleanup(orig?: DefaultRoute | null): string[][] {
+  return [
+    ["pkill", "-f", `--device ${TUN.slice(0, -1)}[${TUN.slice(-1)}]`],
+    ["ip", "link", "del", TUN],
+    ["ip", "-6", "route", "del", "blackhole", "default", "metric", "1"],
+    ["iptables", "-D", "OUTPUT", "-o", TUN, "-p", "udp", "-j", "REJECT"],
+    ...(orig ? PRIVATE_CIDRS.map((cidr) => ["ip", "route", "del", ...pinCmd(cidr, orig).slice(3), "proto", "boot", "metric", "0"]) : []),
   ];
 }
 
@@ -127,13 +150,71 @@ const GO_ARCH: Record<string, string> = { x64: "amd64", arm64: "arm64" };
 const IS_WIN = process.platform === "win32";
 const EXE = IS_WIN ? ".exe" : "";
 
+/** How ensureTun2socks downloads: through foxhole's own proxy (the VPN: GitHub can be slow or blocked where the user is), with progress. */
+export interface DownloadVia {
+  proxy?: { host: string; port: number };
+  say?: (msg: string) => void; // progress for the TUI's status line; without it the CLI prints one line
+}
+
+/** GETs `url` over https, following redirects, through `proxy`'s HTTP CONNECT when given. */
+function get(url: string, proxy: DownloadVia["proxy"], onData: (got: number, total: number) => void, hops = 5): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const request = (socket?: Socket) => {
+      // No `agent` option: with one (even `false`), Node ignores createConnection and dials directly. Without
+      // an agent it can't tell https's port either, so say it, or the Host header gets ":80" (a redirect loop).
+      const opts = { timeout: 30_000, defaultPort: 443, ...(socket && { createConnection: () => tls.connect({ socket, servername: u.hostname }) }) };
+      const req = https.get(u, opts, (res) => {
+        const { statusCode = 0, headers } = res;
+        if (statusCode >= 300 && statusCode < 400 && headers.location && hops > 0) {
+          res.resume();
+          return void get(new URL(headers.location, u).href, proxy, onData, hops - 1).then(resolve, reject);
+        }
+        if (statusCode !== 200) {
+          res.resume();
+          return reject(new Error(`HTTP ${statusCode}`));
+        }
+        const total = Number(headers["content-length"]) || 0;
+        const chunks: Buffer[] = [];
+        let got = 0;
+        res.on("data", (c: Buffer) => (chunks.push(c), onData((got += c.length), total)));
+        res.on("end", () => resolve(Buffer.concat(chunks)));
+        res.on("error", reject);
+      });
+      req.on("timeout", () => req.destroy(new Error("timed out"))).on("error", reject); // idle 30 s: a stalled download fails
+    };
+    if (!proxy) return request();
+    const tunnel = http.request({ host: proxy.host, port: proxy.port, method: "CONNECT", path: `${u.hostname}:443`, timeout: 30_000 });
+    tunnel.on("connect", (res, socket) => {
+      if (res.statusCode === 200) return request(socket);
+      socket.destroy();
+      reject(new Error(`proxy answered ${res.statusCode}`));
+    });
+    tunnel.on("timeout", () => tunnel.destroy(new Error("timed out"))).on("error", reject).end();
+  });
+}
+
 /** Downloads `url` and unpacks the zip into a fresh temp folder; returns that folder. */
-async function fetchZip(url: string, sha256?: string): Promise<string> {
+async function fetchZip(url: string, via: DownloadVia, sha256?: string): Promise<string> {
   const name = basename(new URL(url).pathname);
-  console.log(dim(`downloading ${name}…`));
-  const res = await fetch(url, { redirect: "follow" });
-  if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
-  const body = Buffer.from(await res.arrayBuffer());
+  if (!via.say) console.log(dim(`downloading ${name}…`));
+  let shown = "";
+  const mb = (n: number) => (n / 1e6).toFixed(1);
+  const progress = (got: number, total: number) => {
+    const msg = `downloading ${name} (once)… ${mb(got)}${total ? ` of ${mb(total)}` : ""} MB`;
+    if (msg !== shown) via.say?.((shown = msg));
+  };
+  let body: Buffer | undefined;
+  let failure: unknown;
+  for (const proxy of via.proxy ? [via.proxy, undefined] : [undefined]) {
+    try {
+      body = await get(url, proxy, progress); // through the VPN first, then directly
+      break;
+    } catch (err) {
+      failure = err;
+    }
+  }
+  if (!body) throw new Error(`download failed: ${(failure as Error).message}`);
   if (sha256 && createHash("sha256").update(body).digest("hex") !== sha256) {
     throw new Error(`${name}: checksum mismatch`);
   }
@@ -142,18 +223,19 @@ async function fetchZip(url: string, sha256?: string): Promise<string> {
   writeFileSync(zip, body);
   // Windows 10+ ships bsdtar, which unpacks zips; it has no unzip.
   if (IS_WIN) await exec("tar", ["-xf", zip, "-C", tmp]);
-  else await exec("unzip", ["-oq", zip, "-d", tmp]);
+  // no unzip on Ubuntu Server and minimal installs; Python is always there
+  else await exec("unzip", ["-oq", zip, "-d", tmp]).catch(() => exec("python3", ["-m", "zipfile", "-e", zip, tmp]));
   return tmp;
 }
 
 /** Downloads the prebuilt tun2socks from GitHub releases to `dest`. */
-async function downloadTun2socks(dest: string): Promise<void> {
+async function downloadTun2socks(dest: string, via: DownloadVia): Promise<void> {
   const arch = GO_ARCH[process.arch];
   if (!["linux", "darwin", "win32"].includes(process.platform) || !arch) {
     throw new Error(`no prebuilt tun2socks for ${process.platform}/${process.arch}`);
   }
   const os = IS_WIN ? "windows" : process.platform;
-  const tmp = await fetchZip(`https://github.com/xjasonlyu/tun2socks/releases/latest/download/tun2socks-${os}-${arch}.zip`);
+  const tmp = await fetchZip(`https://github.com/xjasonlyu/tun2socks/releases/latest/download/tun2socks-${os}-${arch}.zip`, via);
   try {
     const bin = readdirSync(tmp).find((f) => /^tun2socks/.test(f) && !/\.(zip|md|txt)$/i.test(f));
     if (!bin) throw new Error("tun2socks binary not found in archive");
@@ -171,11 +253,11 @@ const WINTUN_URL = "https://www.wintun.net/builds/wintun-0.14.1.zip";
 const WINTUN_SHA256 = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51";
 
 /** Puts wintun.dll next to the tun2socks binary at `exe`, if it isn't there yet. */
-async function ensureWintun(exe: string): Promise<void> {
+async function ensureWintun(exe: string, via: DownloadVia): Promise<void> {
   const dll = join(dirname(exe), "wintun.dll");
   if (existsSync(dll)) return;
   const arch = GO_ARCH[process.arch];
-  const tmp = await fetchZip(WINTUN_URL, WINTUN_SHA256);
+  const tmp = await fetchZip(WINTUN_URL, via, WINTUN_SHA256);
   try {
     copyFileSync(join(tmp, "wintun", "bin", arch, "wintun.dll"), dll);
   } finally {
@@ -188,7 +270,7 @@ async function ensureWintun(exe: string): Promise<void> {
  * where Go's module proxy is blocked); falls back to `go install` via a mirror
  * that bypasses the often-blocked proxy.golang.org.
  */
-export async function ensureTun2socks(): Promise<string> {
+export async function ensureTun2socks(via: DownloadVia = {}): Promise<string> {
   const home = userHome();
   const cache = join(home, ".cache", "foxhole-vpn", `tun2socks${EXE}`);
   if (IS_WIN) {
@@ -196,9 +278,9 @@ export async function ensureTun2socks(): Promise<string> {
     try {
       await exec(cache, ["--version"]);
     } catch {
-      await downloadTun2socks(cache);
+      await downloadTun2socks(cache, via);
     }
-    await ensureWintun(cache);
+    await ensureWintun(cache, via);
     return cache;
   }
   for (const probe of ["tun2socks", join(home, "go/bin/tun2socks"), cache]) {
@@ -210,14 +292,15 @@ export async function ensureTun2socks(): Promise<string> {
     }
   }
   try {
-    await downloadTun2socks(cache);
+    await downloadTun2socks(cache, via);
     return cache;
   } catch (err) {
-    console.log(dim(`prebuilt download failed (${(err as Error).message}); trying go…`));
+    (via.say ?? ((m: string) => console.log(dim(m))))(`prebuilt download failed (${(err as Error).message}); trying go…`);
   }
   try {
+    const proxy = via.proxy && `http://${via.proxy.host}:${via.proxy.port}`; // go honors these: through the VPN too
     await exec("go", ["install", "github.com/xjasonlyu/tun2socks/v2@latest"], {
-      env: { ...process.env, GOPROXY: "https://goproxy.cn,direct", GOSUMDB: "off" },
+      env: { ...process.env, GOPROXY: "https://goproxy.cn,direct", GOSUMDB: "off", ...(proxy && { HTTPS_PROXY: proxy, HTTP_PROXY: proxy }) },
     });
     return join(home, "go/bin/tun2socks");
   } catch (err) {
@@ -385,7 +468,7 @@ export class GlobalSession {
   #udpBlocked = false;
   #dns: DnsForwarder | null = null;
   #t2s: ReturnType<typeof spawn> | null = null;
-  #exitCb: ((code: number | null) => void) | null = null;
+  #exitCb: ((why: number | string | null) => void) | null = null;
   #netCb: ((event: "lost" | "restored", detail: string) => void) | null = null;
   #stopped = false;
   #orig: DefaultRoute | null = null; // the uplink the pins currently go through
@@ -400,8 +483,8 @@ export class GlobalSession {
     this.#mac = process.platform === "darwin" ? new DarwinRouting(this.#o) : IS_WIN ? new WindowsRouting(this.#o) : null;
   }
 
-  /** Called if tun2socks dies unexpectedly. */
-  onExit(cb: (code: number | null) => void): void {
+  /** Called if tun2socks dies unexpectedly, with its exit code, or the signal that killed it. */
+  onExit(cb: (why: number | string | null) => void): void {
     this.#exitCb = cb;
   }
 
@@ -413,7 +496,7 @@ export class GlobalSession {
   /** Sets up routing + tun2socks. Returns the pinned server IP and DNS mode. */
   async start(): Promise<{ serverIp: string; dns: string }> {
     if (this.#mac) {
-      const res = await this.#mac.start((code) => this.#exitCb?.(code));
+      const res = await this.#mac.start((code, signal) => this.#exitCb?.(code ?? signal));
       this.#arm(this.#mac as Rerouter<unknown>);
       return res;
     }
@@ -438,6 +521,16 @@ export class GlobalSession {
     this.#pinnedIps = pinned;
     this.#bypassIps = pinned;
     this.#orig = orig;
+    for (const step of planStaleCleanup(orig)) await priv.run(step, true); // a killed earlier session must not stack under this one
+
+    // tun2socks creates the tun itself: however it ends (a crash, the terminal closed), the device
+    // and its routes go with it, never a dead default route that keeps the computer offline.
+    this.#t2s = priv.spawn([this.#o.tun2socksPath, "--device", TUN, "--proxy", `socks5://${this.#o.proxyHost}:${this.#o.proxyPort}`]);
+    this.#t2s.on("exit", (code, signal) => this.#exitCb?.(code ?? signal)); // a signal when killed: no code
+    for (let tries = 0; !(await exec("ip", ["link", "show", TUN]).then(() => true, () => false)); tries++) {
+      if (tries >= 50 || this.#t2s.exitCode !== null) throw new Error(`tun2socks didn't create ${TUN}`);
+      await new Promise((r) => setTimeout(r, 100));
+    }
     for (const step of planSetup(pinned, orig)) await priv.run(step);
     await this.#pinPrivate(orig);
 
@@ -466,7 +559,7 @@ export class GlobalSession {
       const dnsIps = await dnsUpstreams();
       if (dnsIps.length === 0) dnsIps.push("1.1.1.1");
       this.#bypassIps = [...new Set([...pinned, ...dnsIps])]; // first: stop() removes what got added if a pin fails
-      for (const ip of dnsIps) await priv.run(pinCmd(ip, orig));
+      for (const ip of dnsIps) await priv.run(pinCmd(ip, orig, "replace"));
       dns = `direct: ${dnsIps.join(", ")} (${(err as Error).message} — DNS may be visible locally)`;
     }
 
@@ -481,14 +574,6 @@ export class GlobalSession {
       /* no iptables — users can disable QUIC in the browser instead */
     }
 
-    this.#t2s = priv.spawn([
-      this.#o.tun2socksPath,
-      "--device",
-      TUN,
-      "--proxy",
-      `socks5://${this.#o.proxyHost}:${this.#o.proxyPort}`,
-    ]);
-    this.#t2s.on("exit", (code) => this.#exitCb?.(code));
     this.#arm({
       uplink: async () => parseDefaultRoute((await exec("ip", ["route"])).stdout, TUN),
       broken: (up) => this.#broken(up),
@@ -566,7 +651,7 @@ export class GlobalSession {
     const ip = (await lookup(server.hostname, { family: 4 })).address; // the current server still carries this lookup
     if (this.#mac) await this.#mac.pin(ip);
     else if (!this.#pinnedIps.includes(ip)) {
-      await this.#o.priv.run(pinCmd(ip, this.#orig!));
+      await this.#o.priv.run(pinCmd(ip, this.#orig!, "replace"));
       this.#pinnedIps.push(ip);
       this.#bypassIps = [...new Set([...this.#bypassIps, ip])];
     }
@@ -588,7 +673,7 @@ export class GlobalSession {
       if (dnsIps.length === 0) dnsIps.push("1.1.1.1");
       this.#bypassIps = [...new Set([...this.#pinnedIps, ...dnsIps])];
     }
-    for (const ip of this.#bypassIps) await priv.run(pinCmd(ip, orig));
+    for (const ip of this.#bypassIps) await priv.run(pinCmd(ip, orig, "replace"));
     await this.#pinPrivate(orig);
     this.#orig = orig;
   }
@@ -608,9 +693,8 @@ export class GlobalSession {
     if (this.#udpBlocked)
       await this.#o.priv.run(["iptables", "-D", "OUTPUT", "-o", TUN, "-p", "udp", "-j", "REJECT"], true);
     for (const cidr of this.#addedPrivate) await this.#o.priv.run(["ip", "route", "del", cidr], true);
-    // Stop tun2socks before deleting the device: a tun still held open can't be
-    // deleted, and the leftover makes the next `ip tuntap add` fail (busy).
-    await stopProcess(this.#t2s, () => this.#o.priv.run(["pkill", "-f", TUN], true)); // sudo child may outlive the signal
+    // Stopping tun2socks takes its tun, and the routes on it, away with it.
+    await stopProcess(this.#t2s, () => this.#o.priv.run(planStaleCleanup()[0], true)); // sudo child may outlive the signal
     this.#t2s = null;
     for (const step of planTeardown(this.#bypassIps)) await this.#o.priv.run(step, true);
     await this.#dns?.close(); // last: until the tun (and the DNS setting on it) is gone, lookups still come here
@@ -647,17 +731,19 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
     console.error(
       IS_WIN
         ? red("Global mode needs Administrator rights.") + ` Open ${bold("Terminal (Admin)")} and run ${bold("foxhole global")} there.`
-        : red("Global mode needs root.") + ` Run: ${bold("sudo -E foxhole global")}`,
+        // env PATH: Ubuntu's sudo swaps PATH for its secure_path, which has no nvm-installed node or foxhole
+        : red("Global mode needs root.") + ` Run: ${bold('sudo -E env "PATH=$PATH" foxhole global')}, or press ${bold("g")} in ${bold("foxhole")}.`,
     );
     process.exit(1);
   }
   if (!conn.server) throw new Error("No server selected");
 
-  const tun2socksPath = await ensureTun2socks();
   // Start the local proxy and prove auth works BEFORE touching the system.
   const proxy = await startProxy(conn, opts.host, opts.port, opts.login);
+  let tun2socksPath: string;
   try {
     await conn.currentPass();
+    tun2socksPath = await ensureTun2socks({ proxy: { host: dialHost(opts.host), port: proxy.port } }); // a download goes through the VPN
   } catch (err) {
     await proxy.close();
     throw err;

@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 
 // When run under sudo, look in the invoking user's home, not root's.
 export function userHome(): string {
@@ -15,6 +15,8 @@ function profileRoots(): string[] {
   const home = userHome();
   return [
     join(home, ".mozilla", "firefox"),
+    join(home, "snap", "firefox", "common", ".mozilla", "firefox"), // Ubuntu's own Firefox (a snap)
+    join(home, ".var", "app", "org.mozilla.firefox", ".mozilla", "firefox"), // Flatpak
     join(home, ".config", "mozilla", "firefox"), // some Linux/Omarchy builds
     join(home, "Library", "Application Support", "Firefox"), // macOS
     join(process.env.APPDATA ?? join(home, "AppData", "Roaming"), "Mozilla", "Firefox"), // Windows
@@ -81,30 +83,36 @@ export interface AccountState {
  * sign-in state. Does NOT return or log the session token.
  */
 export function findAccount(): AccountState | null {
-  for (const root of profileRoots()) {
-    for (const dir of candidateProfiles(root)) {
-      const f = join(dir, "signedInUser.json");
-      if (!existsSync(f)) continue;
-      try {
-        // Firefox writes `null` here on sign-out
-        const data = JSON.parse(readFileSync(f, "utf8")) as {
-          accountData?: { email?: string; verified?: boolean; sessionToken?: string };
-        } | null;
-        const acct = data?.accountData;
-        const signedIn = !!acct?.sessionToken;
-        return {
-          profileDir: dir,
-          signedIn,
-          verified: !!acct?.verified,
-          email: acct?.email ?? null,
-        };
-      } catch {
-        /* unreadable/locked profile, try the next */
-      }
+  // Every install's profiles, the most recently used first (Firefox writes prefs.js as it runs):
+  // Ubuntu can have a stale ~/.mozilla beside the snap's live one, or the other way round.
+  const used = (dir: string) => {
+    try {
+      return statSync(join(dir, "prefs.js")).mtimeMs;
+    } catch {
+      return 0;
     }
-    // A profile with no signedInUser.json at all → report the first as signed-out.
-    const first = candidateProfiles(root)[0];
-    if (first) return { profileDir: first, signedIn: false, verified: false, email: null };
+  };
+  const dirs = profileRoots().flatMap(candidateProfiles).sort((a, b) => used(b) - used(a)); // stable: ties keep each install's order
+  for (const dir of dirs) {
+    const f = join(dir, "signedInUser.json");
+    if (!existsSync(f)) continue;
+    try {
+      // Firefox writes `null` here on sign-out
+      const data = JSON.parse(readFileSync(f, "utf8")) as {
+        accountData?: { email?: string; verified?: boolean; sessionToken?: string };
+      } | null;
+      const acct = data?.accountData;
+      const signedIn = !!acct?.sessionToken;
+      return {
+        profileDir: dir,
+        signedIn,
+        verified: !!acct?.verified,
+        email: acct?.email ?? null,
+      };
+    } catch {
+      /* unreadable/locked profile, try the next */
+    }
   }
-  return null;
+  // No profile has signedInUser.json at all → report the most recent as signed-out.
+  return dirs[0] ? { profileDir: dirs[0], signedIn: false, verified: false, email: null } : null;
 }

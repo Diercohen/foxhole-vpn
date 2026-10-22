@@ -3,6 +3,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import http from "node:http";
+import { readFileSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 
 const exec = promisify(execFile);
@@ -19,8 +20,18 @@ export function parseSsid(out: string): string | null {
   return m[1];
 }
 
-const run = (cmd: string, args: string[]) =>
-  exec(cmd, args, { timeout: 3000, windowsHide: true }).then((r) => r.stdout, () => "");
+/** The in-use network's name in `nmcli -t -f IN-USE,SSID device wifi list` (terse mode escapes ":" and "\"). Pure. */
+export function parseNmcliWifi(out: string): string | null {
+  const m = out.match(/^\*:(.+)$/m);
+  return m ? m[1].replace(/\\([:\\])/g, "$1") : null;
+}
+
+/** iw prints a name's non-ASCII bytes (and backslashes, edge spaces) as \xNN: back to UTF-8 text, e.g. a Persian name. Pure. */
+export const unescapeIw = (s: string): string =>
+  Buffer.from(s.replace(/\\x([0-9a-f]{2})/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16))), "latin1").toString("utf8");
+
+const run = (cmd: string, args: string[], env?: Record<string, string>) =>
+  exec(cmd, args, { timeout: 3000, windowsHide: true, ...(env && { env: { ...process.env, ...env } }) }).then((r) => r.stdout, () => "");
 
 // JXA: the SSID in the scan record macOS caches in its SystemConfiguration store,
 // which, unlike `ipconfig`, it doesn't redact. argv[0] is the Wi-Fi device.
@@ -42,11 +53,40 @@ export async function wifiName(): Promise<string | null> {
     // macOS 15+ redacts the name for apps without location access; the scan record still has it.
     return (await run("osascript", ["-l", "JavaScript", "-e", SCAN_RECORD_SSID, dev])).trim() || "name hidden by macOS";
   }
+  // NetworkManager first (Ubuntu, Fedora, Mint…): always there, and it gives the name in UTF-8,
+  // where iw isn't always installed. Cached results only: no Wi-Fi scan on each check.
+  const nm = await run("nmcli", ["-t", "-f", "IN-USE,SSID", "device", "wifi", "list", "--rescan", "no"], { LC_ALL: "C.UTF-8" });
+  const name = parseNmcliWifi(nm);
+  if (name) return name;
   for (const dev of parseIwDev(await run("iw", ["dev"]))) {
     const ssid = parseSsid(await run("iw", ["dev", dev, "link"]));
-    if (ssid) return ssid;
+    if (ssid) return unescapeIw(ssid);
   }
   return null;
+}
+
+/**
+ * What lets other devices reach `port` through the firewall, given which one is on: firewalld
+ * (on by default on Fedora; most spins and Server use zones that close the proxy's port) or
+ * ufw (off by default on Ubuntu, `ufwConf` is /etc/ufw/ufw.conf). Pure.
+ */
+export function firewallCommands(firewalld: boolean, ufwConf: string | null, port: number): string[] | null {
+  if (firewalld) return [`sudo firewall-cmd --permanent --add-port=${port}/tcp`, "sudo firewall-cmd --reload"];
+  if (ufwConf && /^\s*ENABLED\s*=\s*yes/m.test(ufwConf)) return [`sudo ufw allow ${port}/tcp`];
+  return null;
+}
+
+/** firewallCommands for this computer (Linux only; reading needs no root). */
+export async function firewallHint(port: number): Promise<string[] | null> {
+  if (process.platform !== "linux") return null;
+  const firewalld = (await run("systemctl", ["is-active", "firewalld"])).trim() === "active";
+  let ufw: string | null = null;
+  try {
+    ufw = readFileSync("/etc/ufw/ufw.conf", "utf8");
+  } catch {
+    /* no ufw */
+  }
+  return firewallCommands(firewalld, ufw, port);
 }
 
 /** This computer's interface on the local network, skipping VPN, container and loopback interfaces. */

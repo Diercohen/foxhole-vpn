@@ -45,7 +45,8 @@ const sudo = (() => {
 const INSTALL = "npm install -g foxhole-vpn@latest";
 export const UPDATE_COMMAND = (sudo ? "sudo " : "") + INSTALL;
 // npm is Node too: through a slow tunnel its downloads time out like fetch would without these
-const NODE_FIX = "--no-network-family-autoselection --dns-result-order=ipv4first";
+// (Node 18, Ubuntu's own, has no autoselection to turn off and refuses that flag)
+const NODE_FIX = `${Number(process.versions.node.split(".")[0]) >= 19 ? "--no-network-family-autoselection " : ""}--dns-result-order=ipv4first`;
 
 /** A newer version is out, and npm can install it (under npx there's nothing installed to update). */
 export const canUpdate = () => latest !== null && !viaNpx();

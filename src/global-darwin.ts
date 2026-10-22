@@ -103,7 +103,7 @@ export class DarwinRouting implements Rerouter<MacRoute> {
     this.#o = o;
   }
 
-  async start(onExit: (code: number | null) => void): Promise<{ serverIp: string; dns: string }> {
+  async start(onExit: (code: number | null, signal: NodeJS.Signals | null) => void): Promise<{ serverIp: string; dns: string }> {
     const { priv, server, force, proxyHost, proxyPort } = this.#o;
     const orig = parseRouteGet((await exec("route", ["-n", "get", "default"])).stdout);
     if (!orig) throw new Error("No default route found; are you online?");

@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 import net from "node:net";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { fetchServerList } from "./serverlist.js";
-import { findAccount, type AccountState } from "./profile.js";
+import { findAccount, userHome, type AccountState } from "./profile.js";
 import { FirefoxAuth, StaticAuth, NotImplementedError, type Authenticator } from "./auth.js";
 import { Connection, findCountry } from "./connection.js";
 import { fetchEntitlement, GuardianError } from "./guardian.js";
 import { startProxy } from "./proxy.js";
-import { runGlobal, directPriv, isPrivileged } from "./global.js";
+import { firewallHint, lanIp } from "./netinfo.js";
+import { runGlobal, directPriv, isPrivileged, dialHost, planStaleCleanup, parseDefaultRoute } from "./global.js";
 import { loadSettings, proxyHost, loginFor } from "./settings.js";
 import { restoreWindows } from "./global-win32.js";
 import { Tui } from "./tui.js";
@@ -245,7 +247,13 @@ function handleAuthError(err: unknown): never {
     process.exit(2);
   }
   console.error(red(`\nError: ${(err as Error).message}`));
+  offlineHint();
   process.exit(1);
+}
+
+/** Offline because a killed global session's tun still takes all traffic? Then say how to fix it. */
+function offlineHint(): void {
+  if (existsSync("/sys/class/net/foxhole0")) console.error(yellow(`A killed global session's routes are still on, which keeps this computer offline: run  ${bold("foxhole restore")}`));
 }
 
 async function cmdCountries() {
@@ -341,13 +349,18 @@ function openBrowser(url: string) {
     if (firefox) spawn(firefox, [url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
     return;
   }
-  const candidates = [
-    "/opt/firefox-official/firefox",
-    "firefox",
-    "xdg-open",
-  ].filter((c) => c === "firefox" || c === "xdg-open" || existsSync(c));
-  const cmd = candidates[0] ?? "xdg-open";
-  spawn(cmd, [url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
+  // Firefox itself (only it opens about: pages): installed, on PATH (Ubuntu's snap too), or the
+  // Flatpak (Fedora Silverblue and Kinoite have no `firefox` command); xdg-open as a last try
+  const onPath = (cmd: string) => (process.env.PATH ?? "").split(":").some((dir) => dir && existsSync(join(dir, cmd)));
+  const flatpak = ["/var/lib/flatpak", join(userHome(), ".local/share/flatpak")].some((d) => existsSync(join(d, "app/org.mozilla.firefox")));
+  const [cmd, ...args] = existsSync("/opt/firefox-official/firefox")
+    ? ["/opt/firefox-official/firefox"]
+    : onPath("firefox")
+      ? ["firefox"]
+      : flatpak
+        ? ["flatpak", "run", "org.mozilla.firefox"]
+        : ["xdg-open"];
+  spawn(cmd, [...args, url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
 }
 
 async function cmdLogin() {
@@ -416,8 +429,15 @@ async function cmdProxy() {
   const handle = await startProxy(conn, host, port, (address) => loginFor(settings, address));
   console.log(green(`\nProxy on ${bold(`${host}:${handle.port}`)} (SOCKS5 and HTTP)  →  ${where}`));
   console.log(dim(`upstream ${server.hostname}:${server.port}`));
-  console.log(dim(`e.g.  export ALL_PROXY=socks5://${host}:${handle.port}`));
-  console.log(dim(`  or  export HTTPS_PROXY=http://${host}:${handle.port} HTTP_PROXY=http://${host}:${handle.port}\n`));
+  if (host === "0.0.0.0") {
+    // listening on all addresses: other devices use this computer's LAN address
+    console.log(`Other devices on this network: ${bold(cyan(`${lanIp() ?? "this computer's IP"}:${handle.port}`))}`);
+    const firewall = await firewallHint(handle.port);
+    if (firewall) console.log(yellow(`A firewall is on: if other devices can't connect, run  ${firewall.join(" && ")}`));
+  }
+  const here = `${dialHost(host)}:${handle.port}`; // 0.0.0.0 is where it listens, not an address to dial
+  console.log(dim(`e.g.  export ALL_PROXY=socks5://${here}`));
+  console.log(dim(`  or  export HTTPS_PROXY=http://${here} HTTP_PROXY=http://${here}\n`));
   // Warm the pass so auth errors surface immediately, not on first request.
   try {
     await conn.currentPass();
@@ -477,8 +497,18 @@ async function cmdGlobal() {
 
 /** Windows: undoes what a killed `global` session left behind (DNS rule, firewall rules, tun2socks). */
 async function cmdRestore() {
+  if (process.platform === "linux") {
+    // What a killed global session leaves, removed in one shell so sudo asks for the password once,
+    // here; elevating itself spares `sudo foxhole`, which nvm's PATH doesn't survive.
+    const uplink = parseDefaultRoute(spawnSync("ip", ["route"]).stdout?.toString() ?? "", "foxhole0");
+    const script = planStaleCleanup(uplink).map((argv) => `${argv.map((a) => `'${a}'`).join(" ")} 2>/dev/null`).join("; ") + "; true";
+    const root = process.getuid?.() === 0;
+    const r = spawnSync(root ? "sh" : "sudo", [...(root ? [] : ["sh"]), "-c", script], { stdio: "inherit" });
+    console.log(r.status === 0 ? green("Networking restored (foxhole's tun, its routes and its IPv6 and UDP blocks removed).") : red("Not restored: sudo was refused."));
+    return;
+  }
   if (process.platform !== "win32") {
-    console.log(dim("Nothing to do: on Linux and macOS a reboot restores networking."));
+    console.log(dim("Nothing to do: on macOS a reboot restores networking."));
     return;
   }
   if (!(await isPrivileged())) {
@@ -504,8 +534,8 @@ ${bold("Commands:")}
   proxy [--country XX] [--port N] [--host H]
                        Run a local SOCKS5 + HTTP proxy through the VPN
   global [--country XX] [--force]
-                       Route ALL system traffic through the VPN (needs ${WIN ? "Administrator" : "sudo"})${WIN ? `
-  restore              Undo a global session that was killed (Administrator)` : ""}
+                       Route ALL system traffic through the VPN (needs ${WIN ? "Administrator" : "sudo"})${WIN || process.platform === "linux" ? `
+  restore              Undo a global session that was killed (${WIN ? "Administrator" : "asks for your password"})` : ""}
   -v, --version        Show the version and whether an update is available
   help                 Show this help
 
@@ -513,7 +543,7 @@ ${bold("Options:")}
   --verbose            Also show per-connection errors (e.g. ports the VPN
                        refuses) and tun2socks logs
 
-${dim(WIN ? "global: run  foxhole global  in Terminal (Admin)  · Ctrl+C restores networking." : "global: run as  sudo -E foxhole global  · Ctrl+C restores networking.")}
+${dim(WIN ? "global: run  foxhole global  in Terminal (Admin)  · Ctrl+C restores networking." : 'global: run as  sudo -E env "PATH=$PATH" foxhole global  · Ctrl+C restores networking.')}
 ${dim("Stop any other active VPN first (or pass --force).")}
 
 ${bold("Environment:")}
@@ -578,5 +608,6 @@ async function main() {
 
 main().catch((err) => {
   console.error(red(`Error: ${(err as Error).message}`));
+  offlineHint();
   process.exit(1);
 });

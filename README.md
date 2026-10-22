@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/foxhole-vpn)](https://www.npmjs.com/package/foxhole-vpn)
 [![npm downloads](https://img.shields.io/npm/dm/foxhole-vpn)](https://www.npmjs.com/package/foxhole-vpn)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
+[![Node.js >= 18.18](https://img.shields.io/badge/node-%3E%3D18.18-brightgreen)](https://nodejs.org)
 ![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
 Use **Firefox's built-in VPN** (the free "IP Protection" / Mozilla VPN proxy
@@ -15,6 +15,10 @@ runtime dependencies.
 ```sh
 npm install -g foxhole-vpn && foxhole
 ```
+
+On **Ubuntu 24.04** the system's own Node.js is enough:
+`sudo apt install nodejs npm`, then `sudo npm install -g foxhole-vpn`.
+Ubuntu 22.04's is too old; `sudo snap install node --classic` gives a current one.
 
 > Unofficial. Not affiliated with Mozilla. Routing all your system traffic
 > through Firefox's VPN is probably outside Mozilla's intended use; your account
@@ -67,7 +71,7 @@ foxhole login               # sign in to the Firefox browser (sync optional)
 foxhole usage               # remaining data this month
 foxhole doctor              # check login, server list, entitlement
 foxhole proxy --country US  # local SOCKS5 + HTTP proxy through the US
-sudo -E foxhole global --country US   # route the whole system
+sudo -E env "PATH=$PATH" foxhole global --country US   # route the whole system
 foxhole --verbose                  # also show per-connection errors and tun2socks logs
 ```
 
@@ -75,6 +79,8 @@ On **Windows**, run `foxhole global` (or `foxhole` and press **`g`**) in an
 elevated terminal — **Terminal (Admin)** — instead of using `sudo`. If a global
 session is ever killed without restoring networking, `foxhole restore` (also
 elevated) removes what it left behind.
+On **Linux** the same `foxhole restore` (it asks for your password) undoes a
+killed global session that left the computer offline.
 
 `foxhole-vpn` works too, as an alias. From a checkout: `npm install && npm run build`,
 then `node dist/cli.js` in place of `foxhole`.

@@ -157,7 +157,7 @@ export class WindowsRouting implements Rerouter<WinWatch> {
     this.#o = o;
   }
 
-  async start(onExit: (code: number | null) => void): Promise<{ serverIp: string; dns: string }> {
+  async start(onExit: (code: number | null, signal: NodeJS.Signals | null) => void): Promise<{ serverIp: string; dns: string }> {
     const { priv, server, force, proxyHost, proxyPort } = this.#o;
     const up = parseWinUplink(await psOut(UPLINK_PS).catch(() => ""));
     if (!up) throw new Error("No default route found; are you online?");
