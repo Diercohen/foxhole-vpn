@@ -8,6 +8,7 @@ import { lookup } from "node:dns/promises";
 import { connect } from "node:net";
 import { PRIVATE_CIDRS, DOH_HOST, isVpnDev, stopProcess, type GlobalSessionOptions, type Rerouter } from "./global.js";
 import { GUARDIAN_HOST, pinGuardian } from "./guardian.js";
+import { currentSplit } from "./split.js";
 
 const exec = promisify(execFile);
 
@@ -88,11 +89,15 @@ const tcpProbe = (port: number) =>
     s.on("error", reject);
   });
 
+/** `route` arguments sending a route out the uplink: by its gateway, else its device. Pure. */
+const via = (up: MacRoute): string[] => (up.gw ? [up.gw] : ["-interface", up.dev]);
+
 export class DarwinRouting implements Rerouter<MacRoute> {
   readonly #o: GlobalSessionOptions;
   #undo: string[][] = []; // privileged commands reversing what start() did
   #pinUndo: string[][] = []; // the same for the routes tied to the uplink, redone on a network change
   #procs: ReturnType<typeof spawn>[] = [];
+  #relay: ReturnType<typeof spawn> | null = null; // the root DNS relay, which also routes direct sites (relay.ts)
   #dnsService: string | null = null;
   #dnsRestore: string[] = [];
   #directDns = false; // DNS not tunnelled: the resolvers are pinned too
@@ -159,7 +164,7 @@ export class DarwinRouting implements Rerouter<MacRoute> {
 
   /** Routes `dest` out the real uplink, recording how to undo it in #pinUndo. */
   async #pinRoute(kind: "-host" | "-net", dest: string, up: MacRoute): Promise<void> {
-    await this.#o.priv.run(["route", "-n", "add", kind, dest, ...(up.gw ? [up.gw] : ["-interface", up.dev])]);
+    await this.#o.priv.run(["route", "-n", "add", kind, dest, ...via(up)]);
     this.#pinUndo.push(["route", "-n", "delete", kind, dest]);
   }
 
@@ -218,6 +223,7 @@ export class DarwinRouting implements Rerouter<MacRoute> {
       }
     }
     this.#orig = up;
+    this.#relay?.stdin?.write(`via ${JSON.stringify(via(up))}\n`);
     await priv.run(["killall", "-HUP", "mDNSResponder"], true); // drop answers cached while offline
   }
 
@@ -225,19 +231,23 @@ export class DarwinRouting implements Rerouter<MacRoute> {
     return `${up.dev}${up.gw ? ` (${up.gw})` : ""}`;
   }
 
-  /** Runs the DoH forwarder as root on :53 and points the uplink's service at it. */
+  /**
+   * Runs the DoH forwarder as root on :53 and points the uplink's service at it. The relay also
+   * routes split tunneling's direct sites around the tunnel as it looks them up (relay.ts); its
+   * stdin stays open for new rules and a moved uplink, and its end has it remove those routes.
+   */
   async #tunnelDns(dev: string): Promise<void> {
     const { priv, proxyHost, proxyPort } = this.#o;
     const service = serviceForDevice((await exec("networksetup", ["-listnetworkserviceorder"])).stdout, dev);
     if (!service) throw new Error(`no network service for ${dev}`);
-    const dnsJs = JSON.stringify(new URL("./dns.js", import.meta.url).href);
-    const opts = JSON.stringify({ socksHost: proxyHost, socksPort: proxyPort, dohHost: DOH_HOST, host: "127.0.0.1", port: 53, connections: 8 });
-    this.#procs.push(
-      priv.spawn([
-        process.execPath, "--input-type=module", "-e",
-        `import { startDnsForwarder } from ${dnsJs}; await startDnsForwarder(${opts}); // ${DNS_MARK}`,
-      ]),
+    const relayJs = JSON.stringify(new URL("./relay.js", import.meta.url).href);
+    const dns = { socksHost: proxyHost, socksPort: proxyPort, dohHost: DOH_HOST, host: "127.0.0.1", port: 53, connections: 8 };
+    const opts = JSON.stringify({ dns, split: currentSplit(), via: via(this.#orig!) });
+    this.#relay = priv.spawn(
+      [process.execPath, "--input-type=module", "-e", `import { relayMain } from ${relayJs}; await relayMain(${opts}); // ${DNS_MARK}`],
+      true,
     );
+    this.#procs.push(this.#relay);
     await waitFor("the DNS relay", () => tcpProbe(53));
     await this.#pointDns(service);
   }
@@ -251,10 +261,21 @@ export class DarwinRouting implements Rerouter<MacRoute> {
     await priv.run(["killall", "-HUP", "mDNSResponder"], true); // flush cached answers
   }
 
+  /** Split tunneling's rules changed: the relay routes by the new ones. */
+  splitChanged(): void {
+    this.#relay?.stdin?.write(`rules ${JSON.stringify(currentSplit())}\n`);
+  }
+
   /** Restores DNS and routing, stops tun2socks and the relay. Best-effort. */
   async stop(): Promise<void> {
     const { priv } = this.#o;
     if (this.#dnsService) await priv.run(["networksetup", "-setdnsservers", this.#dnsService, ...this.#dnsRestore], true);
+    // The relay removes its direct routes as its stdin ends: give it the time to.
+    const relay = this.#relay;
+    this.#relay = null;
+    if (relay && relay.exitCode === null && relay.signalCode === null) {
+      await new Promise((r) => (relay.once("exit", r), relay.stdin?.end(), setTimeout(r, 10_000)));
+    }
     for (const argv of [...this.#undo.reverse(), ...this.#pinUndo.reverse()]) await priv.run(argv, true);
     this.#undo = [];
     this.#pinUndo = [];

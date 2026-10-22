@@ -5,6 +5,9 @@ import { lookup } from "node:dns/promises";
 import type { Connection } from "./connection.js";
 import { red, verbose } from "./ui.js";
 import { log } from "./log.js";
+import { route, splitOn, type Via } from "./split.js";
+import { nameOf, DOH_HOST } from "./dns.js";
+import { IP_HOST } from "./netinfo.js";
 
 // Throttled stderr: a browser opens many connections, so don't repeat the same
 // failure more than once every few seconds.
@@ -237,6 +240,143 @@ async function dial(conn: Connection, target: Target): Promise<tls.TLSSocket | n
   }
 }
 
+// ── Split tunneling: each connection goes through the VPN or direct, as the rules say (split.ts).
+
+// foxhole's own lookups and exit-IP check always use the VPN: global mode's DNS rides on the one,
+// the TUI's "ip" row on the other.
+export const OWN_HOSTS = new Set([DOH_HOST, IP_HOST]);
+
+// Global mode: direct connections leave from the uplink's address, or the tun would take them.
+// directOk: they really do (a probe says so); until then, and if not, they use the VPN.
+let directFrom: string | null = null;
+let directOk = true;
+
+// TEST-NET-1 (RFC 5737) is never routed: a connection to it reaches this proxy only if
+// connections from directFrom loop back through the tun.
+const PROBE: Target = { host: "192.0.2.1", port: 9 };
+let probing = 0;
+let probeSeen = false;
+
+/**
+ * Global mode's routes are going up, down or moving: until setDirectFrom, direct sites use the VPN.
+ * Dialed then, a direct connection would go into the tun, come back here, and be dialed again.
+ */
+export function holdDirect(): void {
+  directOk = false;
+}
+
+/** Global mode on (`address`: the uplink's) or off (null). With an address, direct sites wait for the probe. */
+export function setDirectFrom(address: string | null): void {
+  directFrom = address;
+  directOk = !address;
+  if (!address) return;
+  void (async () => {
+    probing++;
+    probeSeen = false;
+    let refused = false;
+    const s = net.connect({ ...PROBE, localAddress: address });
+    // macOS refuses outright a connection whose route would loop ("no route to host"). On Linux it
+    // would loop instead (seen below), so an error there is the far end's answer, not a refusal.
+    s.on("error", (e: NodeJS.ErrnoException) => {
+      if (process.platform !== "linux" && ["EHOSTUNREACH", "ENETUNREACH", "EADDRNOTAVAIL"].includes(e.code ?? "")) refused = true;
+    });
+    await new Promise((r) => setTimeout(r, 1000));
+    s.destroy();
+    probing--;
+    if (directFrom !== address) return; // superseded by a network change
+    directOk = !probeSeen && !refused;
+    if (!directOk) {
+      const msg = "direct sites can't get past the tun on this system: they use the VPN";
+      log(`proxy: ${msg}`);
+      sink(msg);
+    }
+  })();
+}
+
+/** True when direct sites can go direct now (always, outside global mode). */
+export const directReady = (): boolean => directOk;
+
+/** The site a client's first bytes name: a TLS ClientHello's SNI or an HTTP request's Host; null if neither. Pure. */
+export function sniffHost(b: Buffer): string | null {
+  try {
+    if (b[0] === 0x16 && b[5] === 0x01) {
+      // record header 5, handshake header 4, version 2, random 32; then session id, cipher suites, compressions
+      let p = 43;
+      p += 1 + b[p];
+      p += 2 + b.readUInt16BE(p);
+      p += 1 + b[p];
+      const end = p + 2 + b.readUInt16BE(p);
+      for (p += 2; p + 4 <= end; p += 4 + b.readUInt16BE(p + 2)) {
+        if (b.readUInt16BE(p) !== 0) continue;
+        // server_name: list length 2, then type 0 (a host name), length 2, the name
+        const len = b.readUInt16BE(p + 7);
+        return b[p + 6] === 0 && p + 9 + len <= b.length ? b.toString("latin1", p + 9, p + 9 + len).toLowerCase() : null;
+      }
+      return null;
+    }
+    const head = b.toString("latin1", 0, Math.min(b.length, 8192));
+    if (!/^[A-Z]+ \S+ HTTP\/1\.[01]\r\n/.test(head)) return null;
+    return head.match(/\r\nhost:[ \t]*([^\s:]+)/i)?.[1].toLowerCase() ?? null;
+  } catch {
+    return null; // cut off
+  }
+}
+
+/** A client's first bytes: enough to name the site (a whole ClientHello or HTTP head, maybe over several reads), or what came in `ms`. Leaves the socket paused. */
+function firstBytes(socket: net.Socket, ms = 2000): Promise<Buffer> {
+  return new Promise((resolve) => {
+    let buf = Buffer.alloc(0);
+    const done = () => {
+      clearTimeout(timer);
+      socket.removeListener("data", onData);
+      socket.removeListener("close", done);
+      socket.pause();
+      resolve(buf);
+    };
+    // TLS: the record's length says; HTTP (a method in capitals): the blank line; else nothing to wait for
+    const whole = () =>
+      buf[0] === 0x16 ? buf.length >= 5 && buf.length >= 5 + buf.readUInt16BE(3) : buf[0] >= 0x41 && buf[0] <= 0x5a ? buf.includes("\r\n\r\n") : true;
+    const onData = (d: Buffer) => {
+      buf = Buffer.concat([buf, d]);
+      if (whole() || buf.length >= 16384) done();
+    };
+    const timer = setTimeout(done, ms);
+    socket.on("data", onData);
+    socket.once("close", done);
+  });
+}
+
+/** Connects to `target` outside the VPN; in global mode from the uplink's address, past the tun. */
+function dialDirect(target: Target): Promise<net.Socket | null> {
+  return new Promise((resolve) => {
+    const s = net.connect({ host: target.host, port: target.port, ...(directFrom ? { localAddress: directFrom, family: 4 } : {}) });
+    const fail = (err: Error) => {
+      warn(`direct connect failed for ${target.host}:${target.port}: ${describe(err)}`);
+      s.destroy();
+      resolve(null);
+    };
+    s.setTimeout(UPSTREAM_TIMEOUT_MS, () => fail(new Error("timed out")));
+    s.once("error", fail);
+    s.once("connect", () => {
+      s.setTimeout(0);
+      s.removeListener("error", fail);
+      resolve(s);
+    });
+  });
+}
+
+/** VPN or direct for a connection to the site `name` (when known) at `ip` (when known). */
+function via(name: string | undefined, ip: string | undefined): Via {
+  if (name && OWN_HOSTS.has(name.toLowerCase())) return "vpn";
+  return route(name, ip) === "direct" && directOk ? "direct" : "vpn";
+}
+
+/** Opens the way the rules give `target`, the VPN tunnel or a direct connection; null (warned) if it can't. */
+async function open(conn: Connection, target: Target, name?: string): Promise<net.Socket | null> {
+  const ip = net.isIP(target.host) ? target.host : undefined;
+  return via(name ?? (ip ? nameOf(ip) : target.host), ip) === "direct" ? dialDirect(target) : dial(conn, target);
+}
+
 /** Pipes two sockets into each other until either side closes. */
 function splice(a: net.Socket, b: net.Socket): void {
   // The client hung up while the tunnel was opening (tun2socks quitting, a cancelled
@@ -297,13 +437,26 @@ async function handleSocks(socket: net.Socket, conn: Connection, greeting: Buffe
     socket.write(Buffer.from([0x01, 0x00]));
   } else socket.write(Buffer.from([SOCKS_VERSION, 0x00])); // no authentication required
   const target = await readRequest(socket);
-  const up = await dial(conn, target);
+  if (probing && target.host === PROBE.host && target.port === PROBE.port) return void ((probeSeen = true), socket.destroy());
+  // tun2socks (global mode) gives only an address. When rules need the site's name, the client's first
+  // bytes have it, exactly even on a CDN address many sites share: a TLS SNI, an HTTP Host. They come
+  // only after the reply, so it goes first.
+  let hello: Buffer | null = null;
+  let name: string | undefined;
+  if (net.isIP(target.host) && splitOn() && (target.port === 443 || target.port === 80)) {
+    replySuccess(socket);
+    hello = await firstBytes(socket);
+    if (socket.destroyed) return;
+    name = sniffHost(hello) ?? undefined;
+  }
+  const up = await open(conn, target, name);
   if (!up) {
-    replyFailure(socket);
+    if (!hello) replyFailure(socket);
     socket.destroy();
     return;
   }
-  replySuccess(socket);
+  if (hello) up.write(hello);
+  else replySuccess(socket);
   splice(socket, up);
 }
 
@@ -357,7 +510,7 @@ async function handleHttp(socket: net.Socket, conn: Connection, first: Buffer, l
     ]);
   }
 
-  const up = await dial(conn, target);
+  const up = await open(conn, target);
   if (!up) return httpError(socket, "502 Bad Gateway");
   if (request) up.write(request);
   else {

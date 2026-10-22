@@ -10,6 +10,7 @@ import { Connection, findCountry } from "./connection.js";
 import { fetchEntitlement, GuardianError } from "./guardian.js";
 import { startProxy } from "./proxy.js";
 import { firewallHint, lanIp } from "./netinfo.js";
+import { useSplit, splitSummary, type Split } from "./split.js";
 import { runGlobal, directPriv, isPrivileged, dialHost, staleCleanupScript, parseDefaultRoute } from "./global.js";
 import { loadSettings, proxyHost, loginFor } from "./settings.js";
 import { restoreWindows } from "./global-win32.js";
@@ -424,10 +425,12 @@ async function cmdProxy() {
   noteTokenTtl();
   const where = country ? `${flag(country.code)} ${countryName(country.code, country.name)}` : "recommended";
   const settings = loadSettings();
+  useSplit(() => settings.split); // the rules set in the TUI's Split tunneling popup
   const host = arg("host") ?? proxyHost(settings);
   const port = Number(arg("port") ?? settings.port);
   const handle = await startProxy(conn, host, port, (address) => loginFor(settings, address));
   console.log(green(`\nProxy on ${bold(`${host}:${handle.port}`)} (SOCKS5 and HTTP)  →  ${where}`));
+  splitNote(settings.split);
   console.log(dim(`upstream ${server.hostname}:${server.port}`));
   if (host === "0.0.0.0") {
     // listening on all addresses: other devices use this computer's LAN address
@@ -483,6 +486,8 @@ async function cmdGlobal() {
   await conn.selectServer(country);
   await notice();
   const settings = loadSettings();
+  useSplit(() => settings.split); // the rules set in the TUI's Split tunneling popup
+  splitNote(settings.split);
   try {
     await runGlobal(conn, {
       host: arg("host") ?? proxyHost(settings),
@@ -493,6 +498,12 @@ async function cmdGlobal() {
   } catch (err) {
     handleAuthError(err);
   }
+}
+
+/** Says when split tunneling sends some sites another way, so the CLI's routing isn't a surprise. */
+function splitNote(split: Split): void {
+  const summary = splitSummary(split);
+  if (summary) console.log(yellow(`Split tunneling: ${summary} (change it with ${bold("t")} in ${bold("foxhole")})`));
 }
 
 /** Windows: undoes what a killed `global` session left behind (DNS rule, firewall rules, tun2socks). */

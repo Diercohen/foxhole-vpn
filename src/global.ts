@@ -14,10 +14,10 @@ import { createHash } from "node:crypto";
 import { join, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import type { Connection } from "./connection.js";
-import { startProxy, type ProxyLogin } from "./proxy.js";
-import { startDnsForwarder, type DnsForwarder } from "./dns.js";
+import { startProxy, setDirectFrom, holdDirect, directReady, type ProxyLogin } from "./proxy.js";
+import { startDnsForwarder, DOH_HOST, type DnsForwarder } from "./dns.js";
 import { GUARDIAN_HOST, pinGuardian } from "./guardian.js";
-import { publicIp } from "./netinfo.js";
+import { publicIp, ipv4Of } from "./netinfo.js";
 import { dim, green, red, yellow, bold, verbose } from "./ui.js";
 import { DarwinRouting } from "./global-darwin.js";
 import { WindowsRouting, isWindowsAdmin } from "./global-win32.js";
@@ -36,7 +36,7 @@ export const PRIVATE_CIDRS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "
 
 // DNS is resolved through the tunnel via DoH (the VPN forbids port 53). On Linux the
 // forwarder listens on a free port it picks; systemd-resolved is pointed at it.
-export const DOH_HOST = "cloudflare-dns.com";
+export { DOH_HOST }; // lives in dns.ts, where the proxy can reach it
 const WATCH_MS = 3000; // how often global mode checks for a network change (Wi-Fi switch)
 
 export interface DefaultRoute {
@@ -111,6 +111,29 @@ export function planTeardown(bypassIps: string[]): string[][] {
   ];
 }
 
+const DIRECT_TABLE = "1080";
+const DIRECT_PREF = 1080;
+
+/**
+ * Split tunneling's direct sites in global mode: foxhole dials them from the uplink's address, and
+ * these send that address's traffic out the uplink, past the tun's default route (main's narrower
+ * routes, the LAN's and the pins, still apply). Pure.
+ */
+export function planDirect(addr: string, orig: DefaultRoute): string[][] {
+  return [
+    ["ip", "route", "replace", "default", ...(orig.gw ? ["via", orig.gw] : []), "dev", orig.dev, "table", DIRECT_TABLE],
+    ["ip", "rule", "add", "from", addr, "lookup", "main", "suppress_prefixlength", "0", "priority", `${DIRECT_PREF}`],
+    ["ip", "rule", "add", "from", addr, "lookup", DIRECT_TABLE, "priority", `${DIRECT_PREF + 1}`],
+  ];
+}
+
+/** Removes planDirect's rules and table. Pure. */
+export const planDirectTeardown = (): string[][] => [
+  ["ip", "rule", "del", "priority", `${DIRECT_PREF}`],
+  ["ip", "rule", "del", "priority", `${DIRECT_PREF + 1}`],
+  ["ip", "route", "flush", "table", DIRECT_TABLE],
+];
+
 /**
  * What a killed global session can leave (its tun2socks still holding the tun, so a dead default
  * route keeps the computer offline; the IPv6 blackhole; the UDP reject; with the uplink `orig`,
@@ -124,6 +147,7 @@ export function planStaleCleanup(orig?: DefaultRoute | null): string[][] {
     ["ip", "link", "del", TUN],
     ["ip", "-6", "route", "del", "blackhole", "default", "metric", "1"],
     ["iptables", "-D", "OUTPUT", "-o", TUN, "-p", "udp", "-j", "REJECT"],
+    ...planDirectTeardown(),
     ...(orig ? PRIVATE_CIDRS.map((cidr) => ["ip", "route", "del", ...pinCmd(cidr, orig).slice(3), "proto", "boot", "metric", "0"]) : []),
   ];
 }
@@ -332,6 +356,12 @@ function pinnableResolver(ip: string): boolean {
   return true;
 }
 
+/** The uplink's own DNS server, as the network manager set it: where split tunneling looks up direct sites. */
+async function uplinkResolver(dev: string): Promise<string | null> {
+  const out = await exec("resolvectl", ["dns", dev]).then((r) => r.stdout, () => "");
+  return out.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/)?.[0] ?? null;
+}
+
 async function dnsUpstreams(): Promise<string[]> {
   const ips = new Set<string>();
   try {
@@ -482,6 +512,7 @@ export class GlobalSession {
   #dns: DnsForwarder | null = null;
   #t2s: ReturnType<typeof spawn> | null = null;
   #guard: ReturnType<typeof spawn> | null = null;
+  #localDns: { server: string; from: string } | null = null; // where direct sites are looked up
   #exitCb: ((why: number | string | null) => void) | null = null;
   #netCb: ((event: "lost" | "restored", detail: string) => void) | null = null;
   #stopped = false;
@@ -509,8 +540,10 @@ export class GlobalSession {
 
   /** Sets up routing + tun2socks. Returns the pinned server IP and DNS mode. */
   async start(): Promise<{ serverIp: string; dns: string }> {
+    holdDirect(); // until #direct(): the tun's routes come first
     if (this.#mac) {
       const res = await this.#mac.start((code, signal) => this.#exitCb?.(code ?? signal));
+      await this.#direct();
       this.#arm(this.#mac as Rerouter<unknown>);
       return res;
     }
@@ -568,6 +601,7 @@ export class GlobalSession {
         host: TUN_ADDR,
         port: 0, // a fixed port can be taken: 5353 is mDNS's (avahi)
         connections: 8, // as on macOS and Windows: one slow lookup mustn't hold up the rest
+        local: () => (directReady() ? this.#localDns : null),
       });
       await this.#pointDns();
       dns = `tunnelled (DoH via ${DOH_HOST})`;
@@ -593,6 +627,7 @@ export class GlobalSession {
       /* no iptables — users can disable QUIC in the browser instead */
     }
 
+    await this.#direct();
     this.#arm({
       uplink: async () => parseDefaultRoute((await exec("ip", ["route"])).stdout, TUN),
       broken: (up) => this.#broken(up),
@@ -633,7 +668,9 @@ export class GlobalSession {
         if (!up) return tell("network down — waiting for it to come back");
         if (!(await r.broken(up))) return void (told && fixed(up)); // a blip that left the pins intact
         if (!told.startsWith("rerouting failed")) tell(`network changed (${r.label(up)}) — rerouting…`);
+        holdDirect(); // the routes move under it
         await r.repin(up);
+        await this.#direct();
         fixed(up);
       } catch (err) {
         tell(`rerouting failed: ${(err as Error).message} — retrying`);
@@ -697,6 +734,32 @@ export class GlobalSession {
     this.#orig = orig;
   }
 
+  /**
+   * Split tunneling: direct sites leave from the uplink's address, which policy routing sends out the
+   * uplink on Linux (macOS and Windows pick the interface by the address themselves), and are looked
+   * up on its own DNS. The proxy first checks that they really get past the tun.
+   */
+  async #direct(): Promise<void> {
+    // macOS refuses those connections whatever the routes ("no route to host"): there direct sites
+    // go around the tunnel by address instead, routed by the DNS relay as it looks them up
+    // (relay.ts), and one that still reaches the tun uses the VPN (left held since start()).
+    if (this.#mac instanceof DarwinRouting) return;
+    const dev = this.#mac ? this.#mac.device() : this.#orig?.dev;
+    const from = dev ? ipv4Of(dev) : null;
+    if (!this.#mac && this.#orig) {
+      for (const step of planDirectTeardown()) await this.#o.priv.run(step, true);
+      if (from) for (const step of planDirect(from, this.#orig)) await this.#o.priv.run(step, true);
+      const server = from && (await uplinkResolver(this.#orig.dev));
+      this.#localDns = from && server ? { server, from } : null;
+    }
+    setDirectFrom(from);
+  }
+
+  /** Split tunneling's rules changed: on macOS the DNS relay's routes follow them (on Linux the proxy reads them live). */
+  splitChanged(): void {
+    if (this.#mac instanceof DarwinRouting) this.#mac.splitChanged();
+  }
+
   /** The public exit IP (confirms the tunnel works), or null if unreachable. */
   async verifyExitIp(): Promise<string | null> {
     return publicIp(); // retries: right after start, tun2socks may not be reading the tun yet
@@ -708,17 +771,19 @@ export class GlobalSession {
     this.#stopped = true;
     if (this.#watchTimer) clearTimeout(this.#watchTimer);
     await this.#tick; // a re-pin in flight would add routes after the teardown below
-    if (this.#mac) return this.#mac.stop();
+    holdDirect(); // until the routes are gone: a direct site dialed now would loop through the tun
+    if (this.#mac) return void (await this.#mac.stop(), setDirectFrom(null));
     if (this.#udpBlocked)
       await this.#o.priv.run(["iptables", "-D", "OUTPUT", "-o", TUN, "-p", "udp", "-j", "REJECT"], true);
     for (const cidr of this.#addedPrivate) await this.#o.priv.run(["ip", "route", "del", cidr], true);
     // Stopping tun2socks takes its tun, and the routes on it, away with it.
     await stopProcess(this.#t2s, () => this.#o.priv.run(planStaleCleanup()[0], true)); // sudo child may outlive the signal
     this.#t2s = null;
-    for (const step of planTeardown(this.#bypassIps)) await this.#o.priv.run(step, true);
+    for (const step of [...planTeardown(this.#bypassIps), ...planDirectTeardown()]) await this.#o.priv.run(step, true);
     await stopProcess(this.#guard, async () => void this.#guard?.stdin?.end()); // its cleanup would hit the next session
     this.#guard = null;
     await this.#dns?.close(); // last: until the tun (and the DNS setting on it) is gone, lookups still come here
+    setDirectFrom(null);
   }
 }
 

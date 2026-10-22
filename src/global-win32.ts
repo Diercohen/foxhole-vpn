@@ -157,6 +157,11 @@ export class WindowsRouting implements Rerouter<WinWatch> {
     this.#o = o;
   }
 
+  /** The uplink's interface, as networkInterfaces() names it: split tunneling's direct sites leave from its address. */
+  device(): string | null {
+    return this.#orig?.alias ?? null;
+  }
+
   async start(onExit: (code: number | null, signal: NodeJS.Signals | null) => void): Promise<{ serverIp: string; dns: string }> {
     const { priv, server, force, proxyHost, proxyPort } = this.#o;
     const up = parseWinUplink(await psOut(UPLINK_PS).catch(() => ""));

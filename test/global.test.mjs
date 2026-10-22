@@ -1,6 +1,6 @@
 // Pure-function checks for the global-routing planner. No root, no network.
 import assert from "node:assert";
-import { parseDefaultRoute, isVpnDev, planSetup, planTeardown, planStaleCleanup, staleCleanupScript, conflictingVpn, needsRepin, pinCmd, dialHost } from "../dist/global.js";
+import { parseDefaultRoute, isVpnDev, planSetup, planTeardown, planStaleCleanup, staleCleanupScript, planDirect, planDirectTeardown, conflictingVpn, needsRepin, pinCmd, dialHost } from "../dist/global.js";
 import { Connection } from "../dist/connection.js";
 
 // Real-world `ip route` with a DHCP default plus extra routes.
@@ -57,6 +57,14 @@ assert.ok(planTeardown([]).some((c) => c.join(" ") === "ip link del foxhole0"), 
 // A killed session's leftovers, cleared before a new one and by `foxhole restore`; pkill can't match its own sudo.
 const stale = planStaleCleanup().map((c) => c.join(" "));
 assert.ok(stale.includes("pkill -f -- --device foxhole[0]") && !"sudo -S -p  pkill -f -- --device foxhole[0]".match(/--device foxhole[0]/), "pkill spares its sudo");
+// Split tunneling's direct sites: dialed from the uplink's address, which skips main's default routes (the tun's)
+assert.deepEqual(planDirect("192.168.0.23", { gw: "192.168.0.1", dev: "wlo1" }).map((c) => c.join(" ")), [
+  "ip route replace default via 192.168.0.1 dev wlo1 table 1080",
+  "ip rule add from 192.168.0.23 lookup main suppress_prefixlength 0 priority 1080",
+  "ip rule add from 192.168.0.23 lookup 1080 priority 1081",
+]);
+assert.equal(planDirect("10.0.0.5", { gw: null, dev: "ppp0" })[0].join(" "), "ip route replace default dev ppp0 table 1080", "no gateway");
+for (const step of planDirectTeardown().map((c) => c.join(" "))) assert.ok(stale.includes(step), `a killed session's ${step} is cleaned too`);
 const script = staleCleanupScript({ gw: "192.168.0.1", dev: "wlo1" });
 assert.ok(script.startsWith("'pkill' '-f' '--' '--device foxhole[0]' 2>/dev/null; ") && script.endsWith("; true"), script);
 assert.ok(stale.includes("ip link del foxhole0") && stale.includes("ip -6 route del blackhole default metric 1"), "tun and IPv6 blackhole");

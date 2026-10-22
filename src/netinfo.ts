@@ -99,6 +99,11 @@ function lanInterface(ifaces: ReturnType<typeof networkInterfaces> = networkInte
   return null;
 }
 
+/** The IPv4 address of the interface named `dev` (as the routing table names it), or null. */
+export function ipv4Of(dev: string, ifaces: ReturnType<typeof networkInterfaces> = networkInterfaces()): string | null {
+  return ifaces[dev]?.find((a) => a.family === "IPv4" && !a.internal)?.address ?? null;
+}
+
 /** This computer's address on the local network (for other devices to reach the proxy). */
 export function lanIp(ifaces: ReturnType<typeof networkInterfaces> = networkInterfaces()): string | null {
   return lanInterface(ifaces)?.address ?? null;
@@ -117,7 +122,7 @@ export function describeNetwork(wifi: string | null, iface: string | undefined):
   return /^wl|wi-?fi|wireless/i.test(iface) ? "Wi-Fi" : "Ethernet (wired)";
 }
 
-const IP_HOST = "api.ipify.org";
+export const IP_HOST = "api.ipify.org";
 const isIp = (s: string) => /^[0-9a-f.:]+$/i.test(s) && s.length <= 45;
 
 /**

@@ -1,6 +1,7 @@
 import dgram from "node:dgram";
 import net from "node:net";
 import tls from "node:tls";
+import { viaOf } from "./split.js";
 
 // A local DNS resolver that forwards every query as DNS-over-HTTPS (RFC 8484)
 // *through the SOCKS proxy*. This keeps name resolution inside the tunnel on
@@ -9,6 +10,98 @@ import tls from "node:tls";
 // same bytes as a UDP DNS message, so queries pass through opaquely.
 
 const SOCKS_V = 0x05;
+
+export const DOH_HOST = "cloudflare-dns.com";
+
+/** Reads a (maybe compressed) name at `off`: [lowercase name, offset after it]. Throws if malformed. */
+function readName(m: Buffer, off: number): [string, number] {
+  const labels: string[] = [];
+  let end = -1; // after the first pointer: where the name ends in the message
+  for (let jumps = 0; ; ) {
+    const len = m[off];
+    if (len === undefined) throw new RangeError("truncated");
+    if ((len & 0xc0) === 0xc0) {
+      if (end < 0) end = off + 2;
+      if (++jumps > 16) throw new RangeError("pointer loop");
+      off = m.readUInt16BE(off) & 0x3fff;
+    } else if (len === 0) {
+      return [labels.join(".").toLowerCase(), end < 0 ? off + 1 : end];
+    } else {
+      labels.push(m.toString("latin1", off + 1, off + 1 + len));
+      off += 1 + len;
+    }
+  }
+}
+
+/** The (first) name a DNS message asks about, or null if malformed. Pure. */
+export function questionName(msg: Buffer): string | null {
+  try {
+    return msg.readUInt16BE(4) ? readName(msg, 12)[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The IPv4 addresses in a DNS answer, with their TTLs (what parses of a cut-off one). Pure. */
+export function answerAddrs(msg: Buffer): { ip: string; ttl: number }[] {
+  const out: { ip: string; ttl: number }[] = [];
+  try {
+    let off = 12;
+    for (let q = msg.readUInt16BE(4); q > 0; q--) off = readName(msg, off)[1] + 4;
+    for (let a = msg.readUInt16BE(6); a > 0; a--) {
+      off = readName(msg, off)[1];
+      const type = msg.readUInt16BE(off), ttl = msg.readUInt32BE(off + 4), len = msg.readUInt16BE(off + 8);
+      if (type === 1 && len === 4 && off + 14 <= msg.length) out.push({ ip: [...msg.subarray(off + 10, off + 14)].join("."), ttl });
+      off += 10 + len;
+    }
+  } catch {
+    /* cut off: what was read */
+  }
+  return out;
+}
+
+// Which site each address was looked up for: global mode's tun2socks gives the proxy only
+// addresses, and split tunneling decides by name. The newest lookup of an address wins.
+const names = new Map<string, { name: string; until: number }>();
+
+/** The site a recent lookup through this forwarder gave `ip` for. */
+export function nameOf(ip: string): string | undefined {
+  const e = names.get(ip);
+  return e && e.until > Date.now() ? e.name : undefined;
+}
+
+function remember(answer: Buffer): void {
+  const name = questionName(answer);
+  if (!name) return;
+  for (const { ip, ttl } of answerAddrs(answer)) {
+    names.delete(ip); // re-added last: the oldest go first
+    names.set(ip, { name, until: Date.now() + Math.max(ttl, 300) * 1000 }); // apps keep an address past its TTL
+  }
+  for (const ip of names.keys()) {
+    if (names.size <= 10_000) break;
+    names.delete(ip);
+  }
+}
+
+/** Asks the local network's resolver over UDP, from `from` (global mode routes that out the uplink). Rejects on a timeout or a cut-off answer. */
+function askLocal(q: Buffer, server: string, from: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const s = dgram.createSocket("udp4");
+    let open = true;
+    const done = (err: Error | null, m?: Buffer) => {
+      if (!open) return;
+      open = false;
+      clearTimeout(timer);
+      s.close();
+      if (err) reject(err);
+      else resolve(m!);
+    };
+    const timer = setTimeout(() => done(new Error("timed out")), 2000);
+    s.on("error", (e) => done(e));
+    s.on("message", (m) => m.readUInt16BE(0) === q.readUInt16BE(0) && done(m[2] & 0x02 ? new Error("truncated") : null, m));
+    s.bind(0, from, () => s.send(q, 53, server));
+  });
+}
 
 /** Opens a TCP tunnel to host:port through a SOCKS5 proxy, using a DOMAIN name
  * (so the proxy resolves it server-side — no bootstrap IP needed). */
@@ -141,6 +234,10 @@ export interface DnsForwarderOptions {
   port: number; // 0: any port free for both UDP and TCP
   /** Parallel DoH connections; each serialises its queries. Default 1. */
   connections?: number;
+  /** Split tunneling: the local network's resolver for sites that go direct, and the address to ask it from. */
+  local?: () => { server: string; from: string } | null;
+  /** Each answer's name and IPv4 addresses, awaited before it's returned (macOS routes direct sites then). */
+  onAnswer?: (name: string, ips: string[]) => Promise<void>;
 }
 
 /** Starts a UDP+TCP DNS listener that forwards every query via DoH-over-SOCKS. */
@@ -150,7 +247,7 @@ export async function startDnsForwarder(o: DnsForwarderOptions): Promise<DnsForw
     busy: 0,
   }));
   // Send each query down the least-busy connection.
-  const query = async (q: Buffer): Promise<Buffer> => {
+  const doh = async (q: Buffer): Promise<Buffer> => {
     const c = pool.reduce((a, b) => (b.busy < a.busy ? b : a));
     c.busy++;
     try {
@@ -158,6 +255,16 @@ export async function startDnsForwarder(o: DnsForwarderOptions): Promise<DnsForw
     } finally {
       c.busy--;
     }
+  };
+  // A site that goes direct is looked up where it'll be reached, on the local network (local
+  // answers, no VPN data), else through the tunnel. Every answer is remembered for the proxy.
+  const query = async (q: Buffer): Promise<Buffer> => {
+    const name = questionName(q);
+    const local = name && viaOf(name) === "direct" ? o.local?.() : null;
+    const ans = (local && (await askLocal(q, local.server, local.from).catch(() => null))) || (await doh(q));
+    remember(ans);
+    if (name && o.onAnswer) await o.onAnswer(name, answerAddrs(ans).map((a) => a.ip)).catch(() => {});
+    return ans;
   };
 
   // Only this computer may ask: Linux takes any of its addresses on any interface, so a neighbour could

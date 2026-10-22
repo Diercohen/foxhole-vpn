@@ -12,6 +12,7 @@ import { loadSettings, saveSettings, proxyHost, validPort, loginFor, type Settin
 import { forgetToken } from "./tokenserver.js";
 import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { logLines, onLog } from "./log.js";
+import { useSplit, splitOn, splitSummary, parseSite, hits, recentSites, type Split, type Via } from "./split.js";
 import { GlobalSession, sudoPriv, directPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, restart, versionLines, UPDATE_COMMAND } from "./update.js";
 import { bold, dim, under, strike, green, red, yellow, cyan, lit, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
@@ -32,6 +33,7 @@ process.on("exit", leaveScreen);
 
 const LOGOUT_ASK = yellow("press O again to log out and switch accounts");
 const onOff = (v: boolean) => (v ? green("on") : dim("off"));
+const flip = (v: Via): Via => (v === "vpn" ? "direct" : "vpn");
 
 /** The Settings popup's rows, in order. */
 const SETTINGS = [
@@ -95,6 +97,13 @@ export class Tui {
   #pw = "";
   #pwError = "";
   #pwChecking = false;
+  #splitOpen = false; // the Split tunneling popup is open
+  #splitSel = 0; // 0: "Everything else", then the rules, then "+ add a site"
+  #splitStart = 0; // the first row shown, when the list scrolls
+  #splitShown = 0; // how many rows are shown
+  #splitEdit: string | null = null; // the site being typed
+  #splitTab: { query: string; i: number } | null = null; // Tab going through recent sites
+  #splitNote = "";
   #logsOpen = false; // the Logs popup is open
   #logsNote = ""; // how copying the logs went
   #restoring = false; // quitting: global mode's routes are being put back
@@ -115,6 +124,8 @@ export class Tui {
 
   /** Resolves "logout" when the user logged out, so the caller can forget the token. */
   async run(): Promise<"logout" | undefined> {
+    useSplit(() => this.#settings.split); // live: a change applies to the next connection
+    setInterval(() => this.#splitOpen && this.#render(), 1000).unref(); // its counts climb as sites load
     onLog(() => this.#logsOpen && this.#renderSoon());
     onProxyWarning((msg) => {
       this.#message = red(`proxy: ${msg}`);
@@ -258,6 +269,7 @@ export class Tui {
           return;
         }
         if (this.#settingsOpen) return this.#settingsKey(s, key);
+        if (this.#splitOpen) return this.#splitKey(s, key);
         if (key.name === "q") return void quit();
         if (key.name === "l") return void ((this.#logsOpen = true), (this.#logsNote = ""), this.#render());
         if (this.#busy) return;
@@ -265,6 +277,11 @@ export class Tui {
           this.#settingsOpen = true;
           this.#settingsNote = "";
           this.#checkFirewall();
+          return this.#render();
+        }
+        if (key.name === "t") {
+          this.#splitOpen = true;
+          this.#splitNote = "";
           return this.#render();
         }
         switch (key.name) {
@@ -315,6 +332,12 @@ export class Tui {
       this.#setSel = i;
       return press("return");
     }
+    if (this.#splitOpen) {
+      const i = fy - h.setTop;
+      if (this.#splitEdit !== null || i < 0 || i >= this.#splitShown || fx < h.setX || fx >= h.setX + h.setW) return;
+      this.#splitSel = this.#splitStart + i;
+      return press("return");
+    }
     if (linkAt(x, y)) return openUrl(REPO_URL);
     const k = fy - h.rowsTop;
     if (k >= 0 && k < h.rows && fx >= 0 && fx < h.width) {
@@ -328,7 +351,7 @@ export class Tui {
       const a = h.buttons.lastIndexOf("[", fx), z = h.buttons.indexOf("]", fx);
       if (a < 0 || z < 0 || h.buttons.lastIndexOf("]", fx - 1) > a) return;
       const label = h.buttons.slice(a + 1, z);
-      press(label.startsWith("⏎") ? "return" : label[0].toLowerCase());
+      press(label.startsWith("⏎") ? "return" : label.startsWith("Split") ? "t" : label[0].toLowerCase());
     }
   }
 
@@ -582,6 +605,106 @@ export class Tui {
     this.#render();
   }
 
+  /** Keystrokes while the Split tunneling popup is open. */
+  #splitKey(s: string, key: readline.Key): void {
+    const sp = this.#settings.split;
+    const n = sp.rules.length;
+    const e = this.#splitEdit;
+    if (e !== null) {
+      if (key.name === "tab") return void (this.#nextRecent(), this.#render());
+      this.#splitTab = null;
+      if (key.name === "escape") this.#splitEdit = null;
+      else if (key.name === "return") return this.#addRule(e);
+      else if (key.name === "backspace") this.#splitEdit = e.slice(0, -1);
+      else if (s && s.length === 1 && s > " " && !key.ctrl && !key.meta && e.length < 253) this.#splitEdit = e + s;
+      return this.#render();
+    }
+    const sel = this.#splitSel;
+    switch (key.name) {
+      case "escape":
+      case "t":
+        this.#splitOpen = false;
+        break;
+      case "up":
+      case "k":
+        this.#splitSel = (sel - 1 + n + 2) % (n + 2);
+        break;
+      case "down":
+      case "j":
+        this.#splitSel = (sel + 1) % (n + 2);
+        break;
+      case "return":
+      case "space":
+        if (sel === 0) return this.#saveSplit({ ...sp, default: flip(sp.default) });
+        if (sel <= n) return this.#saveSplit({ ...sp, rules: sp.rules.map((r, i) => (i === sel - 1 ? { ...r, via: flip(r.via) } : r)) });
+        this.#splitEdit = "";
+        this.#splitNote = "";
+        break;
+      case "a":
+        this.#splitSel = n + 1;
+        this.#splitEdit = "";
+        this.#splitNote = "";
+        break;
+      case "x":
+      case "delete":
+      case "backspace":
+        if (sel >= 1 && sel <= n) return this.#saveSplit({ ...sp, rules: sp.rules.filter((_, i) => i !== sel - 1) });
+        break;
+      case "i":
+        if (!n && sp.default === "vpn") return this.#addRule("*.ir");
+    }
+    this.#render();
+  }
+
+  /** Adds a typed site, going the other way than everything else. */
+  #addRule(text: string): void {
+    const sp = this.#settings.split;
+    const match = parseSite(text);
+    if (!match) {
+      this.#splitNote = red(text.trim() ? `Not a site: “${fit(text.trim(), 24)}”. Try bbc.co.uk, *.ir or 1.2.3.4.` : "Type a site first.");
+      return this.#render();
+    }
+    this.#splitEdit = null;
+    const i = sp.rules.findIndex((r) => r.match === match);
+    if (i >= 0) {
+      this.#splitSel = i + 1;
+      this.#splitNote = yellow(`${match} is already in the list.`);
+      return this.#render();
+    }
+    this.#splitSel = sp.rules.length + 1; // the new row
+    this.#saveSplit({ ...sp, rules: [...sp.rules, { match, via: flip(sp.default) }] });
+  }
+
+  /** Tab while typing: the next site seen lately that has what was typed, and isn't listed yet. */
+  #nextRecent(): void {
+    const tab = (this.#splitTab ??= { query: this.#splitEdit ?? "", i: -1 });
+    const listed = new Set(this.#settings.split.rules.map((r) => r.match));
+    const found = recentSites.filter((site) => site.includes(tab.query) && !listed.has(site));
+    if (!found.length) {
+      this.#splitNote = dim(tab.query ? `No site seen lately has “${fit(tab.query, 24)}”.` : "No sites seen yet: browse through foxhole first.");
+      return;
+    }
+    tab.i = (tab.i + 1) % found.length;
+    this.#splitEdit = found[tab.i];
+    this.#splitNote = dim(`${tab.i + 1} of ${found.length} seen lately · tab next`);
+  }
+
+  /** Saves the rules: the proxy reads them live, so the next connection follows them. */
+  #saveSplit(split: Split): void {
+    const next = { ...this.#settings, split };
+    try {
+      saveSettings(next);
+    } catch (err) {
+      this.#splitNote = red(`Couldn't save: ${(err as Error).message}`);
+      return this.#render();
+    }
+    this.#settings = next;
+    this.#global?.splitChanged();
+    this.#splitNote = "";
+    this.#splitSel = Math.min(this.#splitSel, split.rules.length + 1);
+    this.#render();
+  }
+
   /** Looks up, in the background, whether a firewall would keep other devices off the proxy's port. */
   #checkFirewall(): void {
     void firewallHint(this.#settings.port).then((hint) => ((this.#fwHint = hint), this.#render()));
@@ -704,10 +827,12 @@ export class Tui {
       : this.#active
         ? green(`● connected ${flag(this.#active.code)} ${countryName(this.#active.code, this.#active.name)}`)
         : dim("○ disconnected");
+    const sp = this.#settings.split;
+    const split = splitSummary(sp);
     const route = this.#global
-      ? green("all system traffic → VPN")
+      ? green(sp.default === "vpn" ? "all system traffic → VPN" : "system traffic → direct") + (split ? dim(` · ${split}`) : "")
       : this.#active
-        ? `${cyan(this.#proxyAddr())}  ${dim(this.#host === "0.0.0.0" ? "SOCKS5 or HTTP · shared on this network" : "SOCKS5 or HTTP")}`
+        ? `${cyan(this.#proxyAddr())}  ${dim([split ? "" : "SOCKS5 or HTTP", this.#host === "0.0.0.0" ? "shared on this network" : "", split ?? ""].filter(Boolean).join(" · "))}`
         : dim("—");
     const status = this.#message;
     // A long status (e.g. a --verbose proxy error) would widen the box past the terminal and wrap.
@@ -720,7 +845,7 @@ export class Tui {
       ["data", data],
       ["network", net],
       ["ip", ip],
-      ["route", route],
+      ["route", fit(route, room4status)],
       ["status", fit(status, room4status)],
     ].map(([label, value]) => `${dim(label.padEnd(12))}  ${value}`);
 
@@ -754,7 +879,9 @@ export class Tui {
     const connectBtn = this.#active && this.#countries[this.#sel]?.code === this.#active.code
       ? ["[", under("D"), "isconnect]"].map(lit).join("")
       : bold(cyan("[⏎ Connect]"));
-    const buttons = [connectBtn, globalBtn, dim(key("S", "ettings")), dim(key("L", "ogs")), dim(key("Q", "uit"))].join("  ");
+    // Lit while any site is split off, like a switch that's on
+    const splitBtn = splitOn(sp) ? ["[Split ", under("T"), "unnel]"].map(lit).join("") : dim(`[Split ${under("T")}unnel]`);
+    const buttons = [connectBtn, globalBtn, splitBtn, dim(key("S", "ettings")), dim(key("L", "ogs")), dim(key("Q", "uit"))].join("  ");
     const headW = vw(box(headLines, { title, right: state })[0]);
     const table = grid(["", "Code", "Tier", "Country"], body, {
       caption: bold("Locations"),
@@ -784,7 +911,9 @@ export class Tui {
         ? this.#passwordPopup()
         : this.#settingsOpen
           ? this.#settingsPopup()
-          : this.#logsOpen
+          : this.#splitOpen
+            ? this.#splitPopup(frame.length)
+            : this.#logsOpen
             ? this.#logsPopup(width, frame.length)
             : null;
     const { top, left } = draw(popup ? overlay(frame, popup, width) : frame);
@@ -800,6 +929,43 @@ export class Tui {
       setTop: Math.floor((frame.length - (popup?.length ?? 0) - 2) / 2) + 3,
       setX: Math.floor((width - setW - 2) / 2) + 1,
     };
+  }
+
+  /** The Split tunneling popup: everything else's way, then each rule's, with how many connections each took. */
+  #splitPopup(frameHeight: number): string[] {
+    const sp = this.#settings.split;
+    const e = this.#splitEdit;
+    const way = (v: Via) => (v === "vpn" ? green("VPN") : yellow("direct"));
+    const took = (k: string) => (hits.get(k) ? dim(`${hits.get(k)} matched`) : "");
+    const all = [
+      { label: "Everything else", way: way(sp.default), took: took("") },
+      ...sp.rules.map((r) => ({ label: r.match, way: way(r.via), took: took(r.match) })),
+      { label: e !== null ? (e.length > 33 ? `…${e.slice(-32)}` : e) + cyan("▏") : dim("+ add a site"), way: "", took: "" }, // typing: its end shows
+    ];
+    const room = Math.max(3, frameHeight - 13); // what fits beside the popup's other lines
+    const { start, slice } = window(this.#splitSel, all.length, room);
+    this.#splitStart = start;
+    this.#splitShown = slice.length;
+    const pad = (str: string, w: number) => str + " ".repeat(Math.max(1, w - vw(str)));
+    const rows = slice.map((i) => {
+      const here = i === this.#splitSel;
+      const label = fit(all[i].label, 34);
+      return `${here ? cyan("❯") : " "} ${pad(here && i <= sp.rules.length ? bold(label) : label, 36)}${pad(all[i].way, 8)}${all[i].took}`;
+    });
+    const sel = this.#splitSel;
+    const help =
+      e !== null
+        ? [dim("Type a site: bbc.co.uk (and its subdomains), *.co.uk, ir,"), dim("1.2.3.4 or 10.0.0.0/8 · tab: seen lately · enter add · esc cancel")]
+        : sel === 0
+          ? [sp.default === "vpn" ? "Sites not listed use the VPN: list the ones to bypass it." : "Sites not listed go direct: list the ones that need the VPN.", dim("enter switches it")]
+          : sel <= sp.rules.length
+            ? [dim("A site covers its subdomains; the most specific rule wins."), dim("Direct sites see your real IP. Applies to new connections.")]
+            : [dim(`A new site goes ${sp.default === "vpn" ? "direct" : "through the VPN"}: the other way from the rest.`), ""];
+    const tip = !sp.rules.length && sp.default === "vpn" && e === null ? [`Tip: press ${under("i")} to send Iranian sites (*.ir) direct.`] : [];
+    return box(
+      ["", ...rows, "", ...help, ...tip, this.#splitNote, "", dim("↑↓ select · enter VPN/direct · a add · x delete · esc close")],
+      { title: bold(cyan("⇄ Split tunneling")), width: 66 },
+    );
   }
 
   /** The Logs popup: the newest lines that fit, updated live while open. */

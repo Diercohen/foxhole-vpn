@@ -95,6 +95,16 @@ Press **`l`** for **Logs**: a popup with proxy failures (e.g. ports the VPN
 refuses) and tun2socks output, updating live; **Esc** closes it. Logs are
 collected in every session, not only with `--verbose`.
 
+Press **`t`** for **Split tunneling**: pick the sites that skip the VPN, or the
+only ones that use it. Add a site — `bbc.co.uk` (it covers its subdomains, as
+`*.co.uk` would), `ir` (a whole top-level domain), `1.2.3.4` or `10.0.0.0/8`;
+**Tab** fills in sites foxhole saw lately — and **Enter** flips it between VPN
+and direct. **Enter** on *Everything else* flips the rest, turning the list into
+the only sites the VPN carries. The most specific rule wins, so their order
+doesn't matter, and each shows how many connections it took. It works the same
+in proxy and global mode, and `foxhole proxy` and `foxhole global` follow the
+same rules. Direct sites see your real IP.
+
 Point a single app at the proxy. The same port speaks **SOCKS5 and HTTP**
 (foxhole-vpn tells them apart by the first byte), so use whichever the app
 supports:
@@ -175,6 +185,17 @@ Free-tier countries: 🇺🇸 US · 🇩🇪 DE · 🇯🇵 JP · 🇦🇺 AU ·
   push) — that's the VPN's policy and doesn't affect normal browsing. git over
   SSH to GitHub works anyway: foxhole-vpn sends it to `ssh.github.com:443`, which
   has the same host key.
+- **Split tunneling** decides each connection by the site's name: the one an app
+  asks the proxy for, or, when global mode's tun gives only an address, the name
+  in its TLS hello or HTTP request, else foxhole's own DNS answers (Linux and
+  Windows). A site with Encrypted Client Hello may then go by its address and
+  the default. On Linux, direct sites are also looked up on the local network's
+  DNS. **On macOS**, global mode sends direct sites around the tunnel by
+  address: as foxhole's DNS looks one up, it routes the answer's addresses out
+  the real network (macOS refuses to let a connection out any other way while
+  the tunnel's routes are up). An address that a VPN site also uses stays in
+  the tunnel, and a direct site an app reaches without foxhole's DNS (its own
+  secure DNS, or an address cached from before global mode) uses the VPN.
 - Conflicts with another active full-tunnel VPN — `global` refuses to start if it
   detects one (a VPN on the default route, or `0/1`+`128/1` split routes). Stop
   it first, or pass `--force`.

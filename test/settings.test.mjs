@@ -3,7 +3,16 @@ import assert from "node:assert";
 import { parseSettings, proxyHost, validPort, loginFor, DEFAULTS } from "../dist/settings.js";
 import { lanIp } from "../dist/netinfo.js";
 
-assert.deepEqual(parseSettings('{"share":true,"port":8080,"username":"fox","password":"pw"}'), { share: true, port: 8080, username: "fox", password: "pw" });
+assert.deepEqual(parseSettings('{"share":true,"port":8080,"username":"fox","password":"pw"}'), { ...DEFAULTS, share: true, port: 8080, username: "fox", password: "pw" });
+
+// Split rules: each checked like a typed site; bad ones and repeats dropped
+const split = (v) => parseSettings(JSON.stringify({ split: v })).split;
+assert.deepEqual(
+  split({ default: "direct", rules: [{ match: "*.CO.uk", via: "vpn" }, { match: "nope nope", via: "direct" }, { match: "x.ir", via: "maybe" }, { match: "*.co.uk", via: "direct" }, { match: "10.0.0.0/8", via: "direct" }] }),
+  { default: "direct", rules: [{ match: "*.co.uk", via: "vpn" }, { match: "10.0.0.0/8", via: "direct" }] },
+);
+assert.deepEqual(split({ default: "sideways", rules: "all" }), { default: "vpn", rules: [] }, "nonsense: no split");
+assert.deepEqual(DEFAULTS.split, { default: "vpn", rules: [] }, "default: everything through the VPN");
 assert.deepEqual(parseSettings('{"share":true,"autoConnect":false}'), { ...DEFAULTS, share: true }, "the removed auto connect option is dropped");
 assert.deepEqual(parseSettings("not json"), DEFAULTS, "corrupt file: defaults");
 assert.deepEqual(parseSettings("null"), DEFAULTS, "null: defaults");

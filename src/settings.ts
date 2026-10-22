@@ -4,19 +4,34 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { userHome } from "./profile.js";
 import type { ProxyLogin } from "./proxy.js";
+import { NO_SPLIT, parseSite, type Split, type Via } from "./split.js";
 
 export interface Settings {
   share: boolean; // proxy reachable from other devices on this network (0.0.0.0), not just this computer
   port: number; // proxy port (SOCKS5 and HTTP)
   username: string; // proxy login asked from other devices; both empty: none
   password: string;
+  split: Split; // split tunneling: which sites use the VPN, which go direct
 }
 
-export const DEFAULTS: Settings = { share: false, port: 1080, username: "", password: "" };
+export const DEFAULTS: Settings = { share: false, port: 1080, username: "", password: "", split: NO_SPLIT };
 
 const settingsFile = () => join(userHome(), ".config", "foxhole-vpn", "settings.json");
 
 export const validPort = (n: unknown): n is number => Number.isInteger(n) && (n as number) >= 1 && (n as number) <= 65535;
+
+const isVia = (v: unknown): v is Via => v === "vpn" || v === "direct";
+
+/** The split rules a file holds, each checked like a typed one; anything else dropped. Pure. */
+function parseSplit(v: unknown): Split {
+  const o = (v && typeof v === "object" ? v : {}) as { default?: unknown; rules?: unknown };
+  const rules: Split["rules"] = [];
+  for (const r of Array.isArray(o.rules) ? (o.rules as { match?: unknown; via?: unknown }[]) : []) {
+    const match = typeof r?.match === "string" ? parseSite(r.match) : null;
+    if (match && isVia(r.via) && !rules.some((x) => x.match === match)) rules.push({ match, via: r.via });
+  }
+  return { default: isVia(o.default) ? o.default : NO_SPLIT.default, rules };
+}
 
 /** Keeps only well-formed values, falling back to the defaults. Pure. */
 export function parseSettings(json: string): Settings {
@@ -32,6 +47,7 @@ export function parseSettings(json: string): Settings {
     port: validPort(o.port) ? o.port : DEFAULTS.port,
     username: typeof o.username === "string" ? o.username : DEFAULTS.username,
     password: typeof o.password === "string" ? o.password : DEFAULTS.password,
+    split: parseSplit(o.split),
   };
 }
 
