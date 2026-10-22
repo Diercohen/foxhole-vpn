@@ -71,7 +71,7 @@ foxhole login               # sign in to the Firefox browser (sync optional)
 foxhole usage               # remaining data this month
 foxhole doctor              # check login, server list, entitlement
 foxhole proxy --country US  # local SOCKS5 + HTTP proxy through the US
-sudo -E env "PATH=$PATH" foxhole global --country US   # route the whole system
+sudo env "PATH=$PATH" foxhole global --country US   # route the whole system
 foxhole --verbose                  # also show per-connection errors and tun2socks logs
 ```
 
@@ -79,8 +79,9 @@ On **Windows**, run `foxhole global` (or `foxhole` and press **`g`**) in an
 elevated terminal — **Terminal (Admin)** — instead of using `sudo`. If a global
 session is ever killed without restoring networking, `foxhole restore` (also
 elevated) removes what it left behind.
-On **Linux** the same `foxhole restore` (it asks for your password) undoes a
-killed global session that left the computer offline.
+On **Linux** a global session undoes itself even when foxhole is killed; should
+the computer still be left offline, the same `foxhole restore` (it asks for your
+password) removes what's left.
 
 `foxhole-vpn` works too, as an alias. From a checkout: `npm install && npm run build`,
 then `node dist/cli.js` in place of `foxhole`.

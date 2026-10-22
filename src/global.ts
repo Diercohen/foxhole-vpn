@@ -72,7 +72,7 @@ export function pinCmd(dest: string, orig: DefaultRoute, verb: "add" | "replace"
 export function needsRepin(pinnedTo: DefaultRoute, uplink: DefaultRoute, serverRoute: string, linkDns: string | null, dohPort: number): boolean {
   if (uplink.dev !== pinnedTo.dev || uplink.gw !== pinnedTo.gw) return true;
   if (new RegExp(`\\bdev ${TUN}\\b`).test(serverRoute)) return true;
-  return linkDns !== null && !new RegExp(`\\b127\\.0\\.0\\.1:${dohPort}\\b`).test(linkDns);
+  return linkDns !== null && !new RegExp(`\\b${TUN_ADDR.replaceAll(".", "\\.")}:${dohPort}\\b`).test(linkDns);
 }
 
 /** An address to dial the local proxy on: a listen-on-all address (sharing on the network) isn't one on Windows. */
@@ -120,12 +120,17 @@ export function planTeardown(bypassIps: string[]): string[][] {
  */
 export function planStaleCleanup(orig?: DefaultRoute | null): string[][] {
   return [
-    ["pkill", "-f", `--device ${TUN.slice(0, -1)}[${TUN.slice(-1)}]`],
+    ["pkill", "-f", "--", `--device ${TUN.slice(0, -1)}[${TUN.slice(-1)}]`], // "--": the pattern isn't an option
     ["ip", "link", "del", TUN],
     ["ip", "-6", "route", "del", "blackhole", "default", "metric", "1"],
     ["iptables", "-D", "OUTPUT", "-o", TUN, "-p", "udp", "-j", "REJECT"],
     ...(orig ? PRIVATE_CIDRS.map((cidr) => ["ip", "route", "del", ...pinCmd(cidr, orig).slice(3), "proto", "boot", "metric", "0"]) : []),
   ];
+}
+
+/** planStaleCleanup as one shell script, so that one root shell (or one sudo) runs it all. */
+export function staleCleanupScript(orig?: DefaultRoute | null): string {
+  return planStaleCleanup(orig).map((argv) => `${argv.map((a) => `'${a}'`).join(" ")} 2>/dev/null`).join("; ") + "; true";
 }
 
 /**
@@ -351,7 +356,8 @@ async function dnsUpstreams(): Promise<string[]> {
 
 export interface Priv {
   run(argv: string[], quiet?: boolean): Promise<void>;
-  spawn(argv: string[]): ReturnType<typeof spawn>;
+  /** With `lifeline`, the child's stdin stays open: it reads EOF once foxhole is gone, however it went. */
+  spawn(argv: string[], lifeline?: boolean): ReturnType<typeof spawn>;
 }
 
 /**
@@ -361,9 +367,10 @@ export interface Priv {
 export function directPriv(toLog = false): Priv {
   return {
     run,
-    spawn: (argv) => {
-      if (!toLog) return spawn(argv[0], argv.slice(1), { stdio: ["ignore", "ignore", verbose ? "inherit" : "ignore"] });
-      const p = spawn(argv[0], argv.slice(1), { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+    spawn: (argv, lifeline = false) => {
+      const stdin = lifeline ? "pipe" : "ignore";
+      if (!toLog) return spawn(argv[0], argv.slice(1), { stdio: [stdin, "ignore", verbose ? "inherit" : "ignore"] });
+      const p = spawn(argv[0], argv.slice(1), { stdio: [stdin, "ignore", "pipe"], windowsHide: true });
       logStream(basename(argv[0]), p.stderr!);
       return p;
     },
@@ -375,10 +382,15 @@ export async function isPrivileged(): Promise<boolean> {
   return IS_WIN ? isWindowsAdmin() : process.getuid?.() === 0;
 }
 
+// Linux: sudo in a session of its own, with no terminal. sudo-rs (Ubuntu 26.04's sudo) otherwise opens
+// ours and relays what's typed there to the command, so the TUI's keys would go to tun2socks instead.
+// The password still comes on stdin (-S). Not macOS: its Touch ID prompt is left as it is.
+const SUDO_SESSION = { detached: process.platform === "linux" };
+
 /** Runs `sudo -S <args>` with `input` on stdin; true if it succeeds. */
 function sudoOk(args: string[], input: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const p = spawn("sudo", ["-S", "-p", "", ...args], { stdio: ["pipe", "ignore", "ignore"] });
+    const p = spawn("sudo", ["-S", "-p", "", ...args], { stdio: ["pipe", "ignore", "ignore"], ...SUDO_SESSION });
     p.on("error", () => resolve(false));
     p.on("exit", (code) => resolve(code === 0));
     p.stdin.end(input);
@@ -417,7 +429,7 @@ export function sudoPriv(password: string): Priv {
   return {
     run: (argv, quiet = false) =>
       new Promise<void>((resolve, reject) => {
-        const p = spawn("sudo", ["-S", "-p", "", ...argv], { stdio: ["pipe", "ignore", "pipe"] });
+        const p = spawn("sudo", ["-S", "-p", "", ...argv], { stdio: ["pipe", "ignore", "pipe"], ...SUDO_SESSION });
         let err = "";
         p.stderr!.on("data", (d) => (err += d));
         p.on("error", reject);
@@ -426,12 +438,13 @@ export function sudoPriv(password: string): Priv {
         );
         feed(p);
       }),
-    spawn: (argv) => {
+    spawn: (argv, lifeline = false) => {
       // stderr goes to the in-app log (the TUI's Logs popup), not the terminal: it would
       // corrupt the screen. Always read, so a chatty child never blocks on a full pipe.
-      const p = spawn("sudo", ["-S", "-p", "", ...argv], { stdio: ["pipe", "ignore", "pipe"] });
+      const p = spawn("sudo", ["-S", "-p", "", ...argv], { stdio: ["pipe", "ignore", "pipe"], ...SUDO_SESSION });
       logStream(argv[0].endsWith("node") ? "dns relay" : basename(argv[0]), p.stderr!);
-      feed(p);
+      if (lifeline) p.stdin!.write(password && password + "\n");
+      else feed(p);
       return p;
     },
   };
@@ -468,6 +481,7 @@ export class GlobalSession {
   #udpBlocked = false;
   #dns: DnsForwarder | null = null;
   #t2s: ReturnType<typeof spawn> | null = null;
+  #guard: ReturnType<typeof spawn> | null = null;
   #exitCb: ((why: number | string | null) => void) | null = null;
   #netCb: ((event: "lost" | "restored", detail: string) => void) | null = null;
   #stopped = false;
@@ -522,6 +536,9 @@ export class GlobalSession {
     this.#bypassIps = pinned;
     this.#orig = orig;
     for (const step of planStaleCleanup(orig)) await priv.run(step, true); // a killed earlier session must not stack under this one
+    // If foxhole itself is killed (kill -9, the OOM killer), the kernel closes its end of this root
+    // shell's stdin, and the shell undoes the session as `foxhole restore` would.
+    this.#guard = priv.spawn(["sh", "-c", `cat >/dev/null; ${staleCleanupScript(orig)}`], true);
 
     // tun2socks creates the tun itself: however it ends (a crash, the terminal closed), the device
     // and its routes go with it, never a dead default route that keeps the computer offline.
@@ -538,15 +555,17 @@ export class GlobalSession {
     // can't be blocked by) the local network. Point systemd-resolved at a local
     // forwarder that speaks DoH over the proxy, set on our own tun: the uplink's
     // DNS belongs to the network manager (reverting it there left no DNS at all
-    // until a reconnect), and ours goes away with the tun. If there's no resolved,
-    // fall back to pinning the resolvers to the real uplink.
+    // until a reconnect), and ours goes away with the tun. The forwarder listens on the
+    // tun's own address: resolved before systemd 250 (Ubuntu 22.04) sends a link's lookups
+    // out that link, so a loopback one there never answers; ours is delivered locally either
+    // way. If there's no resolved, fall back to pinning the resolvers to the real uplink.
     let dns: string;
     try {
       this.#dns = await startDnsForwarder({
         socksHost: this.#o.proxyHost,
         socksPort: this.#o.proxyPort,
         dohHost: DOH_HOST,
-        host: "127.0.0.1",
+        host: TUN_ADDR,
         port: 0, // a fixed port can be taken: 5353 is mDNS's (avahi)
         connections: 8, // as on macOS and Windows: one slow lookup mustn't hold up the rest
       });
@@ -565,8 +584,8 @@ export class GlobalSession {
 
     // Reject UDP into the tunnel: it's TCP-only, so QUIC (Chrome's HTTP/3 over
     // UDP 443) would otherwise hang instead of falling back to TCP. The REJECT
-    // makes that fallback immediate. Best-effort (needs iptables). Loopback DNS
-    // and LAN UDP go out other interfaces, so they're unaffected.
+    // makes that fallback immediate. Best-effort (needs iptables). DNS to the forwarder
+    // is delivered locally and LAN UDP goes out other interfaces, so they're unaffected.
     try {
       await priv.run(["iptables", "-I", "OUTPUT", "-o", TUN, "-p", "udp", "-j", "REJECT"]);
       this.#udpBlocked = true;
@@ -639,7 +658,7 @@ export class GlobalSession {
 
   /** Sends every lookup to the DoH forwarder: "~." on our tun makes systemd-resolved prefer it to the uplink's DNS. */
   async #pointDns(): Promise<void> {
-    await this.#o.priv.run(["resolvectl", "dns", TUN, `127.0.0.1:${this.#dns!.port}`]);
+    await this.#o.priv.run(["resolvectl", "dns", TUN, `${TUN_ADDR}:${this.#dns!.port}`]);
     await this.#o.priv.run(["resolvectl", "domain", TUN, "~."]);
   }
 
@@ -697,6 +716,8 @@ export class GlobalSession {
     await stopProcess(this.#t2s, () => this.#o.priv.run(planStaleCleanup()[0], true)); // sudo child may outlive the signal
     this.#t2s = null;
     for (const step of planTeardown(this.#bypassIps)) await this.#o.priv.run(step, true);
+    await stopProcess(this.#guard, async () => void this.#guard?.stdin?.end()); // its cleanup would hit the next session
+    this.#guard = null;
     await this.#dns?.close(); // last: until the tun (and the DNS setting on it) is gone, lookups still come here
   }
 }
@@ -731,8 +752,9 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
     console.error(
       IS_WIN
         ? red("Global mode needs Administrator rights.") + ` Open ${bold("Terminal (Admin)")} and run ${bold("foxhole global")} there.`
-        // env PATH: Ubuntu's sudo swaps PATH for its secure_path, which has no nvm-installed node or foxhole
-        : red("Global mode needs root.") + ` Run: ${bold('sudo -E env "PATH=$PATH" foxhole global')}, or press ${bold("g")} in ${bold("foxhole")}.`,
+        // env PATH: Ubuntu's sudo swaps PATH for its secure_path, which has no nvm-installed node or foxhole;
+        // no -E: sudo-rs (Ubuntu 26.04's sudo) ignores it with a warning, and foxhole finds the home via SUDO_USER
+        : red("Global mode needs root.") + ` Run: ${bold('sudo env "PATH=$PATH" foxhole global')}, or press ${bold("g")} in ${bold("foxhole")}.`,
     );
     process.exit(1);
   }

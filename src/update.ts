@@ -1,7 +1,7 @@
 // The installed version, whether npm has a newer one, and updating to it.
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync } from "node:fs";
-import { cyan, dim, under, yellow } from "./ui.js";
+import { cyan, dim, green, under, yellow } from "./ui.js";
 
 export const VERSION: string = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -63,6 +63,18 @@ export function runUpdate(): number {
       env: { ...process.env, NODE_OPTIONS },
     }).status ?? 1
   );
+}
+
+/**
+ * Starts the app again, now the updated one, in this terminal (Node can't replace a running
+ * process), and exits with its status once it's done.
+ */
+export function restart(): never {
+  console.log(green("\nUpdated. Starting the new version…"));
+  // It handles signals itself; this one ignores them and only waits, so the shell gets the terminal back after it.
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => {});
+  const r = spawnSync(process.execPath, [...process.execArgv, ...process.argv.slice(1)], { stdio: "inherit" });
+  process.exit(r.status ?? 1);
 }
 
 /** "update available: …" and how to get it, once checkUpdate() found a newer version; onKey: a TUI screen that updates on 'u'. */

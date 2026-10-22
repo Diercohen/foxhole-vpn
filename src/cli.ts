@@ -10,7 +10,7 @@ import { Connection, findCountry } from "./connection.js";
 import { fetchEntitlement, GuardianError } from "./guardian.js";
 import { startProxy } from "./proxy.js";
 import { firewallHint, lanIp } from "./netinfo.js";
-import { runGlobal, directPriv, isPrivileged, dialHost, planStaleCleanup, parseDefaultRoute } from "./global.js";
+import { runGlobal, directPriv, isPrivileged, dialHost, staleCleanupScript, parseDefaultRoute } from "./global.js";
 import { loadSettings, proxyHost, loginFor } from "./settings.js";
 import { restoreWindows } from "./global-win32.js";
 import { Tui } from "./tui.js";
@@ -501,7 +501,7 @@ async function cmdRestore() {
     // What a killed global session leaves, removed in one shell so sudo asks for the password once,
     // here; elevating itself spares `sudo foxhole`, which nvm's PATH doesn't survive.
     const uplink = parseDefaultRoute(spawnSync("ip", ["route"]).stdout?.toString() ?? "", "foxhole0");
-    const script = planStaleCleanup(uplink).map((argv) => `${argv.map((a) => `'${a}'`).join(" ")} 2>/dev/null`).join("; ") + "; true";
+    const script = staleCleanupScript(uplink);
     const root = process.getuid?.() === 0;
     const r = spawnSync(root ? "sh" : "sudo", [...(root ? [] : ["sh"]), "-c", script], { stdio: "inherit" });
     console.log(r.status === 0 ? green("Networking restored (foxhole's tun, its routes and its IPv6 and UDP blocks removed).") : red("Not restored: sudo was refused."));
@@ -543,7 +543,7 @@ ${bold("Options:")}
   --verbose            Also show per-connection errors (e.g. ports the VPN
                        refuses) and tun2socks logs
 
-${dim(WIN ? "global: run  foxhole global  in Terminal (Admin)  · Ctrl+C restores networking." : 'global: run as  sudo -E env "PATH=$PATH" foxhole global  · Ctrl+C restores networking.')}
+${dim(WIN ? "global: run  foxhole global  in Terminal (Admin)  · Ctrl+C restores networking." : 'global: run as  sudo env "PATH=$PATH" foxhole global  · Ctrl+C restores networking.')}
 ${dim("Stop any other active VPN first (or pass --force).")}
 
 ${bold("Environment:")}

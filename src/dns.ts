@@ -160,7 +160,12 @@ export async function startDnsForwarder(o: DnsForwarderOptions): Promise<DnsForw
     }
   };
 
+  // Only this computer may ask: Linux takes any of its addresses on any interface, so a neighbour could
+  // reach a non-loopback listener (global mode's, on the tun) and look things up through the user's VPN.
+  const local = (addr = "") => addr === o.host || addr.startsWith("127.");
+
   const onTcp = (sock: net.Socket) => {
+    if (!local(sock.remoteAddress)) return void sock.destroy();
     let buf = Buffer.alloc(0);
     sock.on("data", (d) => {
       buf = Buffer.concat([buf, d]);
@@ -186,6 +191,7 @@ export async function startDnsForwarder(o: DnsForwarderOptions): Promise<DnsForw
     const tcp = net.createServer(onTcp);
     const udp = dgram.createSocket("udp4");
     udp.on("message", (msg, rinfo) => {
+      if (!local(rinfo.address)) return;
       query(msg)
         .then((ans) => udp.send(ans, rinfo.port, rinfo.address))
         .catch(() => {});

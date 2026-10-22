@@ -13,13 +13,14 @@ import { forgetToken } from "./tokenserver.js";
 import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { logLines, onLog } from "./log.js";
 import { GlobalSession, sudoPriv, directPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost } from "./global.js";
-import { checkUpdate, canUpdate, runUpdate, versionLines } from "./update.js";
+import { checkUpdate, canUpdate, runUpdate, restart, versionLines, UPDATE_COMMAND } from "./update.js";
 import { bold, dim, under, strike, green, red, yellow, cyan, lit, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
 
 const ESC = "\x1b[";
 // alternate screen + hidden cursor + mouse reports (SGR): clicks and the wheel, see #mouse()
-const ALT_ON = `${ESC}?1049h${ESC}?25l${ESC}?1000h${ESC}?1006h`;
-const ALT_OFF = `${ESC}?1000l${ESC}?1006l${ESC}?25h${ESC}?1049l`;
+// ?7l: no autowrap, so a window narrower than the frame cuts its lines at the edge instead of wrapping them into a mess
+const ALT_ON = `${ESC}?1049h${ESC}?25l${ESC}?7l${ESC}?1000h${ESC}?1006h`;
+const ALT_OFF = `${ESC}?1000l${ESC}?1006l${ESC}?7h${ESC}?25h${ESC}?1049l`;
 let screenOn = false;
 /** Back to the normal screen with mouse reports off; also runs on exit, so a crash doesn't leave them on. */
 function leaveScreen(): void {
@@ -210,10 +211,17 @@ export class Tui {
       const signals = ["SIGINT", "SIGTERM", "SIGHUP", ...(process.platform === "win32" ? ["SIGBREAK"] as const : [])];
       const onSignal = () => void quit();
       for (const sig of signals) process.on(sig, onSignal);
+      // A closed terminal ends stdin for every process reading it, signalled or not: its SIGHUP goes
+      // to the terminal's first process only (after an update, the old version waiting behind this one).
+      process.stdin.once("end", onSignal);
 
+      let quitting = false;
       const quit = async (action?: "update" | "logout") => {
-        for (const sig of signals) process.removeListener(sig, onSignal);
-        input.removeListener("keypress", onKey); // keys now do nothing (and a second quit can't start)
+        // Once: a signal or the terminal's end can follow the first. The listeners stay, as without
+        // any a late signal would kill the process midway through putting the routes back.
+        if (quitting) return;
+        quitting = true;
+        input.removeListener("keypress", onKey); // keys now do nothing
         if (this.#global) {
           // Stay on our screen with a popup until everything is closed: stdin is still read raw
           // and swallowed, so keys and clicks pressed meanwhile aren't echoed as ^[[<0;… junk.
@@ -232,8 +240,9 @@ export class Tui {
         process.stdin.pause();
         leaveScreen();
         if (action === "update") {
-          runUpdate(); // runs npm in this terminal (asks for sudo if needed)
-          console.log(green("\nUpdated. Start foxhole-vpn again to use the new version."));
+          // runs npm in this terminal (asks for sudo if needed), then the new version in its place
+          if (runUpdate() === 0) restart();
+          console.log(red(`\nNot updated (see above). To try again: ${UPDATE_COMMAND}`));
         }
         resolve(action);
       };
@@ -716,7 +725,9 @@ export class Tui {
     ].map(([label, value]) => `${dim(label.padEnd(12))}  ${value}`);
 
     const version = versionLines(true);
-    const room = Math.max(3, (process.stdout.rows || 24) - 21 - version.length);
+    // A short window drops the tips before the buttons (they name the keys) get cut off.
+    const tips = (process.stdout.rows || 24) >= 22;
+    const room = Math.max(3, (process.stdout.rows || 24) - (tips ? 21 : 18) - version.length);
     const { start, slice } = window(this.#sel, this.#countries.length, room);
     const label = (c: Country) => `${flag(c.code)} ${countryName(c.code, c.name)}`;
     const body = slice.map((i) => {
@@ -755,10 +766,12 @@ export class Tui {
       ...box(headLines, { title, right: state, width: width - 4 }),
       ...table,
       // The free locations' IPs are shared widely, so picky sites flag them.
-      centerIn(dim("💡 Claude, ChatGPT, Gemini, Netflix, YouTube Music, Spotify and banks"), width),
-      // Each part dimmed on its own: an inner style's reset would end an outer dim.
-      centerIn(["often block shared VPN IPs: pick a ", under("paid location"), " for them."].map(dim).join(""), width),
-      centerIn(["Foxhole made the paid servers ", green("free")].map(dim).join("") + " for you 🦊", width),
+      ...(tips ? [
+        centerIn(dim("💡 Claude, ChatGPT, Gemini, Netflix, YouTube Music, Spotify and banks"), width),
+        // Each part dimmed on its own: an inner style's reset would end an outer dim.
+        centerIn(["often block shared VPN IPs: pick a ", under("paid location"), " for them."].map(dim).join(""), width),
+        centerIn(["Foxhole made the paid servers ", green("free")].map(dim).join("") + " for you 🦊", width),
+      ] : []),
       "",
       centerIn(buttons, width),
       "",

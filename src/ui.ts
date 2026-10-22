@@ -231,7 +231,7 @@ export function draw(lines: string[]): { top: number; left: number } {
   const screen = [...Array<string>(top).fill(""), ...lines.map((l) => left + l)].slice(0, rows);
   const i = screen.findIndex((l) => l.includes(REPO_URL));
   link = i < 0 ? null : { y: i, x: vw(screen[i].slice(0, screen[i].indexOf("\x1b]8;;"))) };
-  process.stdout.write("\x1b[H" + screen.map(paint).join("\n") + "\x1b[J");
+  process.stdout.write("\x1b[H" + screen.map((l) => paint(l, cols)).join("\n") + "\x1b[J");
   return { top, left: left.length };
 }
 
@@ -241,13 +241,15 @@ export function draw(lines: string[]): { top: number; left: number } {
 // it: there a flag gets a spare third cell, which that shift takes back.
 // ponytail: so there a flag's line is a cell longer than it looks, and wraps in a terminal exactly as wide as the frame.
 const FLAG_CELLS = process.env.TERM_PROGRAM === "Apple_Terminal" ? 3 : 2;
-function paint(line: string): string {
+function paint(line: string, cols: number): string {
   let flags = "";
   let spare = 0; // cells the flags before this one took beyond their 2
   const text = line.replace(/[\u{1F1E6}-\u{1F1FF}]{2}/gu, (f: string, i: number) => {
-    flags += `\x1b[${vw(line.slice(0, i)) + spare + 1}G${f}`;
+    const at = vw(line.slice(0, i)) + spare + 1;
+    if (at < cols) flags += `\x1b[${at}G${f}`; // past a narrow window's edge: left out, not squeezed into its last cell
     spare += FLAG_CELLS - 2;
     return " ".repeat(FLAG_CELLS);
   });
-  return text + "\x1b[K" + flags;
+  // The cursor goes back after the flags: the clear-below ending the screen mustn't erase the rest of its last line.
+  return text + "\x1b[K" + (flags && `\x1b7${flags}\x1b8`);
 }
