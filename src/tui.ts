@@ -14,7 +14,7 @@ import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { logLines, onLog } from "./log.js";
 import { GlobalSession, sudoPriv, directPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, versionLines } from "./update.js";
-import { bold, dim, under, strike, green, red, yellow, cyan, lit, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl } from "./ui.js";
+import { bold, dim, under, strike, green, red, yellow, cyan, lit, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
 
 const ESC = "\x1b[";
 // alternate screen + hidden cursor + mouse reports (SGR): clicks and the wheel, see #mouse()
@@ -93,6 +93,7 @@ export class Tui {
   #pwError = "";
   #pwChecking = false;
   #logsOpen = false; // the Logs popup is open
+  #logsNote = ""; // how copying the logs went
   #restoring = false; // quitting: global mode's routes are being put back
   #renderTimer: NodeJS.Timeout | null = null;
   #net: string | null | undefined; // undefined: not read yet
@@ -230,13 +231,14 @@ export class Tui {
         if (key.ctrl && key.name === "c") return void quit();
         if (this.#pwMode) return this.#pwKey(s, key);
         if (this.#logsOpen) {
-          // the popup only closes; other keys stay with it, so nothing happens behind it
+          // the popup only copies and closes; other keys stay with it, so nothing happens behind it
           if (key.name === "escape" || key.name === "l") (this.#logsOpen = false), this.#render();
+          else if (key.name === "c") void this.#copyLogs();
           return;
         }
         if (this.#settingsOpen) return this.#settingsKey(s, key);
         if (key.name === "q") return void quit();
-        if (key.name === "l") return void ((this.#logsOpen = true), this.#render());
+        if (key.name === "l") return void ((this.#logsOpen = true), (this.#logsNote = ""), this.#render());
         if (this.#busy) return;
         if (key.name === "s") {
           this.#settingsOpen = true;
@@ -768,7 +770,16 @@ export class Tui {
       : [dim("Nothing logged yet. Proxy failures (e.g. ports the VPN refuses)"), dim("and tun2socks output in global mode appear here.")];
     const padded = [...body, ...Array<string>(Math.max(0, rows - body.length)).fill("")];
     const count = logLines.length > rows ? `newest ${rows} of ${logLines.length}` : `${logLines.length} lines`;
-    return box([...padded, dim(`esc close · ${count}`)], { title: bold(cyan("Logs")), width: inner });
+    const footer = `${dim(`c copy · esc close · ${count}`)}${this.#logsNote && `  ${this.#logsNote}`}`;
+    return box([...padded, footer], { title: bold(cyan("Logs")), width: inner });
+  }
+
+  /** Copies every log line to the clipboard, not just the newest shown, and says how it went. */
+  async #copyLogs(): Promise<void> {
+    if (!logLines.length) this.#logsNote = dim("nothing to copy yet");
+    else if (await copyText(logLines.join("\n") + "\n")) this.#logsNote = green(`✓ copied all ${logLines.length} lines to the clipboard`);
+    else this.#logsNote = yellow(process.platform === "linux" ? "couldn't copy: install wl-clipboard or xclip" : "couldn't copy to the clipboard");
+    this.#render();
   }
 
   /** The popup shown while quitting restores global mode's routes and DNS. */

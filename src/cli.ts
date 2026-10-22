@@ -14,7 +14,7 @@ import { restoreWindows } from "./global-win32.js";
 import { Tui } from "./tui.js";
 import { checkUpdate, updateNotice, versionLines } from "./update.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenFile } from "./tokenserver.js";
-import { bold, dim, green, red, yellow, cyan, under, code, flag, countryName, gb, shortDate, box, vw, centerIn } from "./ui.js";
+import { bold, dim, green, red, yellow, cyan, under, code, flag, countryName, gb, shortDate, box, vw, centerIn, copyText } from "./ui.js";
 
 // Node gives each server address only 250 ms before moving on; far VPN servers
 // take 600-900 ms to answer, so every attempt failed with a blank AggregateError.
@@ -158,6 +158,7 @@ async function captureToken(error: string | null = null): Promise<string | null>
   // must be able to select and copy the snippet.
   process.stdout.write("\x1b[?1000l\x1b[?1006l");
   const rec = await startTokenReceiver();
+  const copied = await copyText(rec.snippet);
   // the snippet reads the token from Firefox's own VPN login, so it fails when signed out
   const account = findAccount();
   const signedOut = !account?.signedIn;
@@ -177,7 +178,9 @@ async function captureToken(error: string | null = null): Promise<string | null>
     `${bold("2.")} Open the ${bold("Browser Console")}: ${cyan(process.platform === "darwin" ? "⌘ ⇧ J" : "Ctrl+Shift+J")}.`,
     `   ${dim("(the Browser Console, not the page's web console)")}`,
     "",
-    `${bold("3.")} Paste the snippet printed below and press ${bold("Enter")}.`,
+    copied
+      ? `${bold("3.")} Paste it (${green("it's already in your clipboard")}) and press ${bold("Enter")}.`
+      : `${bold("3.")} Paste the snippet printed below and press ${bold("Enter")}.`,
     "",
     dim("The token comes back over localhost only and is saved to"),
     dim(`${tokenFile()} (readable only by you) for next time.`),
@@ -194,7 +197,10 @@ async function captureToken(error: string | null = null): Promise<string | null>
   const out = [
     ...boxed,
     "",
-    bold("Paste this into the Browser Console:"),
+    copied
+      ? `${bold(green("✓ Copied to your clipboard"))} ${dim("— just paste it into the Browser Console:")}`
+      : bold("Paste this into the Browser Console:"),
+    ...(!copied && process.platform === "linux" ? [dim("(with wl-clipboard or xclip installed, foxhole copies it for you)")] : []),
     "",
     ...lines.map((l) => code(`  ${highlight(l)}${" ".repeat(w - l.length)}  `)),
     "",

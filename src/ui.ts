@@ -182,6 +182,45 @@ export const openUrl = (url: string) =>
     .on("error", () => {})
     .unref();
 
+/**
+ * Puts `text` on the system clipboard; true once a clipboard tool took it. Linux needs one
+ * of wl-clipboard (Wayland), xclip or xsel (X11); without them the terminal is asked instead
+ * (OSC 52), which many honor, but that can't be confirmed, so it counts as not copied.
+ */
+export async function copyText(text: string): Promise<boolean> {
+  const tools: [string, string[]][] =
+    process.platform === "darwin"
+      ? [["pbcopy", []]]
+      : process.platform === "win32"
+        // stdin's raw bytes as UTF-8: no console code page in between, and no command-line length limit
+        ? [["powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+            "$m = [IO.MemoryStream]::new(); [Console]::OpenStandardInput().CopyTo($m); Set-Clipboard -Value ([Text.Encoding]::UTF8.GetString($m.ToArray()))"]]]
+        : [
+            ...(process.env.WAYLAND_DISPLAY ? [["wl-copy", []] as [string, string[]]] : []),
+            ["xclip", ["-selection", "clipboard"]],
+            ["xsel", ["--clipboard", "--input"]],
+          ];
+  for (const [cmd, args] of tools) if (await pipeTo(cmd, args, text)) return true;
+  if (process.platform === "linux") process.stdout.write(`\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`);
+  return false;
+}
+
+/** Runs `cmd` with `input` on stdin; true if it exits 0 within 8 s (PowerShell can be slow to start). */
+function pipeTo(cmd: string, args: string[], input: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const p = spawn(cmd, args, {
+      stdio: ["pipe", "ignore", "ignore"],
+      windowsHide: true,
+      detached: process.platform === "linux", // xclip, xsel and wl-copy stay behind to serve the clipboard: out of Ctrl+C's reach
+      env: process.platform === "darwin" ? { ...process.env, LC_CTYPE: "UTF-8" } : process.env, // pbcopy reads text in the locale's encoding
+    });
+    const timer = setTimeout(() => (p.kill(), resolve(false)), 8000);
+    p.on("error", () => (clearTimeout(timer), resolve(false))); // not installed
+    p.on("exit", (code) => (clearTimeout(timer), resolve(code === 0)));
+    p.stdin!.on("error", () => {}).end(input);
+  });
+}
+
 /** Redraws in place, centered: home, each line cleared to its end, then clear below (no flicker). Returns where the lines landed, for mouse clicks. */
 export function draw(lines: string[]): { top: number; left: number } {
   const cols = process.stdout.columns || 80, rows = process.stdout.rows || 24;
