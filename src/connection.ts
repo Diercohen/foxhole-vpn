@@ -31,8 +31,11 @@ export class Connection {
     return this.#server;
   }
 
-  /** Chooses the upstream server for a country (or null = recommended/anycast). */
-  async selectServer(country: Country | null): Promise<Server> {
+  /**
+   * Chooses the upstream server for a country (or null = recommended/anycast). `prepare` runs
+   * before the proxy can use it (global mode pins its IP), so a failure keeps the current one.
+   */
+  async selectServer(country: Country | null, prepare?: (server: Server) => Promise<void>): Promise<Server> {
     let server: Server | null = null;
     if (country) {
       server = pickServer(country);
@@ -41,6 +44,7 @@ export class Connection {
       // Recommended/anycast: use the shared catch-all host Firefox falls back to.
       server = { hostname: "p.m1.fastly-masque.net", port: 2499, quarantined: false };
     }
+    await prepare?.(server);
     this.#server = server;
     return server;
   }

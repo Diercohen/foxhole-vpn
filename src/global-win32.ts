@@ -236,6 +236,13 @@ export class WindowsRouting implements Rerouter<WinWatch> {
     }
   }
 
+  /** Pins one more VPN server (a country switch), kept across re-pins. */
+  async pin(ip: string): Promise<void> {
+    if (this.#pinnedIps.includes(ip)) return;
+    await this.#pinRoute(ip, this.#orig!);
+    this.#pinnedIps.push(ip);
+  }
+
   /** Pins the resolvers the system uses now (direct DNS); returns them. */
   async #pinResolvers(up: WinRoute): Promise<string[]> {
     const out = await psOut(

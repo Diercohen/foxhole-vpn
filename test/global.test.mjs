@@ -1,6 +1,7 @@
 // Pure-function checks for the global-routing planner. No root, no network.
 import assert from "node:assert";
 import { parseDefaultRoute, isVpnDev, planSetup, planTeardown, conflictingVpn, needsRepin, pinCmd, dialHost } from "../dist/global.js";
+import { Connection } from "../dist/connection.js";
 
 // Real-world `ip route` with a DHCP default plus extra routes.
 const r1 = parseDefaultRoute(
@@ -78,16 +79,29 @@ assert.equal(parseDefaultRoute("default dev foxhole0 metric 1\n", "foxhole0"), n
 // Re-pin when the uplink moved, the server routes into the tun, or DNS was reset.
 const okRoute = "151.101.1.1 via 192.168.0.1 dev wlo1 src 192.168.0.103 uid 1000\n    cache";
 const tunRoute = "151.101.1.1 dev foxhole0 src 198.18.0.1 uid 1000\n    cache";
-const ourDns = "Link 3 (wlo1): 127.0.0.1:41234";
+const ourDns = "Link 7 (foxhole0): 127.0.0.1:41234"; // set on our tun, never on the uplink
 assert.equal(needsRepin(wlo1, wlo1, okRoute, ourDns, 41234), false, "nothing changed");
 assert.equal(needsRepin(wlo1, wlo1, okRoute, null, 0), false, "nothing changed, direct DNS");
 assert.equal(needsRepin(wlo1, { gw: "10.0.0.1", dev: "wlo1" }, okRoute, ourDns, 41234), true, "new gateway, same device");
 assert.equal(needsRepin(wlo1, { gw: "192.168.0.1", dev: "eth0" }, okRoute, ourDns, 41234), true, "new device");
 assert.equal(needsRepin(wlo1, wlo1, tunRoute, ourDns, 41234), true, "pin deleted: server goes into the tun");
-assert.equal(needsRepin(wlo1, wlo1, okRoute, "Link 3 (wlo1): 192.168.0.1", 41234), true, "network manager reset DNS");
+assert.equal(needsRepin(wlo1, wlo1, okRoute, "Link 7 (foxhole0):", 41234), true, "our tun's DNS was reset");
 assert.equal(needsRepin(wlo1, wlo1, okRoute, ourDns, 4123), true, "another port isn't ours, even as a prefix");
 assert.equal(dialHost("0.0.0.0"), "127.0.0.1", "listen-on-all is dialed on loopback");
 assert.equal(dialHost("127.0.0.1"), "127.0.0.1");
 assert.deepEqual(pinCmd("10.0.0.0/8", wlo1), ["ip", "route", "add", "10.0.0.0/8", "via", "192.168.0.1", "dev", "wlo1"]);
+
+// Switching country with global on: the proxy keeps the old server until the new one's IP
+// is pinned (else its dial loops through the tunnel), and a failed pin keeps the old one.
+const conn = new Connection({ getAccessToken: async () => "token" });
+const country = (code, hostname) => ({ code, name: code, locked: false, available: true, servers: [{ hostname, port: 443, quarantined: false }] });
+await conn.selectServer(country("DE", "de.example"));
+await conn.selectServer(country("FR", "fr.example"), async (s) => {
+  assert.equal(conn.server.hostname, "de.example", "old server in use while the new one is pinned");
+  s.ip = "192.0.2.7";
+});
+assert.deepEqual([conn.server.hostname, conn.server.ip], ["fr.example", "192.0.2.7"], "then the pinned new server");
+await assert.rejects(conn.selectServer(country("NL", "nl.example"), async () => { throw new Error("pin failed"); }));
+assert.equal(conn.server.hostname, "fr.example", "a failed pin keeps the current server");
 
 console.log("ok - global routing planner builds correct ip command sequences");

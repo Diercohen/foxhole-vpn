@@ -173,6 +173,13 @@ export class DarwinRouting implements Rerouter<MacRoute> {
     }
   }
 
+  /** Pins one more VPN server (a country switch), kept across re-pins. */
+  async pin(ip: string): Promise<void> {
+    if (this.#pinnedIps.includes(ip)) return;
+    await this.#pinRoute("-host", ip, this.#orig!);
+    this.#pinnedIps.push(ip);
+  }
+
   /** Pins the resolvers the system uses now (direct DNS); returns them. */
   async #pinResolvers(up: MacRoute): Promise<string[]> {
     const { stdout } = await exec("scutil", ["--dns"]);

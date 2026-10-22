@@ -59,8 +59,8 @@ export function pinCmd(dest: string, orig: DefaultRoute): string[] {
 /**
  * True when a network change (Wi-Fi switch, reconnect) broke global mode's pins: the
  * uplink moved, the VPN server now routes into the tun (`serverRoute`: `ip route get`),
- * or the network manager reset the link's DNS (`linkDns`: `resolvectl dns <dev>`, null
- * when DNS isn't tunnelled; `dohPort`: where the DoH forwarder listens). Pure.
+ * or something reset our tun's DNS (`linkDns`: `resolvectl dns foxhole0`, null when
+ * DNS isn't tunnelled; `dohPort`: where the DoH forwarder listens). Pure.
  */
 export function needsRepin(pinnedTo: DefaultRoute, uplink: DefaultRoute, serverRoute: string, linkDns: string | null, dohPort: number): boolean {
   if (uplink.dev !== pinnedTo.dev || uplink.gw !== pinnedTo.gw) return true;
@@ -384,7 +384,6 @@ export class GlobalSession {
   #addedPrivate: string[] = [];
   #udpBlocked = false;
   #dns: DnsForwarder | null = null;
-  #dnsDev: string | null = null;
   #t2s: ReturnType<typeof spawn> | null = null;
   #exitCb: ((code: number | null) => void) | null = null;
   #netCb: ((event: "lost" | "restored", detail: string) => void) | null = null;
@@ -437,12 +436,17 @@ export class GlobalSession {
     pinGuardian(guardianIp);
     const pinned = [...new Set([serverIp, guardianIp])];
     this.#pinnedIps = pinned;
+    this.#bypassIps = pinned;
     this.#orig = orig;
+    for (const step of planSetup(pinned, orig)) await priv.run(step);
+    await this.#pinPrivate(orig);
 
     // DNS: resolve through the tunnel via DoH so lookups aren't done on (and
     // can't be blocked by) the local network. Point systemd-resolved at a local
-    // forwarder that speaks DoH over the proxy. If there's no resolved, fall
-    // back to pinning the resolvers to the real uplink.
+    // forwarder that speaks DoH over the proxy, set on our own tun: the uplink's
+    // DNS belongs to the network manager (reverting it there left no DNS at all
+    // until a reconnect), and ours goes away with the tun. If there's no resolved,
+    // fall back to pinning the resolvers to the real uplink.
     let dns: string;
     try {
       this.#dns = await startDnsForwarder({
@@ -451,23 +455,20 @@ export class GlobalSession {
         dohHost: DOH_HOST,
         host: "127.0.0.1",
         port: 0, // a fixed port can be taken: 5353 is mDNS's (avahi)
+        connections: 8, // as on macOS and Windows: one slow lookup mustn't hold up the rest
       });
-      await priv.run(["resolvectl", "dns", orig.dev, `127.0.0.1:${this.#dns.port}`]);
-      await priv.run(["resolvectl", "domain", orig.dev, "~."]);
-      this.#dnsDev = orig.dev;
-      this.#bypassIps = pinned;
+      await this.#pointDns();
       dns = `tunnelled (DoH via ${DOH_HOST})`;
     } catch (err) {
+      await priv.run(["resolvectl", "revert", TUN], true);
       await this.#dns?.close();
       this.#dns = null;
       const dnsIps = await dnsUpstreams();
       if (dnsIps.length === 0) dnsIps.push("1.1.1.1");
-      this.#bypassIps = [...new Set([...pinned, ...dnsIps])];
+      this.#bypassIps = [...new Set([...pinned, ...dnsIps])]; // first: stop() removes what got added if a pin fails
+      for (const ip of dnsIps) await priv.run(pinCmd(ip, orig));
       dns = `direct: ${dnsIps.join(", ")} (${(err as Error).message} — DNS may be visible locally)`;
     }
-
-    for (const step of planSetup(this.#bypassIps, orig)) await priv.run(step);
-    await this.#pinPrivate(orig);
 
     // Reject UDP into the tunnel: it's TCP-only, so QUIC (Chrome's HTTP/3 over
     // UDP 443) would otherwise hang instead of falling back to TCP. The REJECT
@@ -547,22 +548,40 @@ export class GlobalSession {
 
   async #broken(uplink: DefaultRoute): Promise<boolean> {
     const serverRoute = (await exec("ip", ["route", "get", this.#pinnedIps[0]])).stdout;
-    const linkDns = this.#dnsDev ? await exec("resolvectl", ["dns", this.#dnsDev]).then((r) => r.stdout, () => "") : null;
+    const linkDns = this.#dns ? await exec("resolvectl", ["dns", TUN]).then((r) => r.stdout, () => "") : null;
     return needsRepin(this.#orig!, uplink, serverRoute, linkDns, this.#dns?.port ?? 0);
   }
 
-  /** Moves the pins and DNS to a new uplink. The tun and its default route stay up meanwhile, so nothing leaks. */
+  /** Sends every lookup to the DoH forwarder: "~." on our tun makes systemd-resolved prefer it to the uplink's DNS. */
+  async #pointDns(): Promise<void> {
+    await this.#o.priv.run(["resolvectl", "dns", TUN, `127.0.0.1:${this.#dns!.port}`]);
+    await this.#o.priv.run(["resolvectl", "domain", TUN, "~."]);
+  }
+
+  /**
+   * Switching country with global on: pins the new server's IP to the uplink before the proxy
+   * dials it, or that dial would loop back through the tun. Earlier pins stay until stop().
+   */
+  async addServer(server: { hostname: string; ip?: string }): Promise<void> {
+    const ip = (await lookup(server.hostname, { family: 4 })).address; // the current server still carries this lookup
+    if (this.#mac) await this.#mac.pin(ip);
+    else if (!this.#pinnedIps.includes(ip)) {
+      await this.#o.priv.run(pinCmd(ip, this.#orig!));
+      this.#pinnedIps.push(ip);
+      this.#bypassIps = [...new Set([...this.#bypassIps, ip])];
+    }
+    server.ip = ip;
+  }
+
+  /** Moves the pins to a new uplink. The tun and its default route stay up meanwhile, so nothing leaks. */
   async #repin(orig: DefaultRoute): Promise<void> {
     const { priv } = this.#o;
     // Stale pins may survive (same device, old gateway); clear them so the adds below can't collide.
     for (const ip of this.#bypassIps) await priv.run(["ip", "route", "del", ip], true);
     for (const cidr of this.#addedPrivate) await priv.run(["ip", "route", "del", cidr], true);
     this.#addedPrivate = [];
-    if (this.#dnsDev) {
-      await priv.run(["resolvectl", "revert", this.#dnsDev], true);
-      await priv.run(["resolvectl", "dns", orig.dev, `127.0.0.1:${this.#dns!.port}`]);
-      await priv.run(["resolvectl", "domain", orig.dev, "~."]);
-      this.#dnsDev = orig.dev;
+    if (this.#dns) {
+      await this.#pointDns(); // in case the network manager reset our tun's DNS
     } else {
       // Direct DNS: the new network brings its own resolvers.
       const dnsIps = await dnsUpstreams();
@@ -586,8 +605,6 @@ export class GlobalSession {
     if (this.#watchTimer) clearTimeout(this.#watchTimer);
     await this.#tick; // a re-pin in flight would add routes after the teardown below
     if (this.#mac) return this.#mac.stop();
-    if (this.#dnsDev) await this.#o.priv.run(["resolvectl", "revert", this.#dnsDev], true);
-    await this.#dns?.close();
     if (this.#udpBlocked)
       await this.#o.priv.run(["iptables", "-D", "OUTPUT", "-o", TUN, "-p", "udp", "-j", "REJECT"], true);
     for (const cidr of this.#addedPrivate) await this.#o.priv.run(["ip", "route", "del", cidr], true);
@@ -596,6 +613,7 @@ export class GlobalSession {
     await stopProcess(this.#t2s, () => this.#o.priv.run(["pkill", "-f", TUN], true)); // sudo child may outlive the signal
     this.#t2s = null;
     for (const step of planTeardown(this.#bypassIps)) await this.#o.priv.run(step, true);
+    await this.#dns?.close(); // last: until the tun (and the DNS setting on it) is gone, lookups still come here
   }
 }
 

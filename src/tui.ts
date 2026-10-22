@@ -331,10 +331,13 @@ export class Tui {
     this.#message = dim(`connecting to ${countryName(country.code, country.name)}…`);
     this.#render();
     try {
-      await this.#conn.selectServer(country.locked ? country : country.available ? country : null);
+      // Global on: the new server's IP is pinned first, or the proxy's dial to it would loop through the tunnel.
+      const session = this.#global;
+      await this.#conn.selectServer(country.locked ? country : country.available ? country : null, session ? (s) => session.addServer(s) : undefined);
       if (!this.#proxy) this.#proxy = await startProxy(this.#conn, this.#host, this.#port);
       await this.#conn.currentPass(); // warm the pass; surfaces auth/quota errors now
       this.#active = country;
+      if (this.#global) this.#globalCountry = country;
       saveLastCountry(country.code);
       this.#message = green("connected");
     } catch (err) {
