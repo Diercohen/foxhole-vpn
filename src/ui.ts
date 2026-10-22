@@ -107,7 +107,10 @@ export function sliceCols(s: string, from: number, to = Infinity): string {
   return started ? out + "\x1b[0m" : "";
 }
 
-/** Lays `over` on top of `lines`, centered with a 1-cell clear margin: the covered columns are replaced, the rest stays. */
+/**
+ * Lays `over` on top of `lines`, centered with a 1-cell clear margin: the covered columns are
+ * replaced, and the page around it becomes a backdrop (faint, its colors dropped) so the popup stands out.
+ */
 export function overlay(lines: string[], box: string[], width: number): string[] {
   const bw = Math.max(...box.map(vw));
   const blank = " ".repeat(bw + 2);
@@ -116,9 +119,10 @@ export function overlay(lines: string[], box: string[], width: number): string[]
   const x = Math.max(0, Math.floor((width - ow) / 2));
   const y = Math.max(0, Math.floor((lines.length - over.length) / 2));
   return lines.map((l, i) => {
+    const back = dim(l.replace(/\x1b\[[0-9;]*m/g, ""));
     const o = over[i - y];
-    if (o === undefined) return l;
-    return pad(sliceCols(l, 0, x), x) + o + sliceCols(l, x + vw(o));
+    if (o === undefined) return back;
+    return pad(sliceCols(back, 0, x), x) + o + sliceCols(back, x + vw(o));
   });
 }
 
