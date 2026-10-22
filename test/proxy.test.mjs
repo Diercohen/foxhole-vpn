@@ -254,7 +254,59 @@ async function closeMidDial() {
   console.log("ok - closing the proxy mid-dial closes that tunnel too");
 }
 
+// With a login set, a client must sign in: SOCKS5 username/password (RFC 1929) or HTTP Basic.
+async function login() {
+  const { server } = makeUpstream(0);
+  const upstreamPort = await listen(server);
+  const conn = {
+    server: { hostname: "127.0.0.1", port: upstreamPort },
+    async currentPass() {
+      return { token: "faketoken", notBefore: 0, expires: 2 ** 31 };
+    },
+  };
+  const handle = await startProxy(conn, "127.0.0.1", 0, () => ({ username: "fox", password: "s3cret" }));
+  const socks = async (methods, user, pass) => {
+    const c = net.connect(handle.port, "127.0.0.1");
+    c.on("error", () => {});
+    await write(c, Buffer.from([0x05, methods.length, ...methods]));
+    const choice = (await read(c))[1];
+    if (choice !== 0x02) return { c, choice };
+    const [u, p] = [Buffer.from(user), Buffer.from(pass)];
+    await write(c, Buffer.concat([Buffer.from([0x01, u.length]), u, Buffer.from([p.length]), p]));
+    return { c, choice, status: (await read(c))[1] };
+  };
+  let r = await socks([0x00]);
+  assert.equal(r.choice, 0xff, "SOCKS5 without a login method: refused");
+  r.c.destroy();
+  r = await socks([0x00, 0x02], "fox", "wrong");
+  assert.equal(r.status, 0x01, "SOCKS5 wrong password: refused");
+  r.c.destroy();
+  r = await socks([0x00, 0x02], "fox", "s3cret");
+  assert.equal(r.status, 0x00, "SOCKS5 right login: accepted");
+  await write(r.c, Buffer.from([0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, targetPort >> 8, targetPort & 0xff]));
+  assert.equal((await read(r.c))[1], 0x00, "then CONNECT works");
+  await write(r.c, "ping with a login");
+  assert.equal((await read(r.c)).toString(), "ping with a login", "and data round-trips");
+  r.c.destroy();
+
+  const http = async (auth) => {
+    const c = net.connect(handle.port, "127.0.0.1");
+    c.on("error", () => {});
+    await write(c, `CONNECT 127.0.0.1:${targetPort} HTTP/1.1\r\n${auth ? `Proxy-Authorization: Basic ${Buffer.from(auth).toString("base64")}\r\n` : ""}\r\n`);
+    const head = (await read(c)).toString();
+    c.destroy();
+    return head;
+  };
+  assert.match(await http(), /^HTTP\/1\.1 407 [\s\S]*Proxy-Authenticate: Basic/, "HTTP without a login: 407");
+  assert.match(await http("fox:nope"), /^HTTP\/1\.1 407 /, "HTTP wrong password: 407");
+  assert.match(await http("fox:s3cret"), /^HTTP\/1\.1 200 /, "HTTP right login: tunnel up");
+  await handle.close();
+  server.close();
+  console.log("ok - a proxy login is asked over SOCKS5 and HTTP");
+}
+
 await scenario("SOCKS5 bridge tunnels TCP through an authenticated upstream CONNECT", 0, 1);
+await login();
 await closeMidDial();
 await httpScenarios();
 await scenario("a dropped upstream connection is retried automatically", 1, 2);

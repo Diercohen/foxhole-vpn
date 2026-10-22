@@ -1,5 +1,6 @@
 import net from "node:net";
 import tls from "node:tls";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import type { Connection } from "./connection.js";
 import { red, verbose } from "./ui.js";
@@ -252,14 +253,49 @@ function splice(a: net.Socket, b: net.Socket): void {
   b.once("error", close);
 }
 
-async function handleClient(socket: net.Socket, conn: Connection): Promise<void> {
-  socket.on("error", () => socket.destroy());
-  const first = await nextChunk(socket);
-  return first[0] === SOCKS_VERSION ? handleSocks(socket, conn) : handleHttp(socket, conn, first);
+/** A proxy username and password (SOCKS5 RFC 1929, HTTP Basic). */
+export interface ProxyLogin {
+  username: string;
+  password: string;
 }
 
-async function handleSocks(socket: net.Socket, conn: Connection): Promise<void> {
-  socket.write(Buffer.from([SOCKS_VERSION, 0x00])); // no authentication required
+const digest = (l: ProxyLogin) => createHash("sha256").update(`${l.username}\0${l.password}`).digest();
+/** True if the login given matches, compared in constant time. */
+const sameLogin = (given: ProxyLogin | null, want: ProxyLogin) => !!given && timingSafeEqual(digest(given), digest(want));
+
+/** The RFC 1929 username/password a SOCKS5 client sent, or null if malformed. */
+function socksLogin(b: Buffer): ProxyLogin | null {
+  const ulen = b[1] ?? 0;
+  const plen = b[2 + ulen];
+  if (b[0] !== 0x01 || plen === undefined || b.length < 3 + ulen + plen) return null;
+  return { username: b.toString("utf8", 2, 2 + ulen), password: b.toString("utf8", 3 + ulen, 3 + ulen + plen) };
+}
+
+/** The login in a request's Proxy-Authorization: Basic header, or null. */
+function basicLogin(lines: string[]): ProxyLogin | null {
+  const b64 = lines.find((l) => /^proxy-authorization:/i.test(l))?.match(/^[^:]+:\s*basic\s+(\S+)/i)?.[1];
+  if (!b64) return null;
+  const s = Buffer.from(b64, "base64").toString("utf8");
+  const i = s.indexOf(":");
+  return i < 0 ? null : { username: s.slice(0, i), password: s.slice(i + 1) };
+}
+
+async function handleClient(socket: net.Socket, conn: Connection, login: ProxyLogin | null): Promise<void> {
+  socket.on("error", () => socket.destroy());
+  const first = await nextChunk(socket);
+  return first[0] === SOCKS_VERSION ? handleSocks(socket, conn, first, login) : handleHttp(socket, conn, first, login);
+}
+
+async function handleSocks(socket: net.Socket, conn: Connection, greeting: Buffer, login: ProxyLogin | null): Promise<void> {
+  const methods = [...greeting.subarray(2, 2 + greeting[1])];
+  if (login || !methods.includes(0x00)) {
+    // Username/password: required with a login, else used only when it's all the client offers
+    if (!methods.includes(0x02)) return void socket.end(Buffer.from([SOCKS_VERSION, 0xff])); // no acceptable method
+    socket.write(Buffer.from([SOCKS_VERSION, 0x02]));
+    const given = socksLogin(await nextChunk(socket));
+    if (!given || (login && !sameLogin(given, login))) return void socket.end(Buffer.from([0x01, 0x01]));
+    socket.write(Buffer.from([0x01, 0x00]));
+  } else socket.write(Buffer.from([SOCKS_VERSION, 0x00])); // no authentication required
   const target = await readRequest(socket);
   const up = await dial(conn, target);
   if (!up) {
@@ -273,9 +309,9 @@ async function handleSocks(socket: net.Socket, conn: Connection): Promise<void> 
 
 const HTTP_MAX_HEAD = 64 * 1024;
 
-/** Ends an HTTP client connection with a status line. */
-function httpError(socket: net.Socket, status: string): void {
-  socket.end(`HTTP/1.1 ${status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+/** Ends an HTTP client connection with a status line (and any extra header lines). */
+function httpError(socket: net.Socket, status: string, headers = ""): void {
+  socket.end(`HTTP/1.1 ${status}\r\n${headers}Content-Length: 0\r\nConnection: close\r\n\r\n`);
 }
 
 /**
@@ -284,7 +320,7 @@ function httpError(socket: net.Socket, status: string): void {
  * origin-form with the proxy headers removed. One request per connection:
  * "Connection: close" keeps a reused client socket from reaching the wrong host.
  */
-async function handleHttp(socket: net.Socket, conn: Connection, first: Buffer): Promise<void> {
+async function handleHttp(socket: net.Socket, conn: Connection, first: Buffer, login: ProxyLogin | null): Promise<void> {
   let head = first;
   while (head.indexOf("\r\n\r\n") < 0) {
     if (head.length > HTTP_MAX_HEAD) return httpError(socket, "431 Request Header Fields Too Large");
@@ -293,6 +329,9 @@ async function handleHttp(socket: net.Socket, conn: Connection, first: Buffer): 
   socket.pause(); // hold any body bytes until the tunnel is up (pipe resumes)
   const end = head.indexOf("\r\n\r\n");
   const lines = head.toString("latin1", 0, end).split("\r\n");
+  if (login && !sameLogin(basicLogin(lines), login)) {
+    return httpError(socket, "407 Proxy Authentication Required", 'Proxy-Authenticate: Basic realm="foxhole-vpn"\r\n');
+  }
   const [method, url, version = "HTTP/1.1"] = lines[0].split(" ");
   const rest = head.subarray(end + 4);
 
@@ -333,13 +372,21 @@ export interface ProxyHandle {
   close(): Promise<void>;
 }
 
-/** Starts the local SOCKS5 + HTTP proxy. Resolves once it is listening. */
-export function startProxy(conn: Connection, host = "127.0.0.1", port = 1080): Promise<ProxyHandle> {
+/**
+ * Starts the local SOCKS5 + HTTP proxy. Resolves once it is listening. `login` gives the
+ * username/password a client (by its address) must sign in with, or null for none.
+ */
+export function startProxy(
+  conn: Connection,
+  host = "127.0.0.1",
+  port = 1080,
+  login: (address: string | undefined) => ProxyLogin | null = () => null,
+): Promise<ProxyHandle> {
   const sockets = new Set<net.Socket>();
   const server = net.createServer((socket) => {
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
-    handleClient(socket, conn).catch(() => socket.destroy());
+    handleClient(socket, conn, login(socket.remoteAddress)).catch(() => socket.destroy());
   });
   return new Promise((resolve, reject) => {
     server.once("error", reject);

@@ -9,7 +9,7 @@ import { Connection, findCountry } from "./connection.js";
 import { fetchEntitlement, GuardianError } from "./guardian.js";
 import { startProxy } from "./proxy.js";
 import { runGlobal, directPriv, isPrivileged } from "./global.js";
-import { loadSettings, proxyHost } from "./settings.js";
+import { loadSettings, proxyHost, loginFor } from "./settings.js";
 import { restoreWindows } from "./global-win32.js";
 import { Tui } from "./tui.js";
 import { checkUpdate, updateNotice, versionLines } from "./update.js";
@@ -404,9 +404,10 @@ async function cmdProxy() {
   const server = await conn.selectServer(country);
   noteTokenTtl();
   const where = country ? `${flag(country.code)} ${countryName(country.code, country.name)}` : "recommended";
-  const host = arg("host") ?? proxyHost(loadSettings());
-  const port = Number(arg("port") ?? loadSettings().port);
-  const handle = await startProxy(conn, host, port);
+  const settings = loadSettings();
+  const host = arg("host") ?? proxyHost(settings);
+  const port = Number(arg("port") ?? settings.port);
+  const handle = await startProxy(conn, host, port, (address) => loginFor(settings, address));
   console.log(green(`\nProxy on ${bold(`${host}:${handle.port}`)} (SOCKS5 and HTTP)  →  ${where}`));
   console.log(dim(`upstream ${server.hostname}:${server.port}`));
   console.log(dim(`e.g.  export ALL_PROXY=socks5://${host}:${handle.port}`));
@@ -455,11 +456,13 @@ async function cmdGlobal() {
   }
   await conn.selectServer(country);
   await notice();
+  const settings = loadSettings();
   try {
     await runGlobal(conn, {
-      host: arg("host") ?? proxyHost(loadSettings()),
-      port: Number(arg("port") ?? loadSettings().port),
+      host: arg("host") ?? proxyHost(settings),
+      port: Number(arg("port") ?? settings.port),
       force: process.argv.includes("--force"),
+      login: (address) => loginFor(settings, address),
     });
   } catch (err) {
     handleAuthError(err);

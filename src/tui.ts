@@ -8,13 +8,13 @@ import { Connection } from "./connection.js";
 import { NotImplementedError } from "./auth.js";
 import { GuardianError } from "./guardian.js";
 import { network, publicIp, lanIp } from "./netinfo.js";
-import { loadSettings, saveSettings, proxyHost, validPort, type Settings } from "./settings.js";
+import { loadSettings, saveSettings, proxyHost, validPort, loginFor, type Settings } from "./settings.js";
 import { forgetToken } from "./tokenserver.js";
 import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { logLines, onLog } from "./log.js";
 import { GlobalSession, sudoPriv, directPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, versionLines } from "./update.js";
-import { bold, dim, under, strike, green, red, yellow, cyan, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl } from "./ui.js";
+import { bold, dim, under, strike, green, red, yellow, cyan, lit, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl } from "./ui.js";
 
 const ESC = "\x1b[";
 // alternate screen + hidden cursor + mouse reports (SGR): clicks and the wheel, see #mouse()
@@ -29,7 +29,6 @@ function leaveScreen(): void {
 }
 process.on("exit", leaveScreen);
 
-const REFRESHING = dim("refreshing…");
 const LOGOUT_ASK = yellow("press O again to log out and switch accounts");
 const onOff = (v: boolean) => (v ? green("on") : dim("off"));
 
@@ -37,7 +36,8 @@ const onOff = (v: boolean) => (v ? green("on") : dim("off"));
 const SETTINGS = [
   { key: "share", label: "Share with devices on this network" },
   { key: "port", label: "Proxy port" },
-  { key: "autoConnect", label: "Auto connect" },
+  { key: "username", label: "Username" },
+  { key: "password", label: "Password" },
 ] as const;
 
 /** The last country connected to; the next start puts the cursor on it. */
@@ -75,7 +75,8 @@ export class Tui {
   #settings: Settings = loadSettings();
   #settingsOpen = false; // the Settings popup is open
   #setSel = 0;
-  #portEdit: string | null = null; // the port being typed, while editing it
+  #edit: { key: "port" | "username" | "password"; text: string } | null = null; // the setting being typed
+  readonly #login = (address: string | undefined) => loginFor(this.#settings, address); // live: a change applies to the next client
   #settingsNote = "";
   #proxyStale = false; // the running proxy still has the old address (changed during global mode)
   #countries: Country[] = [];
@@ -126,9 +127,10 @@ export class Tui {
     } catch (err) {
       this.#message = red(`server list failed: ${(err as Error).message}`);
     }
-    // Only to a country actually remembered, never to whatever sorts first.
-    if (this.#settings.autoConnect && this.#countries[this.#sel]?.code === loadLastCountry()) void this.#connect();
+    // Connects at once to the last country used; never to whatever sorts first (a first run waits for a pick).
+    if (this.#countries[this.#sel]?.code === loadLastCountry()) void this.#connect();
     this.#refreshUsage();
+    setInterval(() => this.#refreshUsage(), 3 * 60_000).unref(); // also after each connect and disconnect
     this.#refreshNet();
     // A network switch changes the public IP too; the network is cheap to poll. The
     // LAN address catches switches the name can't show (when macOS hides it).
@@ -167,22 +169,9 @@ export class Tui {
     });
   }
 
+  /** Re-reads the data used, quietly: a failed check keeps what's shown. */
   #refreshUsage(): void {
-    this.#conn
-      .refreshUsage()
-      .then((usage) => {
-        // only replace our own "refreshing…"; the startup call must not wipe other messages
-        if (this.#message === REFRESHING) this.#message = usage ? dim("usage updated") : yellow("usage unavailable");
-        this.#render();
-      })
-      .catch((err) => {
-        if (err instanceof NotImplementedError) {
-          this.#message = yellow("token step not implemented — see AUTH.md (data unknown)");
-        } else {
-          this.#message = dim(`usage unavailable: ${(err as Error).message}`);
-        }
-        this.#render();
-      });
+    this.#conn.refreshUsage().then(() => this.#render(), () => {});
   }
 
   #loop(): Promise<"update" | "logout" | undefined> {
@@ -280,11 +269,6 @@ export class Tui {
             if (this.#message === LOGOUT_ASK) return void quit("logout");
             this.#message = LOGOUT_ASK;
             break;
-          case "r":
-            this.#message = REFRESHING;
-            this.#refreshUsage();
-            this.#refreshNet();
-            break;
         }
         this.#render();
       };
@@ -303,7 +287,7 @@ export class Tui {
     const fx = x - h.left, fy = y - h.top;
     if (this.#settingsOpen) {
       const i = fy - h.setTop;
-      if (this.#portEdit !== null || i < 0 || i >= SETTINGS.length || fx < h.setX || fx >= h.setX + h.setW) return;
+      if (this.#edit || i < 0 || i >= SETTINGS.length || fx < h.setX || fx >= h.setX + h.setW) return;
       this.#setSel = i;
       return press("return");
     }
@@ -334,12 +318,13 @@ export class Tui {
       // Global on: the new server's IP is pinned first, or the proxy's dial to it would loop through the tunnel.
       const session = this.#global;
       await this.#conn.selectServer(country.locked ? country : country.available ? country : null, session ? (s) => session.addServer(s) : undefined);
-      if (!this.#proxy) this.#proxy = await startProxy(this.#conn, this.#host, this.#port);
+      if (!this.#proxy) this.#proxy = await startProxy(this.#conn, this.#host, this.#port, this.#login);
       await this.#conn.currentPass(); // warm the pass; surfaces auth/quota errors now
       this.#active = country;
       if (this.#global) this.#globalCountry = country;
       saveLastCountry(country.code);
       this.#message = green("connected");
+      this.#refreshUsage();
     } catch (err) {
       if (err instanceof NotImplementedError) {
         this.#message = yellow("can't connect: token step not implemented (see AUTH.md)");
@@ -370,6 +355,7 @@ export class Tui {
     this.#proxyStale = false;
     this.#active = null;
     this.#message = dim("disconnected");
+    this.#refreshUsage();
     this.#refreshNet();
     this.#render();
   }
@@ -526,17 +512,23 @@ export class Tui {
 
   /** Keystrokes while the Settings popup is open. */
   #settingsKey(s: string, key: readline.Key): void {
-    if (this.#portEdit !== null) {
-      if (key.name === "escape") this.#portEdit = null;
-      else if (key.name === "backspace") this.#portEdit = this.#portEdit.slice(0, -1);
+    const e = this.#edit;
+    if (e) {
+      if (key.name === "escape") this.#edit = null;
+      else if (key.name === "backspace") e.text = e.text.slice(0, -1);
       else if (key.name === "return") {
-        const port = Number(this.#portEdit);
-        if (!validPort(port)) this.#settingsNote = red("A port is a number from 1 to 65535.");
+        if (e.key === "port" && !validPort(Number(e.text))) this.#settingsNote = red("A port is a number from 1 to 65535.");
         else {
-          this.#portEdit = null;
-          return void this.#changeSetting({ port });
+          this.#edit = null;
+          return void this.#changeSetting(e.key === "port" ? { port: Number(e.text) } : { [e.key]: e.text });
         }
-      } else if (/^\d$/.test(s) && this.#portEdit.length < 5) this.#portEdit += s;
+      } else if (e.key === "port") {
+        if (/^\d$/.test(s) && e.text.length < 5) e.text += s;
+      } else if (s && s.length === 1 && s >= " " && !key.ctrl && !key.meta && Buffer.byteLength(e.text + s) <= 255) {
+        // HTTP Basic splits the username from the password at the first ":"
+        if (e.key === "username" && s === ":") this.#settingsNote = red("A username can't contain “:”.");
+        else e.text += s;
+      }
       return this.#render();
     }
     switch (key.name) {
@@ -555,10 +547,10 @@ export class Tui {
       case "return":
       case "space": {
         const item = SETTINGS[this.#setSel].key;
-        if (item === "port") {
-          this.#portEdit = "";
-          this.#settingsNote = "";
-        } else return void this.#changeSetting({ [item]: !this.#settings[item] });
+        if (item === "share") return void this.#changeSetting({ share: !this.#settings.share });
+        // typed in place: the username starts from the current one, a port or password from scratch
+        this.#edit = { key: item, text: item === "username" ? this.#settings.username : "" };
+        this.#settingsNote = "";
       }
     }
     this.#render();
@@ -597,7 +589,7 @@ export class Tui {
     try {
       await this.#proxy.close();
       this.#proxy = null;
-      this.#proxy = await startProxy(this.#conn, this.#host, this.#port);
+      this.#proxy = await startProxy(this.#conn, this.#host, this.#port, this.#login);
       this.#message = green(`proxy now on ${this.#proxyAddr()}`);
     } catch (err) {
       // e.g. the port is taken: nothing listens now, so say disconnected
@@ -611,10 +603,13 @@ export class Tui {
 
   #settingsPopup(): string[] {
     const s = this.#settings;
+    const e = this.#edit;
+    const cursor = cyan("▏");
     const values = [
       onOff(s.share),
-      this.#portEdit !== null ? `${this.#portEdit}${cyan("▏")}` : String(s.port),
-      onOff(s.autoConnect),
+      e?.key === "port" ? e.text + cursor : String(s.port),
+      e?.key === "username" ? e.text + cursor : s.username || dim("optional"),
+      e?.key === "password" ? "•".repeat(e.text.length) + cursor : s.password ? "••••••••" : dim("optional"),
     ];
     const w = Math.max(...SETTINGS.map((it) => it.label.length));
     const rows = SETTINGS.map((it, i) => {
@@ -622,18 +617,24 @@ export class Tui {
       const label = it.label.padEnd(w);
       return `${here ? cyan("❯") : " "} ${here ? bold(label) : label}   ${values[i]}`;
     });
-    const last = this.#countries.find((c) => c.code === loadLastCountry());
+    const loginHelp = (what: string) =>
+      e?.key === what
+        ? [dim(`Type the ${what} · enter save (empty: none) · esc cancel`)]
+        : [dim("Asked from other devices when sharing is on; apps on"), dim("this computer don't need it. Optional: empty means no login.")];
     const help = {
       share: s.share
         ? [
             `Set your phone's Wi-Fi proxy to ${bold(cyan(`${lanIp() ?? "this computer's IP"}:${s.port}`))}.`,
-            yellow("No password: anyone on this network can use it, and your data."),
+            s.username || s.password
+              ? dim("Devices sign in with the username and password below.")
+              : yellow("No password: anyone on this network can use it. Set one below."),
           ]
         : [dim("Only this computer can use the proxy."), dim("Turn on to use the VPN from your phone, on the same Wi-Fi.")],
-      port: this.#portEdit !== null
+      port: e?.key === "port"
         ? [dim("Type the new port · enter save · esc cancel")]
         : [dim("One port serves SOCKS5 and HTTP. Default 1080.")],
-      autoConnect: [dim(last ? `Connects to ${flag(last.code)} ${countryName(last.code, last.name)} when foxhole opens.` : "Connects to the last country you used when foxhole opens.")],
+      username: loginHelp("username"),
+      password: loginHelp("password"),
     }[SETTINGS[this.#setSel].key];
     return box(
       ["", ...rows, "", ...help, this.#settingsNote, "", dim("↑↓ select · enter change · esc close")],
@@ -659,7 +660,7 @@ export class Tui {
         : `${bold(gb(u.remaining).replace(" GB", ""))} of ${gb(u.max)} left` + (u.reset ? dim(` · resets ${shortDate(u.reset)}`) : ""); // as Firefox shows it
     const gc = this.#globalCountry;
     const state = this.#global
-      ? green(`● GLOBAL ${flag(gc!.code)} ${countryName(gc!.code, gc!.name)}`)
+      ? `${lit(" GLOBAL TUN ON ")} ${green(`${flag(gc!.code)} ${countryName(gc!.code, gc!.name)}`)}`
       : this.#active
         ? green(`● connected ${flag(this.#active.code)} ${countryName(this.#active.code, this.#active.name)}`)
         : dim("○ disconnected");
@@ -673,10 +674,6 @@ export class Tui {
     const room4status = (process.stdout.columns || 80) - 20; // label 12, gap 2, border 4, slack 2
     const net = this.#net === undefined ? dim("checking…") : this.#net ?? yellow("offline");
     const ip = this.#ip === undefined ? dim("checking…") : this.#ip === null ? yellow("unreachable") : `${bold(this.#ip)}  ${dim(this.#ipNote)}`;
-    const last = this.#settings.autoConnect && this.#countries.find((c) => c.code === loadLastCountry());
-    const auto = !this.#settings.autoConnect
-      ? `${onOff(false)}  ${dim("S to change")}`
-      : `${onOff(true)}  ${dim(last ? `to ${flag(last.code)} ${countryName(last.code, last.name)}` : "to the last country used")}`;
     const account = `${this.#email ?? dim("unknown")}  ${dim("O to log out")}`;
     const headLines = [
       ["account", account],
@@ -684,12 +681,11 @@ export class Tui {
       ["network", net],
       ["ip", ip],
       ["route", route],
-      ["auto connect", auto],
       ["status", fit(status, room4status)],
     ].map(([label, value]) => `${dim(label.padEnd(12))}  ${value}`);
 
     const version = versionLines(true);
-    const room = Math.max(3, (process.stdout.rows || 24) - 22 - version.length);
+    const room = Math.max(3, (process.stdout.rows || 24) - 21 - version.length);
     const { start, slice } = window(this.#sel, this.#countries.length, room);
     const label = (c: Country) => `${flag(c.code)} ${countryName(c.code, c.name)}`;
     const body = slice.map((i) => {
@@ -710,12 +706,18 @@ export class Tui {
 
     const title = bold(cyan("🦊 foxhole-vpn"));
     const key = (k: string, rest: string) => `[${under(k)}${rest}]`;
-    const buttons = [bold(cyan("[⏎ Connect]")), dim(key("G", "lobal TUN")), dim(key("D", "isconnect")), dim(key("R", "efresh")), dim(key("S", "ettings")), dim(key("L", "ogs")), dim(key("Q", "uit"))].join("  ");
+    // Lit while on, each part on its own: the underline's reset would end an outer style
+    const globalBtn = this.#global ? ["[", under("G"), "lobal TUN]"].map(lit).join("") : dim(key("G", "lobal TUN"));
+    // On the connected country, D disconnects (lit like a switch that's on); elsewhere Enter connects
+    const connectBtn = this.#active && this.#countries[this.#sel]?.code === this.#active.code
+      ? ["[", under("D"), "isconnect]"].map(lit).join("")
+      : bold(cyan("[⏎ Connect]"));
+    const buttons = [connectBtn, globalBtn, dim(key("S", "ettings")), dim(key("L", "ogs")), dim(key("Q", "uit"))].join("  ");
     const headW = vw(box(headLines, { title, right: state })[0]);
     const table = grid(["", "Code", "Tier", "Country"], body, {
       caption: bold("Locations"),
       captionRight: dim(range),
-      minWidth: Math.max(headW, vw(buttons)), // the button row is 78 wide: fits an 80-column terminal
+      minWidth: Math.max(headW, vw(buttons), 78), // a steady 78, whichever buttons show: fits an 80-column terminal
     });
     const width = vw(table[0]);
     const frame = [

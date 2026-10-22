@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { join, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import type { Connection } from "./connection.js";
-import { startProxy } from "./proxy.js";
+import { startProxy, type ProxyLogin } from "./proxy.js";
 import { startDnsForwarder, type DnsForwarder } from "./dns.js";
 import { GUARDIAN_HOST, pinGuardian } from "./guardian.js";
 import { publicIp } from "./netinfo.js";
@@ -635,6 +635,7 @@ export interface GlobalOptions {
   host: string;
   port: number;
   force: boolean;
+  login?: (address: string | undefined) => ProxyLogin | null; // what a proxy client must sign in with
 }
 
 /**
@@ -654,7 +655,7 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
 
   const tun2socksPath = await ensureTun2socks();
   // Start the local proxy and prove auth works BEFORE touching the system.
-  const proxy = await startProxy(conn, opts.host, opts.port);
+  const proxy = await startProxy(conn, opts.host, opts.port, opts.login);
   try {
     await conn.currentPass();
   } catch (err) {

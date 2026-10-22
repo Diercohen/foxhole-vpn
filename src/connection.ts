@@ -67,10 +67,10 @@ export class Connection {
     }
   }
 
-  /** Refreshes just the usage figure (cheap). */
+  /** Refreshes just the usage figure (cheap). An answer without it keeps the last one. */
   async refreshUsage(signal?: AbortSignal): Promise<Usage | null> {
     const token = await this.#auth.getAccessToken(signal);
-    this.#usage = await fetchUsage(token, signal);
+    this.#usage = (await fetchUsage(token, signal)) ?? this.#usage;
     return this.#usage;
   }
 }

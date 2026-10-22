@@ -1,9 +1,10 @@
 // Settings file parsing and the LAN address shown for sharing. No network.
 import assert from "node:assert";
-import { parseSettings, proxyHost, validPort, DEFAULTS } from "../dist/settings.js";
+import { parseSettings, proxyHost, validPort, loginFor, DEFAULTS } from "../dist/settings.js";
 import { lanIp } from "../dist/netinfo.js";
 
-assert.deepEqual(parseSettings('{"share":true,"port":8080,"autoConnect":true}'), { share: true, port: 8080, autoConnect: true });
+assert.deepEqual(parseSettings('{"share":true,"port":8080,"username":"fox","password":"pw"}'), { share: true, port: 8080, username: "fox", password: "pw" });
+assert.deepEqual(parseSettings('{"share":true,"autoConnect":false}'), { ...DEFAULTS, share: true }, "the removed auto connect option is dropped");
 assert.deepEqual(parseSettings("not json"), DEFAULTS, "corrupt file: defaults");
 assert.deepEqual(parseSettings("null"), DEFAULTS, "null: defaults");
 assert.deepEqual(parseSettings('{"share":"yes","port":70000}'), DEFAULTS, "bad values dropped");
@@ -11,6 +12,13 @@ assert.deepEqual(parseSettings('{"port":2080}'), { ...DEFAULTS, port: 2080 }, "m
 assert.ok(validPort(1) && validPort(65535) && !validPort(0) && !validPort(65536) && !validPort(80.5) && !validPort("80"));
 assert.equal(proxyHost({ ...DEFAULTS, share: true }), "0.0.0.0");
 assert.equal(proxyHost(DEFAULTS), "127.0.0.1");
+
+// The proxy login is asked only from other devices, and only once one is set.
+const withLogin = { ...DEFAULTS, username: "fox", password: "pw" };
+assert.deepEqual(loginFor(withLogin, "192.168.1.9"), { username: "fox", password: "pw" }, "another device signs in");
+for (const here of ["127.0.0.1", "::1", "::ffff:127.0.0.1", undefined]) assert.equal(loginFor(withLogin, here), null, `this computer doesn't (${here})`);
+assert.equal(loginFor(DEFAULTS, "192.168.1.9"), null, "no login set: open");
+assert.deepEqual(loginFor({ ...DEFAULTS, password: "pw" }, "10.0.0.2"), { username: "", password: "pw" }, "a password alone is a login");
 
 const v4 = (address, internal = false) => ({ family: "IPv4", address, internal });
 assert.equal(
