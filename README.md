@@ -56,9 +56,9 @@ foxhole-vpn:
 | Interactive TUI | ✅ working |
 | Whole-system (TUN) routing | ✅ built + unit-tested (needs sudo; untested live) |
 
-The token exchange (step 2's auth) is a single ~30-line function left as a
-documented stub. Everything else is complete and works the moment it returns a
-token. See [AUTH.md](AUTH.md) for why and exactly what it must do.
+Step 2's VPN token comes straight from your Firefox login: foxhole-vpn signs
+FxA's OAuth token request with the session Firefox keeps in your profile, as
+Firefox does for its own VPN. See [AUTH.md](AUTH.md) for how.
 
 ## Usage
 
@@ -133,11 +133,18 @@ If all three are blocked, grab the binary yourself from
 
 ### Getting a token
 
-Until the token exchange in `AUTH.md` is implemented, foxhole-vpn needs a VPN
-access token from Firefox. You only do this once per token:
+If you're signed in to the Firefox browser, there's nothing to do: on each
+start foxhole-vpn gets a VPN access token from your Firefox login, keeps it in
+memory only, and renews it before it expires (about a day). If you're signed
+out of Firefox, run `foxhole login` first.
+
+If that fails (the Firefox account server can't be reached, or Firefox's login
+has expired), foxhole-vpn falls back to getting a token through Firefox's
+Browser Console. You only do this once per token:
 
 1. Run `foxhole` (or `foxhole proxy` / `foxhole global`) in a terminal. With no
-   usable token it opens a window with the steps and a ready-made snippet.
+   usable token it opens a window with the steps, the reason in red, and a
+   ready-made snippet.
 2. In Firefox, set `devtools.chrome.enabled` to `true` in `about:config`.
 3. Open the **Browser Console** (⌘ ⇧ J on macOS, Ctrl+Shift+J on Linux and Windows — not the
    page's web console), paste the snippet and press Enter.
@@ -146,7 +153,7 @@ The snippet sends the token back to foxhole-vpn, which saves it to
 `~/.config/foxhole-vpn/token` (readable only by you, mode 0600) and uses it on
 every later run, so you don't repeat the steps.
 
-The token lasts about a day. On each start foxhole-vpn checks it; if it has
+A token from the window lasts about a day. On each start foxhole-vpn checks it; if it has
 expired or Mozilla rejects it, the window appears again with a red error and
 the old token is deleted. If it's rejected while the TUI is running, the TUI
 says so in red — quit and start `foxhole` again to get a new one.
@@ -160,7 +167,7 @@ as soon as one arrives. If none arrives within 2 minutes, foxhole exits. Another
 the same machine could still read the terminal and use the secret.
 
 **Using your own token instead:** set `FOXHOLE_ACCESS_TOKEN`. It takes priority
-over the saved token. If it has expired, the window tells you to unset it.
+over the Firefox login and the saved token. If it has expired, the window tells you to unset it.
 
 ```sh
 export FOXHOLE_ACCESS_TOKEN=<an FxA access token with the VPN scope>

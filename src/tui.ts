@@ -5,7 +5,6 @@ import { dirname, join } from "node:path";
 import { userHome, findAccount } from "./profile.js";
 import { fetchServerList, type Country } from "./serverlist.js";
 import { Connection } from "./connection.js";
-import { NotImplementedError } from "./auth.js";
 import { GuardianError } from "./guardian.js";
 import { network, publicIp, lanIp, firewallHint } from "./netinfo.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor, type Settings } from "./settings.js";
@@ -373,9 +372,7 @@ export class Tui {
       this.#message = green("connected");
       this.#refreshUsage();
     } catch (err) {
-      if (err instanceof NotImplementedError) {
-        this.#message = yellow("can't connect: token step not implemented (see AUTH.md)");
-      } else if (err instanceof GuardianError && err.status === 401) {
+      if (err instanceof GuardianError && err.status === 401) {
         forgetToken(); // so the next start shows the token window
         this.#message = red("token rejected (expired) — quit and run foxhole again to get a new one");
       } else {

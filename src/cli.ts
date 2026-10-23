@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fetchServerList } from "./serverlist.js";
 import { findAccount, userHome, type AccountState } from "./profile.js";
-import { FirefoxAuth, StaticAuth, NotImplementedError, type Authenticator } from "./auth.js";
+import { FirefoxAuth, StaticAuth, type Authenticator } from "./auth.js";
 import { Connection, findCountry } from "./connection.js";
 import { fetchEntitlement, GuardianError } from "./guardian.js";
 import { startProxy } from "./proxy.js";
@@ -76,12 +76,13 @@ function noteTokenTtl(): void {
   }
 }
 
-/** Picks an authenticator: the env token if set, else the Firefox session. */
+/** Picks an authenticator: the env token if set, else the Firefox session, else the saved token. */
 function makeAuth(): Authenticator | null {
   const env = tokenEnv();
-  if (env) return new StaticAuth(env.value);
+  if (env?.name === ENV_TOKEN) return new StaticAuth(env.value);
   const account = findAccount();
-  return account?.signedIn ? new FirefoxAuth(account) : null;
+  if (account?.signedIn) return new FirefoxAuth(account);
+  return env ? new StaticAuth(env.value) : null;
 }
 
 function requireAuth(): Authenticator {
@@ -95,25 +96,41 @@ function requireAuth(): Authenticator {
 }
 
 /**
- * Like requireAuth, but when nothing is configured and we have a terminal, show
- * the Firefox token-capture window and wait for the token instead of exiting.
+ * Like requireAuth, but checks the token first, and when none works and we have a
+ * terminal, shows the Firefox token-capture window and waits for one instead of exiting.
  */
 async function ensureAuth(): Promise<Authenticator> {
-  // A Firefox login alone isn't enough: FirefoxAuth can't mint a token yet (AUTH.md).
   const env = tokenEnv();
-  let error: string | null = null;
-  if (env) {
+  const errors: string[] = [];
+  if (env?.name === ENV_TOKEN) {
     const problem = await tokenProblem(env.value);
     if (!problem) return new StaticAuth(env.value);
-    if (env.name === ENV_TOKEN) {
-      error = `${ENV_TOKEN} ${problem}.\nUnset it so the new token below is used next time.`;
-    } else {
-      forgetToken();
-      error = `Your saved token ${problem}.\nGet a new one below.`;
+    errors.push(`${ENV_TOKEN} ${problem}.`, "Unset it so the new token below is used next time.");
+  }
+  // Signed in to Firefox: tokens come from its session and are renewed as they expire.
+  const account = findAccount();
+  if (account?.signedIn) {
+    const auth = new FirefoxAuth(account);
+    try {
+      await auth.getAccessToken(AbortSignal.timeout(15_000)); // fail here, not on the first connect
+      return auth;
+    } catch (err) {
+      errors.push("Couldn't get a token from your Firefox login:", (err as Error).message);
     }
   }
+  // A token saved from the window below, e.g. when the Firefox account server can't be reached.
+  if (env && env.name !== ENV_TOKEN) {
+    const problem = await tokenProblem(env.value);
+    if (!problem) return new StaticAuth(env.value);
+    forgetToken();
+    errors.push(`Your saved token ${problem}.`, "Get a new one below.");
+  }
+  const error = errors.length ? errors.join("\n") : null;
   if (!process.stdin.isTTY) {
-    if (error) console.error(red(error));
+    if (error) {
+      console.error(red(error));
+      process.exit(1);
+    }
     return requireAuth(); // non-interactive: keep the plain error
   }
   const token = await captureToken(error);
@@ -241,12 +258,6 @@ async function captureToken(error: string | null = null): Promise<string | null>
 }
 
 function handleAuthError(err: unknown): never {
-  if (err instanceof NotImplementedError) {
-    console.error(yellow("\nThe VPN token step is not implemented yet."));
-    console.error(dim("foxhole-vpn can read your Firefox login but cannot mint a token."));
-    console.error(dim("See AUTH.md for the one function that needs filling in.\n"));
-    process.exit(2);
-  }
   console.error(red(`\nError: ${(err as Error).message}`));
   offlineHint();
   process.exit(1);
@@ -303,7 +314,10 @@ async function cmdDoctor() {
     console.log(`  Account         : ${account.email ?? dim("unknown")}`);
   }
   const env = tokenEnv();
-  if (env) {
+  const auth = makeAuth();
+  if (auth instanceof FirefoxAuth) {
+    console.log(`  Token source    : ${green("Firefox login")}`);
+  } else if (env) {
     console.log(`  Token source    : ${green(env.name)}`);
   }
   try {
@@ -312,7 +326,6 @@ async function cmdDoctor() {
   } catch (err) {
     console.log(`  Server list     : ${red((err as Error).message)}`);
   }
-  const auth = makeAuth();
   if (!auth) {
     console.log(`  VPN token       : ${dim("no auth — sign in or set FOXHOLE_ACCESS_TOKEN")}`);
   } else {
@@ -327,11 +340,7 @@ async function cmdDoctor() {
         console.log(`  Data remaining  : ${green(`${gb(usage.remaining)} of ${gb(usage.max)}`)}`);
       }
     } catch (err) {
-      if (err instanceof NotImplementedError) {
-        console.log(`  VPN token       : ${yellow("not implemented (see AUTH.md)")}`);
-      } else {
-        console.log(`  VPN token       : ${red((err as Error).message)}`);
-      }
+      console.log(`  VPN token       : ${red((err as Error).message)}`);
     }
   }
   console.log();
@@ -414,7 +423,8 @@ async function cmdLogin() {
 }
 
 async function cmdProxy() {
-  const conn = new Connection(await ensureAuth());
+  const auth = await ensureAuth();
+  const conn = new Connection(auth);
   const code = arg("country");
   const country = code ? await findCountry(code) : null;
   if (code && !country) {
@@ -422,7 +432,7 @@ async function cmdProxy() {
     process.exit(1);
   }
   const server = await conn.selectServer(country);
-  noteTokenTtl();
+  if (auth instanceof StaticAuth) noteTokenTtl();
   const where = country ? `${flag(country.code)} ${countryName(country.code, country.name)}` : "recommended";
   const settings = loadSettings();
   useSplit(() => settings.split); // the rules set in the TUI's Split tunneling popup

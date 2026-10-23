@@ -1,70 +1,62 @@
-# The one unimplemented piece: `FirefoxAuth.#exchangeForVpnToken`
+# How foxhole-vpn gets a VPN token: `FirefoxAuth` in `src/auth.ts`
 
-`src/auth.ts` can read your Firefox session token but does **not** turn it into a
-VPN access token. That single function is the only thing between foxhole-vpn and a
-working connection. This document is its spec.
+Guardian (`guardian.ts`) wants an FxA OAuth **access token** with the scopes in
+`VPN_SCOPES` (`profile https://identity.mozilla.com/apps/vpn`), sent as
+`Authorization: Bearer <token>`. foxhole-vpn mints one from your Firefox login,
+the same way Firefox does for its own VPN.
 
-## Contract
+## 1. The session token
 
-```ts
-#exchangeForVpnToken(sessionToken: string /* hex */): Promise<string /* access_token */>
-```
+Firefox keeps its account login in `signedInUser.json` in the profile
+(`profile.ts` finds the profile in use). `accountData.sessionToken` is 32 bytes
+in hex. It never leaves your computer: only keys derived from it are used.
 
-- **Input:** the hex `sessionToken` from `signedInUser.json` (already loaded).
-- **Output:** an FxA OAuth **access token** string whose scope is
-  `VPN_SCOPES` (`profile https://identity.mozilla.com/apps/vpn`).
-- `guardian.ts` sends that token as `Authorization: Bearer <token>`.
-
-## The HTTP call (public FxA OAuth)
-
-Firefox performs an FxA **`fxa-credentials`** OAuth grant:
+## 2. The request
 
 ```
 POST https://api.accounts.firefox.com/v1/oauth/token
 Content-Type: application/json
-Authorization: <session-token auth, see below>
+Authorization: Hawk id="…", ts="…", nonce="…", hash="…", mac="…"
 
 {
   "client_id": "5882386c6d801776",            // Firefox desktop's public FxA client id
   "grant_type": "fxa-credentials",
   "scope": "profile https://identity.mozilla.com/apps/vpn",
-  "ttl": 300
+  "ttl": 86400                                // a day, as Firefox asks for
 }
 ```
 
-The response contains `{ "access_token": "..." }` — that is the return value.
+The answer's `access_token` (a JWT) is the token; `expires_in` says how long it lasts.
 
-## Authenticating the request with the session token
+## 3. Signing it with the session token
 
-The POST is authenticated **by the session token**, not a password. There are
-two accepted modes; implement whichever you prefer:
+The request is signed with [HAWK](https://github.com/mozilla/hawk), using
+credentials derived by FxA's [onepw](https://github.com/mozilla/fxa-auth-server/wiki/onepw-protocol)
+scheme (`sessionCredentials`):
 
-1. **Typed Bearer** (Firefox ≥ ~155, simplest): derive the token id and send
-   `Authorization: Bearer fxs_<tokenId>`. No request signing.
-2. **Legacy HAWK**: sign the request with HAWK credentials derived from the
-   session token.
+- `HKDF-SHA256(sessionToken, salt = empty, info = "identity.mozilla.com/picl/v1/sessionToken", 64 bytes)`
+- the first 32 bytes, in hex, are the HAWK `id` (the token id);
+- the last 32 bytes are the HMAC key.
 
-Both derive their key material from the session token using Mozilla's
-**onepw / "picl"** key-derivation scheme (an HKDF with a fixed context string).
-That derivation is documented here — do not guess it, follow the spec:
+`test/auth.test.mjs` checks this against the onepw spec's test vector.
 
-- onepw protocol (key derivation, `KW`/context strings):
-  <https://github.com/mozilla/fxa-auth-server/wiki/onepw-protocol>
-- FxA OAuth, `fxa-credentials` grant & PKCE:
-  <https://mozilla.github.io/ecosystem-platform/reference/oauth-details>
-- Typed Bearer token scheme (`fxs_`, `fxk_` prefixes):
-  <https://mozilla.github.io/ecosystem-platform/reference/tokens>
+## Behavior
 
-Node has everything needed in `node:crypto` (`hkdf`, `createHmac`) — **no new
-dependency**. Keep the token in memory only; never log it or write it to disk.
+- The token stays in memory, is never logged or written to disk, and is reused
+  until 5 minutes before it expires, then renewed.
+- If the computer's clock is off, FxA answers errno 111 with its own time and
+  the request is retried once on that time.
+- errno 110 means Firefox's login is no longer valid: sign in to Firefox again
+  (`foxhole login`).
+- If minting fails at startup, foxhole-vpn falls back to a token saved from the
+  Browser Console window (`tokenserver.ts`), then to showing that window.
 
-## Verifying it works
-
-Once implemented:
+## Checking it
 
 ```
 npm run build && node dist/cli.js doctor
 ```
 
-`doctor` prints your remaining data (e.g. `31.2 / 50 GB, resets Nov 1`). If you
-see that, the whole chain (login → token → Guardian → quota) works.
+`doctor` shows `Token source : Firefox login` and your remaining data (e.g.
+`40.9 GB of 50 GB`). If you see that, the whole chain (login → token →
+Guardian → quota) works.
