@@ -97,7 +97,8 @@ function requireAuth(): Authenticator {
 
 /**
  * Like requireAuth, but checks the token first, and when none works and we have a
- * terminal, shows the Firefox token-capture window and waits for one instead of exiting.
+ * terminal, waits for one instead of exiting: signed out, for the Firefox sign-in;
+ * signed in, from the Browser Console window.
  */
 async function ensureAuth(): Promise<Authenticator> {
   const env = tokenEnv();
@@ -125,13 +126,19 @@ async function ensureAuth(): Promise<Authenticator> {
     forgetToken();
     errors.push(`Your saved token ${problem}.`, "Get a new one below.");
   }
-  const error = errors.length ? errors.join("\n") : null;
+  const error = errors.join("\n");
   if (!process.stdin.isTTY) {
     if (error) {
       console.error(red(error));
       process.exit(1);
     }
     return requireAuth(); // non-interactive: keep the plain error
+  }
+  if (!account?.signedIn) {
+    // Signed out: the sign-in is all it takes, as the token then comes from that login.
+    if (error) console.log(red(error));
+    if (!(await cmdLogin())) process.exit(130); // cancelled: the app can't connect without a token
+    return ensureAuth(); // signed in now
   }
   const token = await captureToken(error);
   if (!token) process.exit(130); // cancelled or timed out: the app can't connect without a token
@@ -173,24 +180,23 @@ function cancelKeys(): { cancelled: Promise<null>; stop: () => void } {
  * Browser Console, which posts the VPN token straight back. Returns the token,
  * or null if the user cancels (Ctrl+C) or the wait times out.
  */
-async function captureToken(error: string | null = null): Promise<string | null> {
+async function captureToken(error: string): Promise<string | null> {
   // Mouse reports off, in case an earlier run was killed with them on: the user
   // must be able to select and copy the snippet.
   process.stdout.write("\x1b[?1000l\x1b[?1006l");
   const rec = await startTokenReceiver();
   const copied = await copyText(rec.snippet);
-  // the snippet reads the token from Firefox's own VPN login, so it fails when signed out
-  const account = findAccount();
-  const signedOut = !account?.signedIn;
-  const email = !signedOut && account?.email ? account.email : null;
-  const status = signedOut ? bold(red("⚠ You MUST sign in to Firefox first!")) : bold(green("✓ You are signed in to Firefox"));
+  // only shown when signed in (signed out, ensureAuth asks for the sign-in instead)
+  const email = findAccount()?.email ?? null;
+  const status = bold(green("✓ You are signed in to Firefox"));
   const steps = [
     // one box line per sentence, so the window stays narrow enough for an 80-column terminal
     status,
-    ...(signedOut ? [`Run ${bold("foxhole login")}, sign in, then do the steps below.`] : email ? [email] : []),
+    ...(email ? [email] : []),
     "",
-    ...(error ? [...error.split("\n").map((l, i) => red(`${i ? " " : "✗"} ${l}`)), ""] : []),
-    bold(error ? "Let's grab a new token from Firefox." : "No VPN token yet — let's grab one from Firefox."),
+    ...error.split("\n").map((l, i) => red(`${i ? " " : "✗"} ${l}`)),
+    "",
+    bold("Let's grab a new token from Firefox."),
     "",
     `${bold("1.")} In Firefox open ${cyan("about:config")} and set`,
     `   ${cyan("devtools.chrome.enabled")} to ${bold("true")}. ${dim("(first time only)")}`,
@@ -227,27 +233,12 @@ async function captureToken(error: string | null = null): Promise<string | null>
     dim(`Waiting for the token from Firefox (up to 2 minutes) · press ${under("q")} or ${under("Ctrl+C")} to cancel`),
   ];
   process.stdout.write("\n" + out.join("\n") + "\n");
-  // Many terminals (Alacritty, kitty) ignore SGR 5 blink, so redraw the warning's box row
-  // ourselves: it's row 1, `up` rows above the cursor. Only when nothing wrapped or
-  // scrolled it off screen, or the cursor jump would land on the wrong row.
-  // shortcut: a resize while waiting can misplace the redraw, fine for a 2-minute prompt.
-  const up = out.length - 1;
-  const fits = up < (process.stdout.rows ?? 0) && out.every((l) => vw(l) <= (process.stdout.columns ?? 0));
-  const rows = [boxed[1], box([" ".repeat(vw(steps[0])), ...steps.slice(1)], { title })[1]];
-  let shown = true;
-  const blinker = signedOut && fits
-    ? setInterval(() => process.stdout.write(`\x1b7\x1b[${up}A\r${rows[(shown = !shown) ? 0 : 1]}\x1b8`), 500)
-    : undefined;
 
   const keys = cancelKeys();
   const timedOut = Symbol();
   const token = await Promise.race([rec.token.catch(() => timedOut), keys.cancelled]);
   keys.stop();
   rec.close();
-  if (blinker) {
-    clearInterval(blinker);
-    process.stdout.write(`\x1b7\x1b[${up}A\r${rows[0]}\x1b8`); // leave the warning showing
-  }
   if (typeof token === "string") {
     console.log(green("✓ token received — saved for next time."));
     return token;
@@ -347,8 +338,16 @@ async function cmdDoctor() {
 }
 
 function openBrowser(url: string) {
+  // Under sudo it would start root's own Firefox, with root's profile, not the user's.
+  if (process.getuid?.() === 0 && process.env.SUDO_USER) return;
   if (process.platform === "darwin") {
-    spawn("open", ["-a", "Firefox", url], { detached: true, stdio: "ignore" }).unref();
+    // Firefox itself, as `open` hands it the # escaped (about:preferences%23sync); a running
+    // Firefox takes the URL from it. Elsewhere than an Applications folder: just bring it up.
+    const firefox = ["/Applications", join(userHome(), "Applications")]
+      .map((dir) => join(dir, "Firefox.app/Contents/MacOS/firefox"))
+      .find((p) => existsSync(p));
+    const [cmd, ...args] = firefox ? [firefox, url] : ["open", "-a", "Firefox"];
+    spawn(cmd, args, { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
     return;
   }
   if (process.platform === "win32") {
@@ -373,11 +372,12 @@ function openBrowser(url: string) {
   spawn(cmd, [...args, url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
 }
 
-async function cmdLogin() {
+/** Opens the browser's own sign-in and waits for it. The signed-in account, or undefined if not. */
+async function cmdLogin(): Promise<AccountState | undefined> {
   const account = findAccount();
   if (account?.signedIn) {
     console.log(green(`Already signed in to Firefox as ${account.email ?? "your account"}.`));
-    return;
+    return account;
   }
   // The browser itself must be signed in (that's what its VPN uses); signing in on
   // accounts.firefox.com only signs in the website, so open the browser's own sign-in page.
@@ -420,6 +420,7 @@ async function cmdLogin() {
     process.exit(1);
   }
   console.log(green(`✓ Firefox is signed in as ${result.email ?? "your account"}.`));
+  return result;
 }
 
 async function cmdProxy() {

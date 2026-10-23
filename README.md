@@ -136,10 +136,11 @@ If all three are blocked, grab the binary yourself from
 If you're signed in to the Firefox browser, there's nothing to do: on each
 start foxhole-vpn gets a VPN access token from your Firefox login, keeps it in
 memory only, and renews it before it expires (about a day). If you're signed
-out of Firefox, run `foxhole login` first.
+out, it opens Firefox's sign-in page and carries on as soon as you've signed in
+(`foxhole login` does the same on its own).
 
-If that fails (the Firefox account server can't be reached, or Firefox's login
-has expired), foxhole-vpn falls back to getting a token through Firefox's
+If you're signed in but that still fails (e.g. the Firefox account server can't
+be reached), foxhole-vpn falls back to getting a token through Firefox's
 Browser Console. You only do this once per token:
 
 1. Run `foxhole` (or `foxhole proxy` / `foxhole global`) in a terminal. With no
