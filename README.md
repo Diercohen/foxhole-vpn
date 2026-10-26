@@ -19,6 +19,7 @@ npm install -g foxhole-vpn && foxhole
 On **Ubuntu 24.04** the system's own Node.js is enough:
 `sudo apt install nodejs npm`, then `sudo npm install -g foxhole-vpn`.
 Ubuntu 22.04's is too old; `sudo snap install node --classic` gives a current one.
+Rather not install it? Run it [in a sandbox (Docker)](#in-a-sandbox-docker).
 
 > Unofficial. Not affiliated with Mozilla. Routing all your system traffic
 > through Firefox's VPN is probably outside Mozilla's intended use; your account
@@ -59,6 +60,96 @@ foxhole-vpn:
 Step 2's VPN token comes straight from your Firefox login: foxhole-vpn signs
 FxA's OAuth token request with the session Firefox keeps in your profile, as
 Firefox does for its own VPN. See [AUTH.md](AUTH.md) for how.
+
+## In a sandbox (Docker)
+
+To run foxhole-vpn without installing it or Node on your computer, run it in a
+container. Of your files it sees only your Firefox login (`signedInUser.json`,
+read-only), not the rest of your Firefox profile (passwords, cookies, history)
+or your home folder, plus a volume for its own settings. You need Docker. Build
+the image once. Docker fetches this repository from GitHub itself, so there's
+nothing to clone (add `#` and a branch, tag or commit to the URL to build that
+one, as in `foxhole-vpn.git#main`; in a clone, use `.` in place of the URL to
+build your copy):
+
+```sh
+docker build -t foxhole-sandbox -f sandbox/Dockerfile https://github.com/Diercohen/foxhole-vpn.git
+```
+
+Sign in to the Firefox browser on your computer first: the container can't open
+Firefox for you. Then run it one of two ways, below. In both, the first line
+finds your Firefox login (the most recently changed profile that's signed in),
+and options after the image name go to foxhole: `foxhole-sandbox doctor`,
+`foxhole-sandbox global --country US`.
+
+**Global mode and split tunneling for your whole computer** (Linux): foxhole
+runs in your computer's own network, so global mode's tun, its routes, DNS and
+its IPv6 and UDP blocks go on your computer, as they do outside Docker, and the
+TUI's **`g`** and **`t`** work as described under [Usage](#usage) (`g` asks for
+no password: foxhole is root in the container).
+
+```sh
+f=$(find ~/.mozilla ~/.config/mozilla ~/snap/firefox/common/.mozilla ~/.var/app/org.mozilla.firefox/.mozilla -name signedInUser.json -exec grep -q sessionToken {} ';' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-) &&
+docker run -it --rm --init --network host --cap-add NET_ADMIN --device /dev/net/tun \
+  -v /run/dbus/system_bus_socket:/run/dbus/system_bus_socket \
+  -v "${f:?sign in to Firefox first}:/root/.mozilla/firefox/sandbox.default/signedInUser.json:ro" \
+  -v foxhole-config:/root/.config/foxhole-vpn \
+  foxhole-sandbox
+```
+
+- `--network host` puts foxhole in your computer's network, `--cap-add NET_ADMIN`
+  and `/dev/net/tun` let it create the tun and change routes and firewall rules
+  there (no `--privileged`: it gets no other devices and no disks). The D-Bus
+  socket lets it point your computer's systemd-resolved at its DNS-over-HTTPS
+  relay, so lookups stay in the tunnel. It's required: without it, global mode
+  can't set your computer's DNS, and lookups fail.
+- That D-Bus socket, as root, can also ask your computer's system services
+  (systemd among them) to do things, which comes close to root on your computer.
+  So in this mode the sandbox spares you installing foxhole and runs the
+  published code, but it isn't a security boundary. If that matters to you, use
+  proxy only, below.
+- It needs Docker Engine (`docker` itself) with systemd-resolved on the computer
+  (Ubuntu, Fedora, Arch with resolved…). Docker Desktop (on macOS and Windows,
+  and Docker Desktop for Linux) keeps containers in a VM of its own, so global
+  mode there would route that VM, not your computer. Rootless Docker and Podman
+  can't change your computer's routes either.
+- The container shares your computer's ports: if foxhole is already running on
+  your computer, stop it, or pick another port (**`s`** for Settings in the TUI,
+  or `--port 1081`).
+- Quitting the TUI, Ctrl+C or `docker stop` restore your networking. If the
+  container is killed (`docker kill`, a crash), your computer stays online, but
+  IPv6 is still blocked and some routes and rules are left: run the same command
+  with `restore` after the image name to remove them.
+
+**Proxy only** (Linux, macOS, Windows): the safest way, with no access to your
+computer's networking. The proxy is on `127.0.0.1:1080` as usual (SOCKS5 and
+HTTP); only apps you point at it use the VPN. Global mode (**`g`**) doesn't work
+in this one: it needs the command above.
+
+```sh
+f=$(find ~/.mozilla ~/.config/mozilla ~/snap/firefox/common/.mozilla ~/.var/app/org.mozilla.firefox/.mozilla -name signedInUser.json -exec grep -q sessionToken {} ';' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-) &&
+docker run -it --rm --init -p 127.0.0.1:1080:1080 \
+  -v "${f:?sign in to Firefox first}:/root/.mozilla/firefox/sandbox.default/signedInUser.json:ro" \
+  -v foxhole-config:/root/.config/foxhole-vpn \
+  foxhole-sandbox proxy --host 0.0.0.0
+```
+
+That `f=` line is for Linux. On macOS, the login is under
+`~/Library/Application Support/Firefox/Profiles/*/signedInUser.json`; on Windows,
+under `%APPDATA%\Mozilla\Firefox\Profiles\*\signedInUser.json`. Put that file's
+path in place of `${f:?…}`. `--host 0.0.0.0` is needed: inside the container,
+the proxy must listen where Docker's published port reaches it; the `-p
+127.0.0.1:…` keeps it on your computer only.
+
+For either way:
+
+- Where Docker Hub refuses (Iran), take the base image from a mirror:
+  `docker build --build-arg BASE=registry.docker.ir/library/node:22-bookworm-slim -t foxhole-sandbox -f sandbox/Dockerfile https://github.com/Diercohen/foxhole-vpn.git`
+- If you sign in to Firefox again while it runs, restart the container: it keeps
+  seeing the login file it started with.
+- Updating from inside doesn't last, since each run starts fresh from the image:
+  run the build command again instead, for the latest foxhole-vpn and tun2socks.
+- To remove everything: `docker rmi foxhole-sandbox` and `docker volume rm foxhole-config`.
 
 ## Usage
 

@@ -573,12 +573,20 @@ export class GlobalSession {
     // shell's stdin, and the shell undoes the session as `foxhole restore` would.
     this.#guard = priv.spawn(["sh", "-c", `cat >/dev/null; ${staleCleanupScript(orig)}`], true);
 
+    if (!existsSync("/dev/net/tun")) {
+      throw new Error(
+        existsSync("/.dockerenv")
+          ? "this container can't route your computer: start it with the global-mode command (README: In a sandbox)"
+          : "no /dev/net/tun: load the tun module (sudo modprobe tun)",
+      );
+    }
     // tun2socks creates the tun itself: however it ends (a crash, the terminal closed), the device
     // and its routes go with it, never a dead default route that keeps the computer offline.
-    this.#t2s = priv.spawn([this.#o.tun2socksPath, "--device", TUN, "--proxy", `socks5://${this.#o.proxyHost}:${this.#o.proxyPort}`]);
-    this.#t2s.on("exit", (code, signal) => this.#exitCb?.(code ?? signal)); // a signal when killed: no code
+    const t2s = (this.#t2s = priv.spawn([this.#o.tun2socksPath, "--device", TUN, "--proxy", `socks5://${this.#o.proxyHost}:${this.#o.proxyPort}`]));
+    t2s.on("exit", (code, signal) => this.#exitCb?.(code ?? signal)); // a signal when killed: no code
     for (let tries = 0; !(await exec("ip", ["link", "show", TUN]).then(() => true, () => false)); tries++) {
-      if (tries >= 50 || this.#t2s.exitCode !== null) throw new Error(`tun2socks didn't create ${TUN}`);
+      // t2s, not this.#t2s: its exit callback may already have stopped the session, which clears that
+      if (tries >= 50 || t2s.exitCode !== null) throw new Error(`tun2socks didn't create ${TUN}`);
       await new Promise((r) => setTimeout(r, 100));
     }
     for (const step of planSetup(pinned, orig)) await priv.run(step);

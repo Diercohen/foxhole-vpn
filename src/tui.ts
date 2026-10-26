@@ -412,9 +412,10 @@ export class Tui {
       await this.#connect();
       if (!this.#active) return; // connect failed; message already set
     }
+    // Already root (e.g. in the Docker sandbox, which has no sudo) or Administrator: nothing to ask
+    if (await isPrivileged()) return void this.#enableGlobal(null);
     if (process.platform === "win32") {
       // Windows has no sudo to ask: the whole app must already run as Administrator.
-      if (await isPrivileged()) return void this.#enableGlobal(null);
       this.#message = yellow("global needs Administrator rights — quit, then run foxhole in Terminal (Admin)");
       return void this.#render();
     }
@@ -472,7 +473,7 @@ export class Tui {
     void this.#enableGlobal(pw);
   }
 
-  /** password: for sudo; null when already privileged (Windows, elevated). */
+  /** password: for sudo; null when already privileged (root, or elevated on Windows). */
   async #enableGlobal(password: string | null): Promise<void> {
     const server = this.#conn.server;
     if (!server || !this.#proxy) return;
