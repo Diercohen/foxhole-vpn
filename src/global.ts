@@ -4,6 +4,7 @@ import http from "node:http";
 import https from "node:https";
 import tls from "node:tls";
 import type { Socket } from "node:net";
+import type { IncomingMessage } from "node:http";
 import { promisify } from "node:util";
 import { lookup } from "node:dns/promises";
 import {
@@ -185,41 +186,47 @@ export interface DownloadVia {
   say?: (msg: string) => void; // progress for the TUI's status line; without it the CLI prints one line
 }
 
-/** GETs `url` over https, following redirects, through `proxy`'s HTTP CONNECT when given. */
-function get(url: string, proxy: DownloadVia["proxy"], onData: (got: number, total: number) => void, hops = 5): Promise<Buffer> {
+/** GETs `url` over https through `proxy`'s HTTP CONNECT when given; resolves with the response, redirects not followed. */
+export function httpsGet(url: string, proxy?: DownloadVia["proxy"], headers: Record<string, string> = {}): Promise<IncomingMessage> {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const request = (socket?: Socket) => {
       // No `agent` option: with one (even `false`), Node ignores createConnection and dials directly. Without
       // an agent it can't tell https's port either, so say it, or the Host header gets ":80" (a redirect loop).
-      const opts = { timeout: 30_000, defaultPort: 443, ...(socket && { createConnection: () => tls.connect({ socket, servername: u.hostname }) }) };
-      const req = https.get(u, opts, (res) => {
-        const { statusCode = 0, headers } = res;
-        if (statusCode >= 300 && statusCode < 400 && headers.location && hops > 0) {
-          res.resume();
-          return void get(new URL(headers.location, u).href, proxy, onData, hops - 1).then(resolve, reject);
-        }
-        if (statusCode !== 200) {
-          res.resume();
-          return reject(new Error(`HTTP ${statusCode}`));
-        }
-        const total = Number(headers["content-length"]) || 0;
-        const chunks: Buffer[] = [];
-        let got = 0;
-        res.on("data", (c: Buffer) => (chunks.push(c), onData((got += c.length), total)));
-        res.on("end", () => resolve(Buffer.concat(chunks)));
-        res.on("error", reject);
-      });
+      const opts = { timeout: 30_000, defaultPort: 443, headers, ...(socket && { createConnection: () => tls.connect({ socket, servername: u.hostname }) }) };
+      const req = https.get(u, opts, resolve);
       req.on("timeout", () => req.destroy(new Error("timed out"))).on("error", reject); // idle 30 s: a stalled download fails
     };
     if (!proxy) return request();
-    const tunnel = http.request({ host: proxy.host, port: proxy.port, method: "CONNECT", path: `${u.hostname}:443`, timeout: 30_000 });
+    const tunnel = http.request({ host: proxy.host, port: proxy.port, method: "CONNECT", path: `${u.hostname}:${u.port || 443}`, timeout: 30_000 });
     tunnel.on("connect", (res, socket) => {
       if (res.statusCode === 200) return request(socket);
       socket.destroy();
       reject(new Error(`proxy answered ${res.statusCode}`));
     });
     tunnel.on("timeout", () => tunnel.destroy(new Error("timed out"))).on("error", reject).end();
+  });
+}
+
+/** GETs `url` into memory, following redirects. */
+async function get(url: string, proxy: DownloadVia["proxy"], onData: (got: number, total: number) => void, hops = 5): Promise<Buffer> {
+  const res = await httpsGet(url, proxy);
+  const { statusCode = 0, headers } = res;
+  if (statusCode >= 300 && statusCode < 400 && headers.location && hops > 0) {
+    res.resume();
+    return get(new URL(headers.location, url).href, proxy, onData, hops - 1);
+  }
+  if (statusCode !== 200) {
+    res.resume();
+    throw new Error(`HTTP ${statusCode}`);
+  }
+  const total = Number(headers["content-length"]) || 0;
+  const chunks: Buffer[] = [];
+  let got = 0;
+  return new Promise((resolve, reject) => {
+    res.on("data", (c: Buffer) => (chunks.push(c), onData((got += c.length), total)));
+    res.on("end", () => resolve(Buffer.concat(chunks)));
+    res.on("error", reject);
   });
 }
 
@@ -472,7 +479,7 @@ export function sudoPriv(password: string): Priv {
       // stderr goes to the in-app log (the TUI's Logs popup), not the terminal: it would
       // corrupt the screen. Always read, so a chatty child never blocks on a full pipe.
       const p = spawn("sudo", ["-S", "-p", "", ...argv], { stdio: ["pipe", "ignore", "pipe"], ...SUDO_SESSION });
-      logStream(argv[0].endsWith("node") ? "dns relay" : basename(argv[0]), p.stderr!);
+      logStream(argv.includes("--input-type=module") ? "dns relay" : basename(argv[0]), p.stderr!);
       if (lifeline) p.stdin!.write(password && password + "\n");
       else feed(p);
       return p;

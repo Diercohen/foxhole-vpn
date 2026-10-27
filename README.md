@@ -19,7 +19,8 @@ npm install -g foxhole-vpn && foxhole
 On **Ubuntu 24.04** the system's own Node.js is enough:
 `sudo apt install nodejs npm`, then `sudo npm install -g foxhole-vpn`.
 Ubuntu 22.04's is too old; `sudo snap install node --classic` gives a current one.
-Rather not install it? Run it [in a sandbox (Docker)](#in-a-sandbox-docker).
+Rather not install it? Run it [in a sandbox (Docker)](#in-a-sandbox-docker), or
+use the [desktop app](#desktop-app), which needs no Node.js at all.
 
 > Unofficial. Not affiliated with Mozilla. Routing all your system traffic
 > through Firefox's VPN is probably outside Mozilla's intended use; your account
@@ -60,6 +61,67 @@ foxhole-vpn:
 Step 2's VPN token comes straight from your Firefox login: foxhole-vpn signs
 FxA's OAuth token request with the session Firefox keeps in your profile, as
 Firefox does for its own VPN. See [AUTH.md](AUTH.md) for how.
+
+## Desktop app
+
+The same foxhole-vpn in a window (`gui/`, Electron): the countries, a power
+button, **Whole system** mode (it asks for your password, or Touch ID, in the
+app, as the TUI does), split tunneling, settings, sharing with your phone and
+the logs. It carries its own Node.js, so whoever downloads it installs nothing
+else. It keeps its settings, saved token and last country where the TUI does
+(`~/.config/foxhole-vpn`); don't run both at once, as they'd want the same port.
+
+Download it from the [latest release](https://github.com/Diercohen/foxhole-vpn/releases/latest):
+
+- **Mac:** `Foxhole-<version>-arm64.dmg` if it has an Apple chip (M1 or later;
+  **Apple menu → About This Mac**), `Foxhole-<version>-x64.dmg` if it's an Intel
+  Mac. Either needs macOS 13 or later.
+- **Windows:** the `.exe` installer.
+- **Linux:** the `.deb` (Ubuntu, Debian) or the `.AppImage`.
+
+The builds aren't signed by Apple or Microsoft: macOS asks you to allow the app
+once (**System Settings → Privacy & Security → Open Anyway**), and Windows
+SmartScreen once (**More info → Run anyway**). On Windows, whole-system mode
+needs the app started with **Run as administrator**. On Linux, prefer the
+`.deb`: Ubuntu 24.04 and later keep Electron AppImages from starting unless they
+get `--no-sandbox`.
+
+Its tray icon (in the menu bar, on macOS) shows whether you're connected, and
+where, and connects, disconnects, switches location or turns whole-system mode
+on without the window. Closing the window leaves Foxhole running there: quit it
+from the tray (or ⌘Q), which first puts the routes and DNS back if whole-system
+mode is on.
+
+It keeps itself up to date. A minute after it starts, then every 6 hours, it
+looks for a newer release on GitHub. On a Mac it downloads that one in the
+background (through the VPN once connected), then shows **Restart to update**.
+Click it, or do nothing: the new version goes in the next time Foxhole quits.
+That needs Foxhole in a folder it can write to, such as Applications. A copy
+opened straight from the disk image, and the app on Windows and Linux, only say
+there's a new version and link to its download.
+
+To build it from a checkout (Node.js 22.12 or newer, for Electron's installer):
+
+```sh
+npm install                  # the core's TypeScript toolchain
+cd gui && npm install        # Electron and electron-builder
+npm start                    # run it from here
+npm run dist                 # an installer for this OS in gui/release: .dmg, .exe (NSIS), .deb and .AppImage
+```
+
+Where GitHub is slow or blocked, `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`
+in front of those commands fetches Electron from a mirror. `npm run dist` fetches
+Electron (about 130 MB for each architecture) again on every build: on a slow
+connection, keep the zips it needs (`electron-v44.7.0-darwin-arm64.zip` and so on)
+in a folder and build with `npx electron-builder -c.electronDist=<that folder>`.
+
+To publish a version, push a tag: `git tag v0.5.2 && git push origin v0.5.2`.
+GitHub then builds the Mac, Windows and Linux apps, versioned after the tag
+(`.github/workflows/release.yml`), and puts them in a draft release. Check it on
+the Releases page and click **Publish release**: everyone can download it from
+there, and installed Mac apps update to it within 6 hours. Your own builds work
+too: `gh release create v0.5.2 gui/release/*.dmg`. A release without the disk
+images (the CLI's alone) changes nothing for the Mac app.
 
 ## In a sandbox (Docker)
 

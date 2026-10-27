@@ -15,6 +15,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, chownSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { VPN_SCOPES } from "./auth.js";
+import { fetchEntitlement, GuardianError } from "./guardian.js";
 import { userHome } from "./profile.js";
 
 const MAX_BODY = 8192; // a token is ~1 KB; anything larger isn't ours
@@ -62,6 +63,31 @@ export function validToken(s: unknown): s is string {
   } catch {
     return false;
   }
+}
+
+/** Seconds until a JWT's `exp`, or null if it can't be read. */
+export function tokenTtl(jwt: string): number | null {
+  const parts = jwt.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const body = JSON.parse(Buffer.from(parts[1], "base64url").toString()) as { exp?: number };
+    return typeof body.exp === "number" ? Math.round(body.exp - Date.now() / 1000) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Why a token can't be used ("has expired", "was rejected…"), or null if it looks fine. */
+export async function tokenProblem(token: string): Promise<string | null> {
+  const ttl = tokenTtl(token);
+  if (ttl !== null && ttl <= 0) return "has expired";
+  try {
+    await fetchEntitlement(token, AbortSignal.timeout(8000));
+  } catch (err) {
+    // Only a 401 means the token is bad; offline or a slow server shouldn't block startup.
+    if (err instanceof GuardianError && err.status === 401) return "was rejected by Mozilla (expired or revoked)";
+  }
+  return null;
 }
 
 /** The Browser Console snippet that mints the VPN token and posts it to `url`. */

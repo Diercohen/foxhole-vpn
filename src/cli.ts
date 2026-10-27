@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 import net from "node:net";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { fetchServerList } from "./serverlist.js";
-import { findAccount, userHome, type AccountState } from "./profile.js";
+import { findAccount, openBrowser, type AccountState } from "./profile.js";
 import { FirefoxAuth, StaticAuth, type Authenticator } from "./auth.js";
 import { Connection, findCountry } from "./connection.js";
-import { fetchEntitlement, GuardianError } from "./guardian.js";
+import { fetchEntitlement } from "./guardian.js";
 import { startProxy } from "./proxy.js";
 import { firewallHint, lanIp } from "./netinfo.js";
 import { useSplit, splitSummary, type Split } from "./split.js";
@@ -16,7 +15,7 @@ import { loadSettings, proxyHost, loginFor } from "./settings.js";
 import { restoreWindows } from "./global-win32.js";
 import { Tui } from "./tui.js";
 import { checkUpdate, updateNotice, versionLines } from "./update.js";
-import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenFile } from "./tokenserver.js";
+import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenFile, tokenTtl, tokenProblem } from "./tokenserver.js";
 import { bold, dim, green, red, yellow, cyan, under, code, flag, countryName, gb, shortDate, box, vw, centerIn, copyText } from "./ui.js";
 
 // Node gives each server address only 250 ms before moving on; far VPN servers
@@ -28,18 +27,6 @@ function arg(name: string): string | undefined {
   return i !== -1 ? process.argv[i + 1] : undefined;
 }
 
-/** Seconds until a JWT's `exp`, or null if it can't be read. */
-function tokenTtl(jwt: string): number | null {
-  const parts = jwt.split(".");
-  if (parts.length !== 3) return null;
-  try {
-    const body = JSON.parse(Buffer.from(parts[1], "base64url").toString()) as { exp?: number };
-    return typeof body.exp === "number" ? Math.round(body.exp - Date.now() / 1000) : null;
-  } catch {
-    return null;
-  }
-}
-
 const ENV_TOKEN = "FOXHOLE_ACCESS_TOKEN";
 
 /** The access token to use: the env var if set, else the one saved from Firefox. */
@@ -48,19 +35,6 @@ function tokenEnv(): { name: string; value: string } | null {
   if (value) return { name: ENV_TOKEN, value };
   const saved = loadSavedToken();
   return saved ? { name: "saved token", value: saved } : null;
-}
-
-/** Why a token can't be used ("has expired", "was rejected…"), or null if it looks fine. */
-async function tokenProblem(token: string): Promise<string | null> {
-  const ttl = tokenTtl(token);
-  if (ttl !== null && ttl <= 0) return "has expired";
-  try {
-    await fetchEntitlement(token, AbortSignal.timeout(8000));
-  } catch (err) {
-    // Only a 401 means the token is bad; offline or a slow server shouldn't block startup.
-    if (err instanceof GuardianError && err.status === 401) return "was rejected by Mozilla (expired or revoked)";
-  }
-  return null;
 }
 
 /** Warns about a pasted access token that is expired or short-lived. */
@@ -335,41 +309,6 @@ async function cmdDoctor() {
     }
   }
   console.log();
-}
-
-function openBrowser(url: string) {
-  // Under sudo it would start root's own Firefox, with root's profile, not the user's.
-  if (process.getuid?.() === 0 && process.env.SUDO_USER) return;
-  if (process.platform === "darwin") {
-    // Firefox itself, as `open` hands it the # escaped (about:preferences%23sync); a running
-    // Firefox takes the URL from it. Elsewhere than an Applications folder: just bring it up.
-    const firefox = ["/Applications", join(userHome(), "Applications")]
-      .map((dir) => join(dir, "Firefox.app/Contents/MacOS/firefox"))
-      .find((p) => existsSync(p));
-    const [cmd, ...args] = firefox ? [firefox, url] : ["open", "-a", "Firefox"];
-    spawn(cmd, args, { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
-    return;
-  }
-  if (process.platform === "win32") {
-    const firefox = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]
-      .map((dir) => dir && `${dir}\\Mozilla Firefox\\firefox.exe`)
-      .find((p) => p && existsSync(p));
-    // no default-browser fallback: only Firefox opens about: pages
-    if (firefox) spawn(firefox, [url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
-    return;
-  }
-  // Firefox itself (only it opens about: pages): installed, on PATH (Ubuntu's snap too), or the
-  // Flatpak (Fedora Silverblue and Kinoite have no `firefox` command); xdg-open as a last try
-  const onPath = (cmd: string) => (process.env.PATH ?? "").split(":").some((dir) => dir && existsSync(join(dir, cmd)));
-  const flatpak = ["/var/lib/flatpak", join(userHome(), ".local/share/flatpak")].some((d) => existsSync(join(d, "app/org.mozilla.firefox")));
-  const [cmd, ...args] = existsSync("/opt/firefox-official/firefox")
-    ? ["/opt/firefox-official/firefox"]
-    : onPath("firefox")
-      ? ["firefox"]
-      : flatpak
-        ? ["flatpak", "run", "org.mozilla.firefox"]
-        : ["xdg-open"];
-  spawn(cmd, [...args, url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
 }
 
 /** Opens the browser's own sign-in and waits for it. The signed-in account, or undefined if not. */

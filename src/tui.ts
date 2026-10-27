@@ -45,7 +45,7 @@ const SETTINGS = [
 /** The last country connected to; the next start puts the cursor on it. */
 const lastCountryFile = () => join(userHome(), ".config", "foxhole-vpn", "country");
 
-function loadLastCountry(): string | null {
+export function loadLastCountry(): string | null {
   try {
     return readFileSync(lastCountryFile(), "utf8").trim() || null;
   } catch {
@@ -53,7 +53,7 @@ function loadLastCountry(): string | null {
   }
 }
 
-function saveLastCountry(code: string): void {
+export function saveLastCountry(code: string): void {
   try {
     mkdirSync(dirname(lastCountryFile()), { recursive: true, mode: 0o700 });
     writeFileSync(lastCountryFile(), code);
@@ -63,7 +63,7 @@ function saveLastCountry(code: string): void {
 }
 
 /** Sort order: free & usable first, then paid, each alphabetical. */
-function order(list: Country[]): Country[] {
+export function order(list: Country[]): Country[] {
   return [...list].sort((a, b) => {
     const rank = (c: Country) => (!c.locked && c.available ? 0 : c.locked ? 2 : 1);
     return rank(a) - rank(b) || countryName(a.code, a.name).localeCompare(countryName(b.code, b.name));

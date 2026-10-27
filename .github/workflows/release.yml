@@ -1,0 +1,64 @@
+# A version tag (git tag v1.2.3 && git push origin v1.2.3) builds the desktop app for macOS (Apple chip and Intel),
+# Windows and Linux, and puts them all in a draft release. Check it, then Publish: that's the download for everyone,
+# and what installed Mac apps update themselves to.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false # one system's build failing still leaves the others for the release
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24 # Electron's installer needs 22.12 or newer
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            gui/package-lock.json
+      - run: npm ci
+      - name: Build
+        working-directory: gui
+        shell: bash
+        run: |
+          npm ci
+          npm pkg set version="${GITHUB_REF_NAME#v}" # the tag's: in the file names, and what the app's updater compares
+          npm run dist -- --publish never
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.os }}
+          path: |
+            gui/release/*.dmg
+            gui/release/*.exe
+            gui/release/*.deb
+            gui/release/*.AppImage
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: ${{ !cancelled() }} # with what did build; the draft shows what's missing
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          merge-multiple: true
+      - name: Draft the release, or add to it (a re-run, or a release made by hand)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" out/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" out/* --draft --title "Foxhole ${GITHUB_REF_NAME#v}" --generate-notes
+          fi

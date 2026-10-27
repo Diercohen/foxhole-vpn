@@ -243,8 +243,10 @@ export class DarwinRouting implements Rerouter<MacRoute> {
     const relayJs = JSON.stringify(new URL("./relay.js", import.meta.url).href);
     const dns = { socksHost: proxyHost, socksPort: proxyPort, dohHost: DOH_HOST, host: "127.0.0.1", port: 53, connections: 8 };
     const opts = JSON.stringify({ dns, split: currentSplit(), via: via(this.#orig!) });
+    // In the desktop app execPath is Electron's, run as plain Node (env: sudo clears the environment)
+    const node = process.versions.electron ? ["env", "ELECTRON_RUN_AS_NODE=1", process.execPath] : [process.execPath];
     this.#relay = priv.spawn(
-      [process.execPath, "--input-type=module", "-e", `import { relayMain } from ${relayJs}; await relayMain(${opts}); // ${DNS_MARK}`],
+      [...node, "--input-type=module", "-e", `import { relayMain } from ${relayJs}; await relayMain(${opts}); // ${DNS_MARK}`],
       true,
     );
     this.#procs.push(this.#relay);

@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
@@ -115,4 +116,40 @@ export function findAccount(): AccountState | null {
   }
   // No profile has signedInUser.json at all → report the most recent as signed-out.
   return dirs[0] ? { profileDir: dirs[0], signedIn: false, verified: false, email: null } : null;
+}
+
+/** Opens `url` in Firefox itself: only it opens about: pages, such as its sign-in (about:preferences#sync). */
+export function openBrowser(url: string) {
+  // Under sudo it would start root's own Firefox, with root's profile, not the user's.
+  if (process.getuid?.() === 0 && process.env.SUDO_USER) return;
+  if (process.platform === "darwin") {
+    // Firefox itself, as `open` hands it the # escaped (about:preferences%23sync); a running
+    // Firefox takes the URL from it. Elsewhere than an Applications folder: just bring it up.
+    const firefox = ["/Applications", join(userHome(), "Applications")]
+      .map((dir) => join(dir, "Firefox.app/Contents/MacOS/firefox"))
+      .find((p) => existsSync(p));
+    const [cmd, ...args] = firefox ? [firefox, url] : ["open", "-a", "Firefox"];
+    spawn(cmd, args, { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
+    return;
+  }
+  if (process.platform === "win32") {
+    const firefox = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]
+      .map((dir) => dir && `${dir}\\Mozilla Firefox\\firefox.exe`)
+      .find((p) => p && existsSync(p));
+    // no default-browser fallback: only Firefox opens about: pages
+    if (firefox) spawn(firefox, [url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
+    return;
+  }
+  // Firefox itself (only it opens about: pages): installed, on PATH (Ubuntu's snap too), or the
+  // Flatpak (Fedora Silverblue and Kinoite have no `firefox` command); xdg-open as a last try
+  const onPath = (cmd: string) => (process.env.PATH ?? "").split(":").some((dir) => dir && existsSync(join(dir, cmd)));
+  const flatpak = ["/var/lib/flatpak", join(userHome(), ".local/share/flatpak")].some((d) => existsSync(join(d, "app/org.mozilla.firefox")));
+  const [cmd, ...args] = existsSync("/opt/firefox-official/firefox")
+    ? ["/opt/firefox-official/firefox"]
+    : onPath("firefox")
+      ? ["firefox"]
+      : flatpak
+        ? ["flatpak", "run", "org.mozilla.firefox"]
+        : ["xdg-open"];
+  spawn(cmd, [...args, url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
 }

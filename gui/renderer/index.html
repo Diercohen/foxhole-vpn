@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<title>Foxhole</title>
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body data-phase="off">
+
+<!-- Icons and the fox, drawn once and used by reference. Not display:none: gradients in a hidden SVG don't paint. -->
+<svg class="sprite" aria-hidden="true">
+  <defs>
+    <linearGradient id="g-fox" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#ffc061"/><stop offset=".45" stop-color="#ff7a1a"/><stop offset="1" stop-color="#ff3d5a"/>
+    </linearGradient>
+    <linearGradient id="g-cheek" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff8ef"/><stop offset="1" stop-color="#ffd9c2"/>
+    </linearGradient>
+    <linearGradient id="g-ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2ef2b0"/><stop offset="1" stop-color="#45b6ff"/>
+    </linearGradient>
+  </defs>
+  <symbol id="fox" viewBox="0 0 64 64">
+    <path fill="url(#g-fox)" d="M32 57 12.5 39 8 21 10.5 5 24.5 16.5 32 15 39.5 16.5 53.5 5 56 21 51.5 39Z"/>
+    <path fill="#2a1430" opacity=".85" d="M12.6 10.6 21.2 17.6 14.4 21.4ZM51.4 10.6 42.8 17.6 49.6 21.4Z"/>
+    <path fill="#fff" opacity=".22" d="M32 15 24.5 16.5 32 31Z"/>
+    <path fill="#fff" opacity=".1" d="M32 15 39.5 16.5 32 31Z"/>
+    <path fill="url(#g-cheek)" d="M8 21 26 35 32 50 32 57 12.5 39ZM56 21 38 35 32 50 32 57 51.5 39Z"/>
+    <path fill="#2a1430" d="M20.4 28.4 27.2 31.2 21.6 32.6ZM43.6 28.4 36.8 31.2 42.4 32.6ZM28.4 51 35.6 51 32 56.6Z"/>
+  </symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8.5"/><path class="arc" d="M6.3 6.8a8 8 0 1 0 11.4 0"/></symbol>
+  <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2.5 9a14 14 0 0 1 19 0"/><path d="M5.6 12.4a9.5 9.5 0 0 1 12.8 0"/><path d="M8.7 15.8a5 5 0 0 1 6.6 0"/><path d="M12 19.5h.01"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 2.6 3.8 5.6 3.8 9s-1.2 6.4-3.8 9c-2.6-2.6-3.8-5.6-3.8-9S9.4 5.6 12 3z"/></symbol>
+  <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v4M15 3v4"/><path d="M6 7h12v3.5a6 6 0 0 1-12 0z"/><path d="M12 16.5V21"/></symbol>
+  <symbol id="i-split" viewBox="0 0 24 24"><path d="M3 6h4.5l9 12H21"/><path d="M3 18h4.5l2.6-3.4"/><path d="M13.9 9.4 16.5 6H21"/><path d="M18 3l3 3-3 3"/><path d="M18 15l3 3-3 3"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3.5"/><path d="m7.5 9.5 3 2.5-3 2.5M13 15h4"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="12" height="12" rx="2.8"/><path d="M15.5 4.8A2.5 2.5 0 0 0 13.2 3.5H6A2.5 2.5 0 0 0 3.5 6v7.2a2.5 2.5 0 0 0 1.3 2.3"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M10 11v6M14 11v6"/><path d="m6.5 7 .9 11.6A2.5 2.5 0 0 0 9.9 21h4.2a2.5 2.5 0 0 0 2.5-2.4L17.5 7"/><path d="M9.5 7V4.5h5V7"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.8"/><path d="m20 20-4.2-4.2"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10" rx="2.8"/><path d="M8 10.5V7.8a4 4 0 0 1 8 0v2.7"/><path d="M12 14.5v2"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.7-4.4L4 8"/><path d="M4 3.5V8h4.5"/><path d="M4 13a8 8 0 0 0 14.7 4.4L20 16"/><path d="M20 20.5V16h-4.5"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-8.5 8.5"/><path d="M18 14v3.5a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 4 17.5v-9A2.5 2.5 0 0 1 6.5 6H10"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 19.5 6v5.6c0 4.4-3.1 8.2-7.5 9.4-4.4-1.2-7.5-5-7.5-9.4V6z"/><path d="m8.8 12 2.3 2.3 4.3-4.6"/></symbol>
+  <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12.5" rx="2.5"/><path d="M8.5 20.5h7M12 16.5v4"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.8"/><path d="M11 18.5h2"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.5 13.7 9 19 10.5 13.7 12.3 12 17.5 10.3 12.3 5 10.5 10.3 9z"/><path d="M18.5 16.5 19 18l1.5.5-1.5.5-.5 1.5-.5-1.5-1.5-.5 1.5-.5z"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5.5M6 11.5l6-6 6 6"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></symbol>
+  <symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></symbol>
+</svg>
+
+<div class="bg" aria-hidden="true">
+  <div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
+  <div class="dots"></div>
+  <div class="embers" id="embers"></div>
+  <div class="noise"></div>
+</div>
+
+<header class="titlebar">
+  <div class="brand">
+    <svg class="logo"><use href="#fox"/></svg>
+    <span class="word">Foxhole</span>
+    <span class="ver" id="ver"></span>
+  </div>
+  <div class="grow"></div>
+  <button class="pill update" id="update" hidden><svg class="i"><use href="#i-up"/></svg><span></span></button>
+  <div class="chip data" id="data-chip">
+    <svg class="gauge" viewBox="0 0 36 36" aria-hidden="true">
+      <circle class="track" cx="18" cy="18" r="15"/>
+      <circle class="bar" id="data-ring" cx="18" cy="18" r="15" transform="rotate(-90 18 18)"/>
+    </svg>
+    <div class="txt"><span class="k">Data</span><span class="v" id="data-v">—</span></div>
+  </div>
+  <button class="chip account" id="account" title="Account and settings">
+    <span class="avatar" id="acct-avatar">?</span><span class="name" id="acct-name"></span>
+  </button>
+  <button class="icon-btn" id="open-logs" title="Logs"><svg class="i"><use href="#i-terminal"/></svg></button>
+  <button class="icon-btn" id="open-settings" title="Settings"><svg class="i"><use href="#i-sliders"/></svg></button>
+</header>
+
+<main class="stage">
+  <section class="hero glass spot rise" style="--d:1">
+    <div class="toast" id="toast" role="status"><i class="dot"></i><span id="toast-text"></span></div>
+
+    <div class="orb-wrap" id="orb-wrap">
+      <div class="halo"></div>
+      <div class="ripple"></div><div class="ripple"></div><div class="ripple"></div>
+      <svg class="ticks" id="ticks" viewBox="0 0 300 300" aria-hidden="true"></svg>
+      <div class="ring glow"><i></i></div>
+      <div class="ring"><i></i></div>
+      <button class="orb" id="orb" aria-label="Connect">
+        <svg class="power"><use href="#i-power"/></svg>
+        <span class="orb-label" id="orb-label">Connect</span>
+      </button>
+    </div>
+
+    <div class="status">
+      <h1 id="status-title">Not connected</h1>
+      <p id="status-sub"></p>
+    </div>
+
+    <div class="seg mode" id="mode" data-v="0">
+      <span class="thumb"></span>
+      <button data-mode="proxy"><svg class="i"><use href="#i-plug"/></svg>Proxy only</button>
+      <button data-mode="global"><svg class="i"><use href="#i-monitor"/></svg>Whole system</button>
+    </div>
+
+    <div class="cards">
+      <div class="card" id="c-net"><span class="ico"><svg class="i"><use href="#i-wifi"/></svg></span><div class="body"><div class="k">Network</div><div class="v"></div><div class="s"></div></div></div>
+      <div class="card" id="c-ip"><span class="ico"><svg class="i"><use href="#i-globe"/></svg></span><div class="body"><div class="k">Public IP</div><div class="v"></div><div class="s"></div></div></div>
+      <div class="card" id="c-proxy"><span class="ico"><svg class="i"><use href="#i-plug"/></svg></span><div class="body"><div class="k">Proxy</div><div class="v"></div><div class="s"></div></div><button class="mini copy" id="copy-proxy" title="Copy the address" hidden><svg class="i"><use href="#i-copy"/></svg></button></div>
+      <button class="card link" id="c-split"><span class="ico"><svg class="i"><use href="#i-split"/></svg></span><div class="body"><div class="k">Split tunneling</div><div class="v"></div><div class="s">Choose sites that skip the VPN</div></div><svg class="i chev"><use href="#i-chevron"/></svg></button>
+    </div>
+  </section>
+
+  <aside class="locations glass spot rise" style="--d:2">
+    <div class="loc-head"><h2>Locations</h2><span id="loc-count"></span></div>
+    <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="search" placeholder="Search countries" spellcheck="false" autocomplete="off"></label>
+    <div class="list" id="list"></div>
+    <div class="tip">
+      <svg class="i"><use href="#i-spark"/></svg>
+      <p>Claude, ChatGPT, Gemini, Netflix, YouTube Music, Spotify and banks often block shared VPN IPs: pick a <b>paid</b> location for them. Foxhole made the paid servers <em>free</em> for you.</p>
+    </div>
+  </aside>
+</main>
+
+<div class="scrim" id="scrim"></div>
+
+<section class="sheet glass" id="sheet-split" aria-label="Split tunneling">
+  <header><span class="badge"><svg class="i"><use href="#i-split"/></svg></span><div><h2>Split tunneling</h2><p>Choose which sites use the VPN and which go direct.</p></div><button class="icon-btn close" data-close><svg class="i"><use href="#i-close"/></svg></button></header>
+  <div class="scroll">
+    <div class="group">
+      <div class="row-line">
+        <div><div class="label">Everything else</div><div class="hint" id="split-default-hint"></div></div>
+        <div class="seg small" id="split-default" data-v="0"><span class="thumb"></span><button data-via="vpn">VPN</button><button data-via="direct">Direct</button></div>
+      </div>
+    </div>
+    <form class="group" id="split-add">
+      <div class="label">Add a site</div>
+      <div class="input-row">
+        <input id="split-input" placeholder="bbc.co.uk, *.ir, 1.2.3.4 or 10.0.0.0/8" spellcheck="false" autocomplete="off">
+        <button class="btn primary" type="submit"><svg class="i"><use href="#i-plus"/></svg>Add</button>
+      </div>
+      <div class="hint" id="split-new-hint"></div>
+      <div class="note" id="split-note"></div>
+      <div class="chips" id="split-recent"></div>
+    </form>
+    <div class="suggest" id="split-suggest" hidden>
+      <span class="flag code">IR</span>
+      <div><b>Send Iranian sites direct</b><span>Adds <code>*.ir</code>: they see your real IP, the rest goes through the VPN.</span></div>
+      <button class="btn" id="add-ir"><svg class="i"><use href="#i-plus"/></svg>Add *.ir</button>
+    </div>
+    <div class="group">
+      <div class="label">Sites <span class="count" id="split-count"></span></div>
+      <div class="rules" id="split-rules"></div>
+    </div>
+    <p class="fine">A site covers its subdomains; the most specific rule wins. Direct sites see your real IP. Changes apply to new connections.</p>
+  </div>
+</section>
+
+<section class="sheet glass" id="sheet-settings" aria-label="Settings">
+  <header><span class="badge"><svg class="i"><use href="#i-sliders"/></svg></span><div><h2>Settings</h2><p>The proxy, sharing it, and your account.</p></div><button class="icon-btn close" data-close><svg class="i"><use href="#i-close"/></svg></button></header>
+  <div class="scroll">
+    <div class="group">
+      <div class="row-line">
+        <div><div class="label"><svg class="i"><use href="#i-phone"/></svg>Share with devices on this network</div><div class="hint" id="share-hint"></div></div>
+        <button class="switch" id="share" role="switch" aria-checked="false" aria-label="Share with devices on this network"></button>
+      </div>
+      <div class="share-box" id="share-box"></div>
+    </div>
+    <form class="group" id="port-form">
+      <div class="label">Proxy port</div>
+      <div class="input-row">
+        <input id="port" inputmode="numeric" maxlength="5" autocomplete="off">
+        <button class="btn" type="submit">Save</button>
+      </div>
+      <div class="hint">One port serves SOCKS5 and HTTP. Default 1080.</div>
+    </form>
+    <form class="group" id="login-form">
+      <div class="label">Login for other devices</div>
+      <input id="username" placeholder="Username (optional)" autocomplete="off" spellcheck="false">
+      <div class="input-row">
+        <div class="pw-wrap"><input id="password" type="password" placeholder="Password (optional)" autocomplete="off"><button class="mini" type="button" id="reveal" title="Show"><svg class="i"><use href="#i-eye"/></svg></button></div>
+        <button class="btn" type="submit">Save</button>
+      </div>
+      <div class="hint">Asked from other devices when sharing is on; apps on this computer don't need it. Empty means no login.</div>
+    </form>
+    <div class="note" id="settings-note"></div>
+    <div class="group">
+      <div class="label">Firefox account</div>
+      <div class="account-line">
+        <span class="avatar big" id="acct-avatar-2">?</span>
+        <div class="grow"><b id="acct-email"></b><span>The VPN token comes from this Firefox login.</span></div>
+        <button class="btn" id="switch-account"><svg class="i"><use href="#i-user"/></svg>Switch account</button>
+      </div>
+    </div>
+    <div class="group about">
+      <svg class="logo"><use href="#fox"/></svg>
+      <div class="grow"><b>Foxhole <span id="about-ver"></span></b><span id="about-update">Firefox's free VPN for your whole system. Unofficial, not affiliated with Mozilla.</span></div>
+      <button class="btn" id="open-repo"><svg class="i"><use href="#i-github"/></svg>GitHub</button>
+    </div>
+  </div>
+</section>
+
+<section class="sheet glass wide" id="sheet-logs" aria-label="Logs">
+  <header><span class="badge"><svg class="i"><use href="#i-terminal"/></svg></span><div><h2>Logs</h2><p id="logs-count">Proxy failures and tun2socks output, live.</p></div><button class="btn" id="copy-logs"><svg class="i"><use href="#i-copy"/></svg>Copy all</button><button class="icon-btn close" data-close><svg class="i"><use href="#i-close"/></svg></button></header>
+  <div class="logs" id="logs"></div>
+</section>
+
+<div class="modal" id="pw-modal">
+  <form class="box glass" id="pw-form">
+    <div class="lock-orb"><svg class="i"><use href="#i-lock"/></svg></div>
+    <h2>Administrator password</h2>
+    <p>Whole-system mode routes all of this computer's traffic through the VPN, which needs administrator rights. Enter your <b>login password</b> (used by sudo):</p>
+    <input type="password" id="pw-input" placeholder="Login password" autocomplete="off" aria-label="Login password">
+    <div class="note" id="pw-note"></div>
+    <div class="actions">
+      <button class="btn" type="button" id="pw-cancel">Cancel</button>
+      <button class="btn primary" type="submit" id="pw-ok"><span>Go whole system</span></button>
+    </div>
+  </form>
+</div>
+
+<div class="overlay" id="onboard">
+  <div class="box glass" id="onboard-box"></div>
+</div>
+
+<div class="overlay" id="restoring">
+  <div class="box glass">
+    <div class="fox-spin"><span class="orbit"></span><svg class="fox-hero"><use href="#fox"/></svg></div>
+    <h2>Restoring networking…</h2>
+    <p>The fox is putting your routes and DNS back exactly where it found them.</p>
+    <p class="warn">Please don't force quit: a half-tidied den means no internet until you reboot.</p>
+    <p class="fine">Just a moment, then Foxhole closes by itself.</p>
+  </div>
+</div>
+
+</body>
+</html>
