@@ -1,6 +1,10 @@
-// Pure-function checks for the Windows global-routing planner. No admin, no network.
+// Pure-function checks for the Windows global-routing planner, and the elevated helper's pipe. No admin, no network.
 import assert from "node:assert";
-import { parseWinUplink, isWinVpnAdapter, winConflictingVpn, pinRoute, planStaleCleanup, watchPs, parseWinWatch, winNeedsRepin } from "../dist/global-win32.js";
+import net from "node:net";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { parseWinUplink, isWinVpnAdapter, winConflictingVpn, pinRoute, planStaleCleanup, watchPs, parseWinWatch, winNeedsRepin, pipePriv, serveElevated } from "../dist/global-win32.js";
+import { logLines } from "../dist/log.js";
 
 // Find-NetRoute's uplink, as UPLINK_PS prints it.
 const eth = parseWinUplink('{"ifIndex":7,"alias":"Ethernet","gw":"10.211.55.1","desc":"Parallels VirtIO Ethernet Adapter","split":0}');
@@ -48,3 +52,49 @@ assert.equal(winNeedsRepin(w.up, { ...w, up: { ...w.up, ifIndex: 7 } }), true, "
 assert.equal(winNeedsRepin(w.up, { ...w, via: "foxhole0" }), true, "pin gone: server routes into our adapter");
 
 console.log("ok - Windows routing planner");
+
+// The helper's pipe, both ends in this process (a Unix socket off Windows), running node in place of netsh and tun2socks.
+const pipe = process.platform === "win32" ? `\\\\.\\pipe\\foxhole-test-${process.pid}` : join(tmpdir(), `foxhole-test-${process.pid}.sock`);
+const server = net.createServer();
+await new Promise((r) => server.listen(pipe, r));
+const node = (js) => [process.execPath, "-e", js];
+const until = async (f, what) => {
+  // a node start can take seconds on a cold Windows VM
+  for (const end = Date.now() + 15_000; !f(); await new Promise((r) => setTimeout(r, 20))) if (Date.now() > end) throw new Error(`timed out: ${what}`);
+};
+const connect = async () => {
+  const accepted = new Promise((r) => server.once("connection", r));
+  const helper = serveElevated(pipe);
+  const sock = await accepted;
+  return { helper, sock, priv: pipePriv(sock) };
+};
+
+let { helper, sock, priv } = await connect();
+await priv.run(node("process.exit(0)"));
+await assert.rejects(priv.run(node("process.exit(3)")), /process\.exit\(3\) →/, "a failed command rejects, naming it");
+await priv.run(node("process.exit(3)"), true); // quiet: a failure resolves
+const kid = priv.spawn(node("console.error('hello from the helper'); setInterval(() => {}, 1000)"));
+await until(() => logLines.some((l) => l.includes("hello from the helper")), "child's stderr in the log");
+const exited = new Promise((r) => kid.once("exit", (...exit) => r(exit)));
+assert.equal(kid.exitCode, null, "running");
+kid.kill("SIGTERM");
+assert.deepEqual(await exited, [null, "SIGTERM"], "killed through the helper");
+assert.equal(kid.signalCode, "SIGTERM");
+priv.close();
+await helper; // a clean close ends the helper
+assert.ok(sock.destroyed || !sock.writable, "pipe closed");
+
+// The app killed with a child still running: the helper kills it, then cleans up (planStaleCleanup, quiet here).
+({ helper, sock, priv } = await connect());
+const orphan = priv.spawn(node("console.error('orphan ' + process.pid); setInterval(() => {}, 1000)"));
+let pid = 0;
+await until(() => (pid = Number(logLines.map((l) => l.match(/orphan (\d+)/)?.[1]).find(Boolean) ?? 0)), "orphan's pid");
+sock.destroy();
+await helper;
+await until(() => { try { return !process.kill(pid, 0); } catch { return true; } }, "orphan killed");
+assert.equal(orphan.signalCode, "SIGKILL", "the app counts the helper's children as gone with it");
+await assert.rejects(priv.run(node("0")), /admin helper stopped/, "commands fail once the helper is gone");
+await priv.run(node("0"), true); // quiet ones don't wait for it
+server.close();
+
+console.log("ok - elevated helper's pipe");

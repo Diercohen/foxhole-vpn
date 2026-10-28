@@ -21,7 +21,7 @@ import { GUARDIAN_HOST, pinGuardian } from "./guardian.js";
 import { publicIp, ipv4Of } from "./netinfo.js";
 import { dim, green, red, yellow, bold, verbose } from "./ui.js";
 import { DarwinRouting } from "./global-darwin.js";
-import { WindowsRouting, isWindowsAdmin } from "./global-win32.js";
+import { WindowsRouting, isWindowsAdmin, uacPriv } from "./global-win32.js";
 import { logStream } from "./log.js";
 import { userHome } from "./profile.js";
 
@@ -170,9 +170,11 @@ export function conflictingVpn(ipRoute: string, orig: DefaultRoute): boolean {
 
 async function run(argv: string[], quiet = false): Promise<void> {
   try {
-    await exec(argv[0], argv.slice(1));
+    await exec(argv[0], argv.slice(1), { windowsHide: true }); // no console window flashing up from the desktop app
   } catch (err) {
-    if (!quiet) throw new Error(`${argv.join(" ")} → ${(err as Error).message}`);
+    // The tool's own words: netsh prints its errors on stdout
+    const { stderr, stdout, message } = err as { stderr?: string; stdout?: string; message: string };
+    if (!quiet) throw new Error(`${argv.join(" ")} → ${(stderr || stdout || message).trim()}`);
   }
 }
 
@@ -395,6 +397,8 @@ export interface Priv {
   run(argv: string[], quiet?: boolean): Promise<void>;
   /** With `lifeline`, the child's stdin stays open: it reads EOF once foxhole is gone, however it went. */
   spawn(argv: string[], lifeline?: boolean): ReturnType<typeof spawn>;
+  /** The session is done with it: Windows' elevated helper (uacPriv) exits. */
+  close?(): void;
 }
 
 /**
@@ -417,6 +421,11 @@ export function directPriv(toLog = false): Priv {
 /** True if this process may change routing: root, or an elevated process on Windows. */
 export async function isPrivileged(): Promise<boolean> {
   return IS_WIN ? isWindowsAdmin() : process.getuid?.() === 0;
+}
+
+/** No password to ask for: root or Administrator already, or on Windows, a helper started through its admin prompt (UAC). */
+export async function adminPriv(toLog = false): Promise<Priv> {
+  return IS_WIN && !(await isWindowsAdmin()) ? uacPriv() : directPriv(toLog);
 }
 
 // Linux: sudo in a session of its own, with no terminal. sudo-rs (Ubuntu 26.04's sudo) otherwise opens

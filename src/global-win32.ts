@@ -3,14 +3,23 @@
 // traffic (0/1 + 128/1 beat the default route without replacing it), an NRPT
 // rule sends every DNS lookup to the DoH forwarder on 127.0.0.1:53, and firewall
 // rules block IPv6 and QUIC so apps fall back to IPv4 TCP (what the tunnel carries).
-// Needs an elevated (Administrator) process; nothing here survives a reboot except
-// the NRPT and firewall rules, which `restoreWindows()` removes.
-import { execFile, type spawn } from "node:child_process";
+// Needs Administrator rights: the app's own when it runs elevated, else a helper Windows' admin
+// prompt starts (uacPriv). Nothing here survives a reboot except the NRPT and firewall rules,
+// which `restoreWindows()` removes.
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { lookup } from "node:dns/promises";
+import net, { type Socket } from "node:net";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import readline from "node:readline";
+import { randomBytes } from "node:crypto";
+import { basename } from "node:path";
+import { fileURLToPath } from "node:url";
 import { startDnsForwarder, type DnsForwarder } from "./dns.js";
-import { PRIVATE_CIDRS, DOH_HOST, stopProcess, type GlobalSessionOptions, type Priv, type Rerouter } from "./global.js";
+import { PRIVATE_CIDRS, DOH_HOST, stopProcess, directPriv, type GlobalSessionOptions, type Priv, type Rerouter } from "./global.js";
 import { GUARDIAN_HOST, pinGuardian } from "./guardian.js";
+import { logStream } from "./log.js";
 
 const exec = promisify(execFile);
 
@@ -143,6 +152,123 @@ export async function restoreWindows(priv: Priv): Promise<void> {
   await priv.run(["taskkill", "/F", "/IM", "tun2socks.exe"], true);
 }
 
+// ── Not elevated: Windows' admin prompt (UAC) starts foxhole again as Administrator, as a helper that
+// runs the networking commands the app sends it over a named pipe, one JSON line each way per message.
+
+/** The hidden command that runs the helper (cli.ts). */
+export const HELPER_CMD = "elevated-helper";
+
+/**
+ * Asks in Windows' admin prompt for the helper, and resolves once it's connected; rejects if the prompt
+ * is declined. The helper exits with close() (the session's stop()), or as the app goes.
+ */
+export async function uacPriv(): Promise<Priv> {
+  const pipe = `\\\\.\\pipe\\foxhole-vpn-${randomBytes(16).toString("hex")}`; // only the helper is told it
+  let take!: (sock: Socket) => void;
+  const connected = new Promise<Socket>((resolve) => (take = resolve));
+  const server = net.createServer((sock) => (server.close(), take(sock))); // the first one only
+  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(pipe, resolve));
+  try {
+    // An elevated process doesn't inherit the environment, so an elevated PowerShell sets the variable that
+    // has the desktop app's Electron run as plain Node (as on macOS), then starts the helper.
+    const q = (s: string) => `'${s.replaceAll("'", "''")}'`;
+    const cli = fileURLToPath(new URL("./cli.js", import.meta.url));
+    const helper = `$env:ELECTRON_RUN_AS_NODE=1; & ${q(process.execPath)} ${q(cli)} ${HELPER_CMD} ${q(pipe)}`;
+    const args = `-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ${helper}`;
+    // Process.Start, not Start-Process: its error keeps the Win32 code, so exit 2 says the prompt was declined (ERROR_CANCELLED)
+    const [cmd, ...rest] = ps(
+      `$p = New-Object Diagnostics.ProcessStartInfo powershell.exe, ${q(args)}; $p.Verb = 'runas'; $p.UseShellExecute = $true; $p.WindowStyle = 'Hidden'; ` +
+        `try { [void][Diagnostics.Process]::Start($p) } catch { $e = $_.Exception.GetBaseException(); if ($e.NativeErrorCode -eq 1223) { exit 2 }; $e.Message; exit 1 }`,
+    );
+    await exec(cmd, rest, { windowsHide: true }).catch((err: { code?: number; stdout?: string; message: string }) => {
+      throw new Error(err.code === 2 ? "not allowed in Windows' admin prompt" : `Windows' admin prompt: ${err.stdout?.trim() || err.message}`);
+    });
+    const late = new Promise<never>((_, reject) => setTimeout(reject, 30_000, new Error("the admin helper didn't start")).unref());
+    return pipePriv(await Promise.race([connected, late]));
+  } finally {
+    server.close();
+  }
+}
+
+type Exit = [code: number | null, signal: NodeJS.Signals | null];
+type Kid = EventEmitter & { exitCode: number | null; signalCode: NodeJS.Signals | null; stderr: PassThrough; kill(): boolean };
+
+/** The app's end of the helper's pipe, as a Priv. */
+export function pipePriv(sock: Socket): Priv {
+  const runs = new Map<number, (error?: string) => void>();
+  const kids = new Map<number, Kid>();
+  let ids = 0;
+  let open = true;
+  const exited = (id: number, [code, signal]: Exit) => {
+    const kid = kids.get(id);
+    if (!kid) return;
+    kids.delete(id);
+    kid.exitCode = code;
+    kid.signalCode = signal;
+    kid.emit("exit", code, signal);
+  };
+  // The helper is gone (killed?): whatever waits on it ends, and its children count as gone with it.
+  const gone = () => {
+    open = false;
+    for (const [id, done] of runs) runs.delete(id), done("the admin helper stopped");
+    for (const id of kids.keys()) exited(id, [null, "SIGKILL"]);
+  };
+  const send = (m: object) => (open ? void sock.write(`${JSON.stringify(m)}\n`) : gone());
+  sock.on("error", () => {}).on("close", gone);
+  readline.createInterface({ input: sock }).on("line", (line) => {
+    const m = JSON.parse(line) as { id: number; error?: string; stderr?: string; exit?: Exit };
+    if (m.exit) return exited(m.id, m.exit);
+    if (m.stderr) return void kids.get(m.id)?.stderr.write(m.stderr);
+    runs.get(m.id)?.(m.error);
+    runs.delete(m.id);
+  });
+  return {
+    run: (argv, quiet = false) =>
+      new Promise<void>((resolve, reject) => {
+        const id = ++ids;
+        runs.set(id, (error) => (error && !quiet ? reject(new Error(error)) : resolve()));
+        send({ id, run: argv });
+      }),
+    spawn: (argv) => {
+      const id = ++ids;
+      const kid: Kid = Object.assign(new EventEmitter(), {
+        exitCode: null, signalCode: null, stderr: new PassThrough(), kill: () => (send({ id, kill: true }), true),
+      });
+      logStream(basename(argv[0]), kid.stderr);
+      kids.set(id, kid);
+      send({ id, spawn: argv });
+      // ponytail: a stand-in with only what WindowsRouting and stopProcess use ("exit", exitCode, signalCode, kill)
+      return kid as unknown as ChildProcess;
+    },
+    close: () => void sock.end(),
+  };
+}
+
+/**
+ * The helper, run as Administrator by cli.ts: runs what the app sends over `pipe` until the app closes it.
+ * If the app went without stopping global mode (killed, crashed), it undoes that as `foxhole restore` would.
+ */
+export async function serveElevated(pipe: string): Promise<void> {
+  const sock = net.connect(pipe);
+  const kids = new Map<number, ChildProcess>();
+  const send = (m: object) => void (sock.writable && sock.write(`${JSON.stringify(m)}\n`));
+  readline.createInterface({ input: sock }).on("line", (line) => {
+    const { id, run, spawn: argv, kill } = JSON.parse(line) as { id: number; run?: string[]; spawn?: string[]; kill?: true };
+    if (run) directPriv().run(run).then(() => send({ id }), (err: Error) => send({ id, error: err.message }));
+    if (kill) kids.get(id)?.kill();
+    if (!argv) return;
+    const p = spawn(argv[0], argv.slice(1), { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+    kids.set(id, p);
+    const done = (...exit: Exit) => kids.delete(id) && send({ id, exit });
+    p.stderr!.on("data", (d: Buffer) => send({ id, stderr: d.toString() }));
+    p.on("exit", done).on("error", (err) => (send({ id, stderr: `${err.message}\n` }), done(-1, null)));
+  });
+  await new Promise((resolve) => sock.on("error", () => {}).on("close", resolve));
+  if (!kids.size) return;
+  for (const p of kids.values()) p.kill(); // tun2socks: its adapter and the routes on it go with it
+  for (const argv of planStaleCleanup()) await directPriv().run(argv, true);
+}
+
 export class WindowsRouting implements Rerouter<WinWatch> {
   readonly #o: GlobalSessionOptions;
   #undo: string[][] = []; // privileged commands reversing what start() did
@@ -150,7 +276,7 @@ export class WindowsRouting implements Rerouter<WinWatch> {
   #directDns = false; // DNS not tunnelled: the resolvers are pinned too
   #orig: WinRoute | null = null;
   #pinnedIps: string[] = []; // VPN server + Guardian, kept across re-pins
-  #t2s: ReturnType<typeof spawn> | null = null;
+  #t2s: ChildProcess | null = null;
   #dns: DnsForwarder | null = null;
 
   constructor(o: GlobalSessionOptions) {
@@ -227,6 +353,9 @@ export class WindowsRouting implements Rerouter<WinWatch> {
 
   /** Routes `prefix` out the uplink, recording how to undo it in #pinUndo. */
   async #pinRoute(prefix: string, up: WinRoute): Promise<void> {
+    // As Linux's "replace": a killed session's pin of this address would fail the add ("The object already exists").
+    // Not a range: one already there may be the user's own.
+    if (!prefix.includes("/")) await this.#o.priv.run(pinRoute("delete", prefix, up), true);
     await this.#o.priv.run(pinRoute("add", prefix, up));
     this.#pinUndo.push(pinRoute("delete", prefix, up));
   }
@@ -313,5 +442,6 @@ export class WindowsRouting implements Rerouter<WinWatch> {
     // Stopping tun2socks removes the adapter (and any route still on it).
     await stopProcess(this.#t2s, async () => {});
     this.#t2s = null;
+    priv.close?.(); // uacPriv's helper exits: the next session asks again
   }
 }

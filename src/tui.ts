@@ -12,7 +12,7 @@ import { forgetToken } from "./tokenserver.js";
 import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { logLines, onLog } from "./log.js";
 import { useSplit, splitOn, splitSummary, parseSite, hits, recentSites, type Split, type Via } from "./split.js";
-import { GlobalSession, sudoPriv, directPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost } from "./global.js";
+import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, restart, versionLines, UPDATE_COMMAND } from "./update.js";
 import { bold, dim, under, strike, green, red, yellow, cyan, lit, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
 
@@ -412,13 +412,9 @@ export class Tui {
       await this.#connect();
       if (!this.#active) return; // connect failed; message already set
     }
-    // Already root (e.g. in the Docker sandbox, which has no sudo) or Administrator: nothing to ask
-    if (await isPrivileged()) return void this.#enableGlobal(null);
-    if (process.platform === "win32") {
-      // Windows has no sudo to ask: the whole app must already run as Administrator.
-      this.#message = yellow("global needs Administrator rights — quit, then run foxhole in Terminal (Admin)");
-      return void this.#render();
-    }
+    // Already root (e.g. in the Docker sandbox, which has no sudo): nothing to ask. Windows has no sudo
+    // either: its own admin prompt (UAC) comes up as global mode starts, unless foxhole runs as Administrator.
+    if (process.platform === "win32" || (await isPrivileged())) return void this.#enableGlobal(null);
     let note = "";
     if (sudoUsesTouchId()) {
       // sudo takes the fingerprint here, so a password typed in the popup would go unused
@@ -473,7 +469,7 @@ export class Tui {
     void this.#enableGlobal(pw);
   }
 
-  /** password: for sudo; null when already privileged (root, or elevated on Windows). */
+  /** password: for sudo; null when none is asked for here (root, or Windows). */
   async #enableGlobal(password: string | null): Promise<void> {
     const server = this.#conn.server;
     if (!server || !this.#proxy) return;
@@ -485,10 +481,10 @@ export class Tui {
       // a download goes through the VPN (GitHub can be slow or blocked), its progress in the status line
       const via = { host: dialHost(this.#host), port: this.#proxy.port };
       this.#tun2socksPath ??= await ensureTun2socks({ proxy: via, say: (msg) => ((this.#message = dim(msg)), this.#render()) });
-      this.#message = dim("going global…");
+      this.#message = dim(process.platform === "win32" ? "going global… if Windows asks, allow PowerShell" : "going global…");
       this.#render();
       session = new GlobalSession({
-        priv: password === null ? directPriv(true) : sudoPriv(password),
+        priv: password === null ? await adminPriv(true) : sudoPriv(password),
         server,
         proxyHost: this.#host,
         proxyPort: this.#proxy.port,

@@ -2,13 +2,14 @@
 // SOCKS5 server stands in for foxhole's proxy and connects directly (from the
 // real uplink's address, so it can't loop through the tunnel). Proves that all
 // traffic and DNS go through tun2socks → SOCKS, and that stop() undoes everything.
-// Needs an elevated terminal:  npm run build && node test/win32-live.mjs
+//   npm run build && node test/win32-live.mjs
+// In a normal terminal, Windows' admin prompt asks for the elevated helper (allow PowerShell); in an elevated one, nothing asks.
 import assert from "node:assert";
 import net from "node:net";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { lookup } from "node:dns/promises";
-import { GlobalSession, directPriv, ensureTun2socks } from "../dist/global.js";
+import { GlobalSession, adminPriv, directPriv, ensureTun2socks } from "../dist/global.js";
 import { isWindowsAdmin, ps, restoreWindows } from "../dist/global-win32.js";
 
 const exec = promisify(execFile);
@@ -16,7 +17,8 @@ const psOut = async (s) => { const [c, ...a] = ps(s); return (await exec(c, a)).
 const ipify = async () => (await (await fetch("https://api.ipify.org", { signal: AbortSignal.timeout(10000) })).text()).trim();
 
 assert.ok(process.platform === "win32", "Windows only");
-assert.ok(await isWindowsAdmin(), "run this in an elevated (Administrator) terminal");
+const admin = await isWindowsAdmin();
+console.log(admin ? "elevated: no helper" : "not elevated: allow PowerShell in Windows' admin prompt");
 
 const uplinkIp = await psOut("(Find-NetRoute -RemoteIPAddress 1.1.1.1 | Where-Object { $_.IPAddress } | Select-Object -First 1).IPAddress");
 console.log(`uplink address ${uplinkIp}`);
@@ -48,8 +50,9 @@ const socksPort = socks.address().port;
 
 const tun2socksPath = await ensureTun2socks();
 const before = await ipify();
+const priv = await adminPriv();
 const session = new GlobalSession({
-  priv: directPriv(),
+  priv,
   server: { hostname: "example.com" },
   proxyHost: "127.0.0.1",
   proxyPort: socksPort,
@@ -67,10 +70,11 @@ try {
   assert.equal(await psOut("@(Get-NetRoute -AddressFamily IPv4 -InterfaceAlias 'foxhole0' | Where-Object { $_.DestinationPrefix -in '0.0.0.0/1','128.0.0.0/1' }).Count"), "2", "split routes on foxhole0");
   assert.equal(await psOut("@(Get-DnsClientNrptRule | Where-Object { $_.Comment -eq 'foxhole-vpn' }).Count"), "1", "NRPT rule present");
 
-  seen.length = 0;
   const host = `www.wikipedia.org`;
   const addr = (await lookup(host, { family: 4 })).address;
-  assert.ok(seen.some((s) => s.startsWith("cloudflare-dns.com:443")), "system DNS lookup went DoH → SOCKS");
+  // since start: the forwarder keeps its DoH connections open, so this lookup may need no new one
+  assert.ok(seen.some((s) => s.startsWith("cloudflare-dns.com:443")), "system DNS lookups went DoH → SOCKS");
+  seen.length = 0;
   const after = await ipify();
   assert.ok(seen.some((s) => s.endsWith(":443") && !s.startsWith("cloudflare-dns.com")), "HTTPS went tun2socks → SOCKS");
   assert.equal(died, null, "tun2socks still running");
@@ -83,6 +87,7 @@ assert.equal(await psOut("[bool](Get-NetAdapter -Name 'foxhole0' -ErrorAction Si
 assert.equal(await psOut("@(Get-DnsClientNrptRule | Where-Object { $_.Comment -eq 'foxhole-vpn' }).Count"), "0", "NRPT rule removed");
 assert.equal(await psOut("@(Get-NetFirewallRule -DisplayName 'foxhole-vpn' -ErrorAction SilentlyContinue).Count"), "0", "firewall rules removed");
 assert.equal(await ipify(), before, "internet works directly again");
-await restoreWindows(directPriv()); // idempotent: must not fail on a clean system
+if (admin) await restoreWindows(directPriv()); // idempotent: must not fail on a clean system
+else await assert.rejects(priv.run(["cmd", "/c", "ver"]), /admin helper stopped/, "stop() ended the helper");
 socks.close();
 console.log("ok - Windows global mode routes everything through the tunnel and restores networking");

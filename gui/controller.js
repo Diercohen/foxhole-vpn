@@ -12,7 +12,7 @@ import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenProble
 import { startProxy, onProxyWarning } from "./dist/proxy.js";
 import { logLines, onLog } from "./dist/log.js";
 import { useSplit, splitSummary, parseSite, hits, recentSites } from "./dist/split.js";
-import { GlobalSession, sudoPriv, directPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost } from "./dist/global.js";
+import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost } from "./dist/global.js";
 import { VERSION } from "./dist/update.js";
 import { countryName, gb, shortDate } from "./dist/ui.js";
 import { order, loadLastCountry, saveLastCountry } from "./dist/tui.js";
@@ -291,12 +291,9 @@ export class Controller extends EventEmitter {
       await this.connect();
       if (!this.#active) return; // connect failed; message already set
     }
-    // Already root or Administrator: nothing to ask
-    if (await isPrivileged()) return this.#enableGlobal(null);
-    if (process.platform === "win32") {
-      // Windows has no sudo to ask: the whole app must already run as Administrator.
-      return this.#say("warn", "whole-system mode needs Administrator rights — quit, then right-click Foxhole and pick Run as administrator");
-    }
+    // Already root: nothing to ask. Windows has no sudo either: its own admin prompt (UAC) comes up
+    // as whole-system mode starts, unless Foxhole runs as Administrator.
+    if (process.platform === "win32" || (await isPrivileged())) return this.#enableGlobal(null);
     let note = null;
     if (sudoUsesTouchId()) {
       // sudo takes the fingerprint here, so a typed password would go unused
@@ -331,7 +328,7 @@ export class Controller extends EventEmitter {
     void this.#enableGlobal(password);
   }
 
-  /** password: for sudo; null when already privileged (root, or elevated on Windows). */
+  /** password: for sudo; null when none is asked for here (root, or Windows). */
   async #enableGlobal(password) {
     const server = this.#conn.server;
     if (!server || !this.#proxy) return;
@@ -341,9 +338,9 @@ export class Controller extends EventEmitter {
     try {
       // a download goes through the VPN, its progress in the status line
       this.#tun2socksPath ??= await ensureTun2socks({ proxy: this.via(), say: (msg) => this.#say("info", msg) });
-      this.#say("info", "going global…");
+      this.#say("info", process.platform === "win32" ? "going global… if Windows asks, allow PowerShell (Foxhole's network helper)" : "going global…");
       session = new GlobalSession({
-        priv: password === null ? directPriv(true) : sudoPriv(password),
+        priv: password === null ? await adminPriv(true) : sudoPriv(password),
         server,
         proxyHost: this.#host,
         proxyPort: this.#proxy.port,

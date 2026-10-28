@@ -82,7 +82,9 @@ Download it from the [latest release](https://github.com/Diercohen/foxhole-vpn/r
 The builds aren't signed by Apple or Microsoft: macOS asks you to allow the app
 once (**System Settings → Privacy & Security → Open Anyway**), and Windows
 SmartScreen once (**More info → Run anyway**). On Windows, whole-system mode
-needs the app started with **Run as administrator**. On Linux, prefer the
+asks for administrator rights in Windows' own prompt as it turns on: allow
+**Windows PowerShell**, which starts Foxhole's networking helper (the app itself
+needs no **Run as administrator**). On Linux, prefer the
 `.deb`: Ubuntu 24.04 and later keep Electron AppImages from starting unless they
 get `--no-sandbox`.
 
@@ -228,10 +230,12 @@ sudo env "PATH=$PATH" foxhole global --country US   # route the whole system
 foxhole --verbose                  # also show per-connection errors and tun2socks logs
 ```
 
-On **Windows**, run `foxhole global` (or `foxhole` and press **`g`**) in an
-elevated terminal — **Terminal (Admin)** — instead of using `sudo`. If a global
-session is ever killed without restoring networking, `foxhole restore` (also
-elevated) removes what it left behind.
+On **Windows**, `foxhole` needs no elevated terminal: **`g`** asks for
+administrator rights in Windows' own prompt (allow **Windows PowerShell**: it
+starts foxhole's networking helper), and should foxhole be killed, that helper
+restores networking. `foxhole global` runs in an elevated terminal —
+**Terminal (Admin)** — instead of using `sudo`; if one is ever killed without
+restoring networking, `foxhole restore` (also elevated) removes what it left behind.
 On **Linux** a global session undoes itself even when foxhole is killed; should
 the computer still be left offline, the same `foxhole restore` (it asks for your
 password) removes what's left.
@@ -240,9 +244,10 @@ password) removes what's left.
 then `node dist/cli.js` in place of `foxhole`.
 
 In the **TUI**, pick a country and press **`g`** to route the whole system
-through it — foxhole-vpn asks for your sudo password in-app (no need to launch
-the whole app with `sudo`), and `g` again turns it back off. Only the networking
-is elevated; the proxy and your Firefox login stay unprivileged.
+through it — foxhole-vpn asks for your sudo password in-app, or on Windows in
+Windows' own prompt (no need to launch the whole app with `sudo`, or as
+administrator), and `g` again turns it back off. Only the networking is
+elevated; the proxy and your Firefox login stay unprivileged.
 
 Press **`l`** for **Logs**: a popup with proxy failures (e.g. ports the VPN
 refuses) and tun2socks output, updating live; **Esc** closes it. Logs are

@@ -12,7 +12,7 @@ import { firewallHint, lanIp } from "./netinfo.js";
 import { useSplit, splitSummary, type Split } from "./split.js";
 import { runGlobal, directPriv, isPrivileged, dialHost, staleCleanupScript, parseDefaultRoute } from "./global.js";
 import { loadSettings, proxyHost, loginFor } from "./settings.js";
-import { restoreWindows } from "./global-win32.js";
+import { restoreWindows, serveElevated, HELPER_CMD } from "./global-win32.js";
 import { Tui } from "./tui.js";
 import { checkUpdate, updateNotice, versionLines } from "./update.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenFile, tokenTtl, tokenProblem } from "./tokenserver.js";
@@ -518,6 +518,8 @@ async function notice() {
 }
 
 async function main() {
+  // Windows: global mode's helper, started as Administrator through Windows' admin prompt (global-win32.ts's uacPriv)
+  if (process.argv[2] === HELPER_CMD) return serveElevated(process.argv[3]);
   checkUpdate(); // fire while the command runs; shown afterwards
   const cmd = process.argv.slice(2).find((a) => a !== "--verbose") ?? "tui"; // --verbose can go anywhere
   if (cmd === "-v" || cmd === "--version" || cmd === "version") {
