@@ -24,7 +24,7 @@
     "productName": "Foxhole",
     "asar": false,
     "directories": { "output": "release" },
-    "files": ["main.js", "controller.js", "tray.js", "updater.js", "preload.cjs", "renderer/**/*", "dist/**/*", "build/icon.png", "build/tray/*.png"],
+    "files": ["main.js", "controller.js", "tray.js", "badge.js", "updater.js", "preload.cjs", "renderer/**/*", "dist/**/*", "build/icon.png", "build/tray/*.png"],
     "mac": { "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }], "category": "public.app-category.utilities", "identity": "-", "hardenedRuntime": false, "artifactName": "${productName}-${version}-${arch}.${ext}" },
     "win": { "target": "nsis" },
     "linux": {

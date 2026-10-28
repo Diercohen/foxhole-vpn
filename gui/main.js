@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Controller } from "./controller.js";
 import { createTray } from "./tray.js";
+import { createBadge } from "./badge.js";
 import { Updater } from "./updater.js";
 import { REPO_URL } from "./dist/ui.js";
 
@@ -78,7 +79,8 @@ app.whenReady().then(() => {
     icon: here("build/icon.png"),
     webPreferences: { preload: here("preload.cjs"), sandbox: true, contextIsolation: true },
   });
-  if (process.platform === "darwin") app.dock?.setIcon(here("build/icon.png"));
+  const badge = createBadge(win, here("build/icon.png")); // the app's icon, with a dot while connected
+  badge.update(controller.state());
   win.once("ready-to-show", () => win.show());
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (e) => e.preventDefault());
@@ -118,6 +120,7 @@ app.whenReady().then(() => {
       const state = controller.state();
       win.webContents.send("state", state);
       tray.update();
+      badge.update(state);
       // The password popup or a sign-in, asked for from the tray: they're in the window
       if ((state.pw || !["checking", "ready"].includes(state.auth.stage)) && !win.isVisible()) show();
     }, 50);

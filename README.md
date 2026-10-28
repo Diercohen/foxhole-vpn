@@ -93,7 +93,12 @@ Its tray icon (in the menu bar, on macOS) shows whether you're connected, and
 where, and connects, disconnects, switches location or turns whole-system mode
 on without the window. Closing the window leaves Foxhole running there: quit it
 from the tray (or ⌘Q), which first puts the routes and DNS back if whole-system
-mode is on.
+mode is on. The app's icon shows the state too, as the tray's does: an amber
+dot while it connects, mint with a plug on the proxy, pink with a screen in
+whole-system mode. It's on the Dock's icon on macOS, and on the window's (the
+taskbar's) on Windows and Linux. Pinned to the Windows taskbar, Foxhole gets
+Windows' own overlay badge instead; docks that always draw the installed app's
+icon (Ubuntu's) don't show it.
 
 It keeps itself up to date. A minute after it starts, then every 6 hours, it
 looks for a newer release on GitHub. On a Mac it downloads that one in the
