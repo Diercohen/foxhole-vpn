@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 // Tiny zero-dependency terminal helpers (color, flags, sizes).
 
-const useColor = process.stdout.isTTY && process.env.NO_COLOR === undefined;
+export const useColor = process.stdout.isTTY && process.env.NO_COLOR === undefined;
 const wrap = (code: string) => (s: string) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : s);
 
 export const bold = wrap("1");

@@ -15,6 +15,7 @@ import { useSplit, splitOn, splitSummary, parseSite, hits, recentSites, type Spl
 import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, restart, versionLines, UPDATE_COMMAND } from "./update.js";
 import { bold, dim, under, strike, green, red, yellow, cyan, lit, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
+import { fox, FOX_W, FOX_H, type Mood } from "./fox.js";
 
 const ESC = "\x1b[";
 // alternate screen + hidden cursor + mouse reports (SGR): clicks and the wheel, see #mouse()
@@ -33,6 +34,13 @@ process.on("exit", leaveScreen);
 const LOGOUT_ASK = yellow("press O again to log out and switch accounts");
 const onOff = (v: boolean) => (v ? green("on") : dim("off"));
 const flip = (v: Via): Via => (v === "vpn" ? "direct" : "vpn");
+
+// Side by side, the fox and the details are in a panel this wide inside its border (its title fits
+// " GLOBAL TUN ON  🇬🇧 United Kingdom"), beside the table of countries; the window needs SIDE_W columns
+// for it (one spare: Terminal.app draws a flag's line a cell longer). Narrower, the table goes below.
+const LEFT_W = 53;
+const TABLE_W = 44;
+const SIDE_W = LEFT_W + 4 + 1 + TABLE_W + 1;
 
 /** The Settings popup's rows, in order. */
 const SETTINGS = [
@@ -106,13 +114,17 @@ export class Tui {
   #logsOpen = false; // the Logs popup is open
   #logsNote = ""; // how copying the logs went
   #restoring = false; // quitting: global mode's routes are being put back
+  #loading = true; // the server list isn't in yet
   #renderTimer: NodeJS.Timeout | null = null;
+  // where the last render put the fox on the screen, for its next frames (null: not shown, or under a popup)
+  #foxAt: { x: number; y: number; cols: number; rows: number } | null = null;
+  #foxDrawn: string[] = []; // its frame on the screen now, line by line
   #net: string | null | undefined; // undefined: not read yet
   #ip: string | null | undefined; // undefined: checking
   #ipNote = "";
   #netSeq = 0; // drops answers from an older check
   // where the last render put the clickable parts; rows are frame lines, x columns in the frame
-  #hit = { top: 0, left: 0, rowsTop: 0, start: 0, rows: 0, width: 0, buttonsY: -1, buttons: "", setTop: -1, setX: 0, setW: 0 };
+  #hit = { top: 0, left: 0, rowsTop: 0, rowsLeft: 0, start: 0, rows: 0, width: 0, buttonsY: -1, buttons: "", setTop: -1, setX: 0, setW: 0 };
   readonly #email = findAccount()?.email ?? null; // the Firefox account the token came from
 
   constructor(conn: Connection, host: string, port: number) {
@@ -125,6 +137,7 @@ export class Tui {
   async run(): Promise<"logout" | undefined> {
     useSplit(() => this.#settings.split); // live: a change applies to the next connection
     setInterval(() => this.#splitOpen && this.#render(), 1000).unref(); // its counts climb as sites load
+    setInterval(() => this.#animate(), 100).unref();
     onLog(() => this.#logsOpen && this.#renderSoon());
     onProxyWarning((msg) => {
       this.#message = red(`proxy: ${msg}`);
@@ -147,6 +160,7 @@ export class Tui {
         ? red("offline: a killed global session's routes are still on — quit and run  foxhole restore")
         : red(`server list failed: ${(err as Error).message}`);
     }
+    this.#loading = false;
     // Connects at once to the last country used; never to whatever sorts first (a first run waits for a pick).
     if (this.#countries[this.#sel]?.code === loadLastCountry()) void this.#connect();
     this.#refreshUsage();
@@ -339,7 +353,7 @@ export class Tui {
     }
     if (linkAt(x, y)) return openUrl(REPO_URL);
     const k = fy - h.rowsTop;
-    if (k >= 0 && k < h.rows && fx >= 0 && fx < h.width) {
+    if (k >= 0 && k < h.rows && fx >= h.rowsLeft && fx < h.rowsLeft + h.width) {
       if (this.#busy) return;
       if (h.start + k === this.#sel) return press("return");
       this.#sel = h.start + k;
@@ -807,6 +821,22 @@ export class Tui {
     }, 100);
   }
 
+  /** The fox's mood: what the connection is doing. */
+  #mood(): Mood {
+    return this.#busy || this.#loading ? "waiting" : this.#global ? "global" : this.#active ? "proxy" : "off";
+  }
+
+  /** The fox's next frame, over the last where the last render put it: only its lines that changed are drawn. */
+  #animate(): void {
+    const at = this.#foxAt;
+    // resized: a render is coming, which places it anew
+    if (!at || !screenOn || at.cols !== (process.stdout.columns || 80) || at.rows !== (process.stdout.rows || 24)) return;
+    const lines = fox(this.#mood(), Date.now());
+    const out = lines.map((l, i) => (l === this.#foxDrawn[i] ? "" : `\x1b[${at.y + i + 1};${at.x + 1}H${l}`)).join("");
+    this.#foxDrawn = lines;
+    if (out) process.stdout.write("\x1b[0m" + out);
+  }
+
   #render(): void {
     if (!screenOn) return; // a late redraw (timer, log line) must not paint over the normal screen
     const u = this.#conn.usage;
@@ -829,24 +859,32 @@ export class Tui {
         ? `${cyan(this.#proxyAddr())}  ${dim([split ? "" : "SOCKS5 or HTTP", this.#host === "0.0.0.0" ? "shared on this network" : "", split ?? ""].filter(Boolean).join(" · "))}`
         : dim("—");
     const status = this.#message;
-    // A long status (e.g. a --verbose proxy error) would widen the box past the terminal and wrap.
-    const room4status = (process.stdout.columns || 80) - 20; // label 12, gap 2, border 4, slack 2
     const net = this.#net === undefined ? dim("checking…") : this.#net ?? yellow("offline");
     const ip = this.#ip === undefined ? dim("checking…") : this.#ip === null ? yellow("unreachable") : `${bold(this.#ip)}  ${dim(this.#ipNote)}`;
     const account = `${this.#email ?? dim("unknown")}  ${dim("O to log out")}`;
+    const cols = process.stdout.columns || 80, rows = process.stdout.rows || 24;
+    const wide = cols >= SIDE_W;
+    // A long value (e.g. a --verbose proxy error) would widen the box past the terminal, or its panel, and wrap.
+    const room4value = (wide ? LEFT_W : cols - 6) - 9; // border 4, slack 2; label and gap 9
     const headLines = [
       ["account", account],
       ["data", data],
       ["network", net],
       ["ip", ip],
-      ["route", fit(route, room4status)],
-      ["status", fit(status, room4status)],
-    ].map(([label, value]) => `${dim(label.padEnd(12))}  ${value}`);
+      ["route", route],
+      ["status", status],
+    ].map(([label, value]) => `${dim(label.padEnd(8))} ${fit(value, room4value)}`);
 
     const version = versionLines(true);
-    // A short window drops the tips before the buttons (they name the keys) get cut off.
-    const tips = (process.stdout.rows || 24) >= 22;
-    const room = Math.max(3, (process.stdout.rows || 24) - (tips ? 21 : 18) - version.length);
+    // A short window drops the tips, then the fox, before the buttons (they name the keys) get cut off.
+    const foot = 4 + version.length; // a blank line, the buttons, a blank line, the version, the link
+    const foxOn = wide ? rows - foot >= FOX_H + 9 : rows - 18 - version.length - (FOX_H + 1) >= 5;
+    const tips = wide
+      ? rows - foot - 3 >= (foxOn ? FOX_H + 9 : 9)
+      : foxOn ? rows - 21 - version.length - (FOX_H + 1) >= 5 : rows >= 22;
+    const room = Math.max(3, wide
+      ? rows - foot - (tips ? 3 : 0) - 6 // beside the details: the window's height
+      : rows - (tips ? 21 : 18) - version.length - (foxOn ? FOX_H + 1 : 0));
     const { start, slice } = window(this.#sel, this.#countries.length, room);
     const label = (c: Country) => `${flag(c.code)} ${countryName(c.code, c.name)}`;
     const body = slice.map((i) => {
@@ -876,16 +914,38 @@ export class Tui {
     // Lit while any site is split off, like a switch that's on
     const splitBtn = splitOn(sp) ? ["[Split ", under("T"), "unnel]"].map(lit).join("") : dim(`[Split ${under("T")}unnel]`);
     const buttons = [connectBtn, globalBtn, splitBtn, dim(key("S", "ettings")), dim(key("L", "ogs")), dim(key("Q", "uit"))].join("  ");
-    const headW = vw(box(headLines, { title, right: state })[0]);
-    const table = grid(["", "Code", "Tier", "Country"], body, {
-      caption: bold("Locations"),
-      captionRight: dim(range),
-      minWidth: Math.max(headW, vw(buttons), 78), // a steady 78, whichever buttons show: fits an 80-column terminal
-    });
-    const width = vw(table[0]);
+    const table = (minWidth: number) => grid(["", "Code", "Tier", "Country"], body, { caption: bold("Locations"), captionRight: dim(range), minWidth });
+    // Under a popup, its shape alone: the backdrop's colors go, which would leave half of each two-color cell
+    const covered = this.#restoring || this.#pwMode || this.#settingsOpen || this.#splitOpen || this.#logsOpen;
+    const foxLines = foxOn ? fox(this.#mood(), Date.now(), covered) : [];
+    let panels: string[];
+    let foxX: number, foxY: number; // where the fox is in the frame
+    let tableX = 0, tableY: number, tableW: number; // and the table's first country
+    if (wide) {
+      // the panel and the table as tall as each other: the window's height, or the fox's
+      const height = Math.max(foxOn ? FOX_H + 9 : 8, 6 + body.length);
+      while (body.length < height - 6) body.push(["", "", "", ""]);
+      // the fox above the details, the two in the middle of the panel
+      const group = [...foxLines.map((l) => centerIn(l, LEFT_W)), ...(foxOn ? [""] : []), ...headLines];
+      const gap = Math.floor((height - 2 - group.length) / 2);
+      const side = box([...Array<string>(gap).fill(""), ...group, ...Array<string>(height - 2 - gap - group.length).fill("")], {
+        title, right: state, width: LEFT_W,
+      });
+      const t = table(TABLE_W);
+      panels = side.map((l, i) => `${l} ${t[i]}`);
+      [foxX, foxY] = [2 + Math.floor((LEFT_W - FOX_W) / 2), 1 + gap];
+      [tableX, tableY, tableW] = [vw(side[0]) + 1, 5, vw(t[0])]; // after its caption and headings
+    } else {
+      const head = [...foxLines, ...(foxOn ? [""] : []), ...headLines];
+      const t = table(Math.max(vw(box(head, { title, right: state })[0]), vw(buttons), 78)); // a steady 78, whichever buttons show: fits an 80-column terminal
+      const inner = vw(t[0]) - 4;
+      panels = [...box(head.map((l, i) => (i < foxLines.length ? centerIn(l, inner) : l)), { title, right: state, width: inner }), ...t];
+      [foxX, foxY] = [2 + Math.floor((inner - FOX_W) / 2), 1];
+      [tableY, tableW] = [head.length + 2 + 5, vw(t[0])]; // the head box, then the table's caption and headings
+    }
+    const width = vw(panels[0]);
     const frame = [
-      ...box(headLines, { title, right: state, width: width - 4 }),
-      ...table,
+      ...panels,
       // The free locations' IPs are shared widely, so picky sites flag them.
       ...(tips ? [
         centerIn(dim("💡 Claude, ChatGPT, Gemini, Netflix, YouTube Music, Spotify and banks"), width),
@@ -911,12 +971,15 @@ export class Tui {
             ? this.#logsPopup(width, frame.length)
             : null;
     const { top, left } = draw(popup ? overlay(frame, popup, width) : frame);
+    // the fox's next frames go over this one (#animate); under a popup it waits
+    this.#foxAt = foxOn && !popup ? { x: left + foxX, y: top + foxY, cols, rows } : null;
+    this.#foxDrawn = foxLines;
     const buttonsY = frame.length - version.length - 3;
     // as overlay() places it: centered, with a 1-cell margin; the rows follow the border and a blank line
     const setW = popup ? vw(popup[0]) : 0;
     this.#hit = {
-      top, left, width, buttonsY, setW,
-      rowsTop: headLines.length + 2 + 5, // the head box, then the table's caption and headings
+      top, left, buttonsY, setW,
+      rowsTop: tableY, rowsLeft: tableX, width: tableW,
       start,
       rows: slice.length,
       buttons: frame[buttonsY].replace(/\x1b\[[0-9;]*m/g, ""),

@@ -249,6 +249,12 @@ Windows' own prompt (no need to launch the whole app with `sudo`, or as
 administrator), and `g` again turns it back off. Only the networking is
 elevated; the proxy and your Firefox login stay unprivileged.
 
+A fox at the top shows how you're connected: grey and asleep when
+disconnected, busy while connecting, awake with a green dot on the proxy, and
+glowing pink in global mode. In a window at least 103 columns wide, your
+connection's details and the countries sit side by side, and the fox needs 27
+rows; a narrower window stacks them, with the fox once it's 38 rows tall.
+
 Press **`l`** for **Logs**: a popup with proxy failures (e.g. ports the VPN
 refuses) and tun2socks output, updating live; **Esc** closes it. Logs are
 collected in every session, not only with `--verbose`.
