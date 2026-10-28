@@ -255,6 +255,35 @@ body.mac .titlebar { padding-left: 96px; }
 [data-phase="busy"] .power { animation: throb 1.1s ease-in-out infinite; }
 @keyframes throb { 50% { transform: scale(0.9); opacity: 0.7; } }
 .orb-label { position: absolute; bottom: 36px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.26em; text-transform: uppercase; color: rgba(255, 255, 255, 0.75); }
+/* The fox (fox3d.js), in 3D over the orb with its ears out over the rim; the orb turns to dark glass behind it */
+.fox3d { position: absolute; left: -25%; top: -29%; width: 150%; height: 150%; pointer-events: none; display: none;
+  filter: drop-shadow(0 14px 22px rgba(0, 0, 0, 0.5)) drop-shadow(0 0 24px color-mix(in oklab, var(--a1) 42%, transparent));
+  transition: transform 0.55s var(--spring), filter 0.8s; }
+.has-fox .fox3d { display: block; }
+.orb:hover ~ .fox3d { transform: translateY(-3px) scale(1.035); }
+.orb:active ~ .fox3d { transform: scale(0.95); transition-duration: 0.12s; }
+.has-fox .power { display: none; }
+.has-fox .orb-label { bottom: 13px; }
+.orb-wrap.has-fox .orb {
+  background:
+    radial-gradient(circle at 32% 22%, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.03) 28%, transparent 52%),
+    radial-gradient(circle at 50% 118%, color-mix(in oklab, var(--a1) 60%, transparent), transparent 64%),
+    linear-gradient(160deg, #261c3b, #0c0915); }
+/* asleep: z's drifting up from beside its ear */
+.zzz { position: absolute; right: -4%; top: 8%; width: 44px; height: 64px; pointer-events: none; display: none; }
+.has-fox .zzz { display: block; }
+.zzz i { position: absolute; left: 0; bottom: 0; font: 800 15px/1 var(--font); font-style: normal; opacity: 0;
+  color: color-mix(in oklab, var(--a1) 40%, #fff); text-shadow: 0 0 12px var(--a1); }
+[data-phase="off"] .zzz i { animation: zzz 4.2s ease-in-out infinite; }
+.zzz i:nth-child(2) { font-size: 19px; animation-delay: 1.4s; }
+.zzz i:nth-child(3) { font-size: 24px; animation-delay: 2.8s; }
+@keyframes zzz {
+  0% { transform: translate(0, 0) rotate(-12deg) scale(0.5); opacity: 0; }
+  15% { opacity: 0.9; }
+  70% { opacity: 0.6; }
+  100% { transform: translate(30px, -54px) rotate(10deg) scale(1.1); opacity: 0; }
+}
+body.idle .zzz i { animation-play-state: paused; }
 .shock { position: absolute; inset: 0; border-radius: 50%; pointer-events: none; border: 2px solid var(--a1);
   box-shadow: 0 0 30px var(--a1); animation: shock 0.9s var(--out) forwards; }
 @keyframes shock { from { transform: scale(0.96); opacity: 0.9; } to { transform: scale(1.6); opacity: 0; } }
@@ -593,6 +622,7 @@ kbd { font-family: var(--mono); font-size: 12px; padding: 1px 6px; border-radius
   .tip { font-size: 11.5px; padding: 11px 12px; }
   .power { width: 54px; height: 54px; }
   .orb-label { bottom: 28px; font-size: 9.5px; }
+  .has-fox .orb-label { bottom: 9px; }
   .status { min-height: 60px; }
   .status h1 { font-size: 27px; }
 }

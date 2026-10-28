@@ -65,7 +65,8 @@ Firefox does for its own VPN. See [AUTH.md](AUTH.md) for how.
 ## Desktop app
 
 The same foxhole-vpn in a window (`gui/`, Electron): the countries, a power
-button, **Whole system** mode (it asks for your password, or Touch ID, in the
+button with a 3D fox on it that shows how you're connected (asleep, searching,
+watching your pointer, or glowing in a ring of stars), **Whole system** mode (it asks for your password, or Touch ID, in the
 app, as the TUI does), split tunneling, settings, sharing with your phone and
 the logs. It carries its own Node.js, so whoever downloads it installs nothing
 else. It keeps its settings, saved token and last country where the TUI does
