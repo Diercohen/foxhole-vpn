@@ -2,6 +2,8 @@
 // VPN. Every call authenticates with an FxA access token (VPN scope) that the
 // auth module provides; see auth.ts.
 import https from "node:https";
+import { log } from "./log.js";
+import { relayRequest, type RelayConfig } from "./httprelay.js";
 
 export const GUARDIAN_HOST = "vpn.mozilla.org";
 
@@ -12,6 +14,14 @@ let pinnedIp: string | null = null;
 /** Sends every later Guardian request to `ip` instead of looking the host up (global mode). */
 export function pinGuardian(ip: string): void {
   pinnedIp = ip;
+}
+
+// Where vpn.mozilla.org is blocked (Iran), the one call that can't be reached directly goes through this relay.
+let relay: RelayConfig | null = null;
+
+/** Sets (or clears, with null) the relay guardian falls back to when vpn.mozilla.org won't connect. */
+export function useRelay(r: RelayConfig | null): void {
+  relay = r;
 }
 
 /** A proxy pass: the short-lived JWT the proxy servers accept. */
@@ -74,10 +84,29 @@ function bearer(accessToken: string): Record<string, string> {
 }
 
 /**
+ * A Guardian request: direct, falling back to the relay (when one is set) if vpn.mozilla.org won't connect —
+ * which is how it's blocked on Iranian IPs. Only this control call is relayed, never the VPN's data.
+ */
+async function request(method: "GET" | "HEAD", path: string, accessToken: string, signal?: AbortSignal): Promise<Response> {
+  try {
+    return await directRequest(method, path, accessToken, signal);
+  } catch (err) {
+    if (!relay) throw err;
+    // UrlFetchApp has no HEAD, and here we only read the response's headers, so a HEAD goes through as GET.
+    log(`guardian: ${GUARDIAN_HOST} unreachable, relaying ${path} via Apps Script`);
+    return relayRequest(
+      relay,
+      { method: method === "HEAD" ? "GET" : method, url: `https://${GUARDIAN_HOST}${path}`, headers: bearer(accessToken) },
+      signal,
+    );
+  }
+}
+
+/**
  * fetch() for Guardian, able to dial the pinned IP while TLS and the Host header keep
  * the hostname (as proxy.ts does for the VPN server). fetch() has no option for that.
  */
-function request(method: "GET" | "HEAD", path: string, accessToken: string, signal?: AbortSignal): Promise<Response> {
+function directRequest(method: "GET" | "HEAD", path: string, accessToken: string, signal?: AbortSignal): Promise<Response> {
   return new Promise((resolve, reject) => {
     const fail = (err: Error) => reject(new Error(`can't reach ${GUARDIAN_HOST}`, { cause: err }));
     const req = https.request(
@@ -88,7 +117,9 @@ function request(method: "GET" | "HEAD", path: string, accessToken: string, sign
         method,
         headers: { Host: GUARDIAN_HOST, ...bearer(accessToken) },
         signal,
-        timeout: 10_000, // like fetch's connect timeout; a dead pinned IP would hang for minutes
+        // like fetch's connect timeout; a dead pinned IP would hang for minutes. Shorter with a relay to fall
+        // back to, so a silently-dropped (blocked) connection gives up sooner.
+        timeout: relay ? 6_000 : 10_000,
       },
       (res) => {
         const chunks: Buffer[] = [];

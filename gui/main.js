@@ -17,11 +17,16 @@ if (!app.requestSingleInstanceLock()) process.exit(0);
 // As cli.ts: Node gives each server address only 250 ms; far VPN servers take 600-900 ms to answer.
 net.setDefaultAutoSelectFamilyAttemptTimeout(3000);
 
-const LINKS = { repo: REPO_URL, releases: `${REPO_URL}/releases`, firefox: "https://www.mozilla.org/firefox/new/" };
+const LINKS = {
+  repo: REPO_URL, releases: `${REPO_URL}/releases`, firefox: "https://www.mozilla.org/firefox/new/",
+  relay: `${REPO_URL}#where-vpnmozillaorg-is-blocked-eg-iran`,
+  gas: "https://script.google.com", // Google Apps Script, for the relay setup guide
+  codegs: "https://github.com/masterking32/MasterHttpRelayVPN/blob/python_testing/apps_script/Code.gs",
+};
 // What the window may ask for: the Controller's actions, nothing else of it
 const ACTIONS = new Set([
   "state", "power", "connect", "disconnect", "toggleGlobal", "submitPassword", "cancelPassword",
-  "setShare", "setPort", "setLogin", "openSettings", "openSplit", "setSplitDefault", "addRule", "toggleRule", "removeRule",
+  "setShare", "setPort", "setLogin", "setRelay", "openSettings", "openSplit", "setSplitDefault", "addRule", "toggleRule", "removeRule",
   "logs", "copy", "copyLogs", "openFirefox", "copySnippet", "switchAccount", "keepAccount", "reloadList",
 ]);
 

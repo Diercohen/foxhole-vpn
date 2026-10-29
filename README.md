@@ -347,6 +347,52 @@ foxhole doctor   # should print entitlement + remaining data
 
 Free-tier countries: 🇺🇸 US · 🇩🇪 DE · 🇯🇵 JP · 🇦🇺 AU · 🇦🇷 AR · 🇿🇦 ZA.
 
+### Where `vpn.mozilla.org` is blocked (e.g. Iran)
+
+On some networks — Iranian IPs among them — `vpn.mozilla.org`, the control API
+foxhole-vpn asks for a proxy pass, is blocked, while the Firefox account server
+and the server list still work. foxhole shows `can't reach vpn.mozilla.org` and
+can't connect, even though the VPN's own servers (on Fastly) are reachable.
+
+For that case foxhole can relay **only those control calls** through a Google
+Apps Script web app — [MasterHttpRelayVPN](https://github.com/masterking32/MasterHttpRelayVPN).
+`script.google.com` is reachable where `vpn.mozilla.org` isn't; the script
+fetches Guardian from Google's servers and returns the reply. It carries just
+the small control calls (the pass, your remaining data, the entitlement), and
+only when the direct connection fails — **never the VPN's traffic**, which flows
+straight through the tunnel to Fastly as usual. So once you're connected, your
+browsing never touches the relay. In whole-system mode the control calls, too,
+go directly through the tunnel once it's up, so the relay is used only to get
+the first connection.
+
+Set it up with your **own** deployment (the script sees the short-lived,
+VPN-scoped access token while it relays, so don't use someone else's):
+
+1. In the [MasterHttpRelayVPN](https://github.com/masterking32/MasterHttpRelayVPN)
+   repo, open `apps_script/Code.gs`. Create a project at
+   <https://script.google.com>, paste it in, and set `AUTH_KEY` to a long random
+   secret of your own.
+2. **Deploy → New deployment → Web app**, *Execute as: Me*, *Who has access:
+   Anyone*. Copy the **Deployment ID**.
+3. Give both to foxhole, by environment:
+
+   ```sh
+   export FOXHOLE_RELAY_ID=<the Deployment ID>
+   export FOXHOLE_RELAY_KEY=<the same AUTH_KEY you set in Code.gs>
+   foxhole doctor      # entitlement + data should now load through the relay
+   ```
+
+   or save them in `~/.config/foxhole-vpn/settings.json` (mode 0600; the
+   environment wins and takes effect without a restart):
+
+   ```json
+   { "relay": { "deploymentId": "<Deployment ID>", "authKey": "<AUTH_KEY>" } }
+   ```
+
+The desktop app reads the same settings. Keep the auth key secret, and note
+Apps Script's free quota (about 20,000 URL-fetch calls a day) — far more than
+foxhole's occasional control calls need.
+
 ## Limits
 
 - **TCP only.** The upstream is HTTP `CONNECT`; UDP/QUIC won't tunnel. Global

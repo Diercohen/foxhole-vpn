@@ -17,6 +17,11 @@ assert.deepEqual(parseSettings('{"share":true,"autoConnect":false}'), { ...DEFAU
 assert.deepEqual(parseSettings("not json"), DEFAULTS, "corrupt file: defaults");
 assert.deepEqual(parseSettings("null"), DEFAULTS, "null: defaults");
 assert.deepEqual(parseSettings('{"share":"yes","port":70000}'), DEFAULTS, "bad values dropped");
+
+// The optional Apps Script relay (httprelay.ts): kept when both parts are strings, no key otherwise.
+assert.deepEqual(parseSettings('{"relay":{"deploymentId":"DID","authKey":"KEY"}}'), { ...DEFAULTS, relay: { deploymentId: "DID", authKey: "KEY" } }, "valid relay kept");
+assert.deepEqual(parseSettings('{"relay":{"deploymentId":"DID"}}'), DEFAULTS, "half a relay dropped (no key)");
+assert.ok(!("relay" in parseSettings("{}")), "no relay key when unset");
 assert.deepEqual(parseSettings('{"port":2080}'), { ...DEFAULTS, port: 2080 }, "missing keys default");
 assert.ok(validPort(1) && validPort(65535) && !validPort(0) && !validPort(65536) && !validPort(80.5) && !validPort("80"));
 assert.equal(proxyHost({ ...DEFAULTS, share: true }), "0.0.0.0");

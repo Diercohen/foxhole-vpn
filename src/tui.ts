@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { userHome, findAccount } from "./profile.js";
 import { fetchServerList, type Country } from "./serverlist.js";
 import { Connection } from "./connection.js";
-import { GuardianError } from "./guardian.js";
+import { GuardianError, useRelay } from "./guardian.js";
 import { network, publicIp, lanIp, firewallHint } from "./netinfo.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor, type Settings } from "./settings.js";
 import { forgetToken } from "./tokenserver.js";
@@ -16,6 +16,8 @@ import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUse
 import { checkUpdate, canUpdate, runUpdate, restart, versionLines, UPDATE_COMMAND } from "./update.js";
 import { bold, dim, under, strike, green, red, yellow, cyan, lit, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
 import { fox, FOX_W, FOX_H, type Mood } from "./fox.js";
+import { loadRelay } from "./httprelay.js";
+import { randomBytes } from "node:crypto";
 
 const ESC = "\x1b[";
 // alternate screen + hidden cursor + mouse reports (SGR): clicks and the wheel, see #mouse()
@@ -48,7 +50,15 @@ const SETTINGS = [
   { key: "port", label: "Proxy port" },
   { key: "username", label: "Username" },
   { key: "password", label: "Password" },
+  { key: "relayId", label: "VPN relay · deployment ID" },
+  { key: "relayKey", label: "VPN relay · auth key" },
 ] as const;
+
+/** Merges a relay change into the current config; undefined (off) once both parts are empty. */
+const relayWith = (cur: Settings["relay"], patch: { deploymentId?: string; authKey?: string }): Settings["relay"] => {
+  const r = { deploymentId: cur?.deploymentId ?? "", authKey: cur?.authKey ?? "", ...patch };
+  return r.deploymentId || r.authKey ? r : undefined;
+};
 
 /** The last country connected to; the next start puts the cursor on it. */
 const lastCountryFile = () => join(userHome(), ".config", "foxhole-vpn", "country");
@@ -85,7 +95,7 @@ export class Tui {
   #settings: Settings = loadSettings();
   #settingsOpen = false; // the Settings popup is open
   #setSel = 0;
-  #edit: { key: "port" | "username" | "password"; text: string } | null = null; // the setting being typed
+  #edit: { key: "port" | "username" | "password" | "relayId" | "relayKey"; text: string } | null = null; // the setting being typed
   readonly #login = (address: string | undefined) => loginFor(this.#settings, address); // live: a change applies to the next client
   #settingsNote = "";
   #fwHint: string[] | null = null; // commands that open the proxy's port in an active firewall (Linux)
@@ -577,8 +587,18 @@ export class Tui {
         if (e.key === "port" && !validPort(Number(e.text))) this.#settingsNote = red("A port is a number from 1 to 65535.");
         else {
           this.#edit = null;
-          return void this.#changeSetting(e.key === "port" ? { port: Number(e.text) } : { [e.key]: e.text });
+          return void this.#changeSetting(
+            e.key === "port"
+              ? { port: Number(e.text) }
+              : e.key === "username"
+                ? { username: e.text }
+                : e.key === "password"
+                  ? { password: e.text }
+                  : { relay: relayWith(this.#settings.relay, e.key === "relayId" ? { deploymentId: e.text.trim() } : { authKey: e.text.trim() }) },
+          );
         }
+      } else if (e.key === "relayKey" && key.name === "tab") {
+        e.text = randomBytes(24).toString("base64url"); // a strong key, to paste into Code.gs's AUTH_KEY
       } else if (e.key === "port") {
         if (/^\d$/.test(s) && e.text.length < 5) e.text += s;
       } else if (s && s.length === 1 && s >= " " && !key.ctrl && !key.meta && Buffer.byteLength(e.text + s) <= 255) {
@@ -605,8 +625,8 @@ export class Tui {
       case "space": {
         const item = SETTINGS[this.#setSel].key;
         if (item === "share") return void this.#changeSetting({ share: !this.#settings.share });
-        // typed in place: the username starts from the current one, a port or password from scratch
-        this.#edit = { key: item, text: item === "username" ? this.#settings.username : "" };
+        // typed in place: the username and relay id start from the current value, the rest from scratch
+        this.#edit = { key: item, text: item === "username" ? this.#settings.username : item === "relayId" ? (this.#settings.relay?.deploymentId ?? "") : "" };
         this.#settingsNote = "";
       }
     }
@@ -729,6 +749,7 @@ export class Tui {
     }
     this.#settings = next;
     this.#settingsNote = "";
+    if ("relay" in patch) useRelay(loadRelay(next)); // takes effect at once, no restart
     if ("share" in patch || "port" in patch) {
       this.#host = proxyHost(next);
       this.#port = next.port;
@@ -775,11 +796,22 @@ export class Tui {
     const s = this.#settings;
     const e = this.#edit;
     const cursor = cyan("▏");
+    // long values (the 57-char deployment id, the key) would widen the box: scroll the tail while typing, middle-truncate at rest
+    const relayVal = (full: string, editing: boolean, masked: boolean) =>
+      editing
+        ? (full.length > 23 ? "…" + full.slice(-22) : full) + cursor
+        : !full
+          ? dim("off")
+          : masked
+            ? "••••••••"
+            : full.length > 22 ? full.slice(0, 11) + "…" + full.slice(-6) : full;
     const values = [
       onOff(s.share),
       e?.key === "port" ? e.text + cursor : String(s.port),
       e?.key === "username" ? e.text + cursor : s.username || dim("optional"),
       e?.key === "password" ? "•".repeat(e.text.length) + cursor : s.password ? "••••••••" : dim("optional"),
+      relayVal(e?.key === "relayId" ? e.text : s.relay?.deploymentId ?? "", e?.key === "relayId", false),
+      relayVal(e?.key === "relayKey" ? e.text : s.relay?.authKey ?? "", e?.key === "relayKey", true),
     ];
     const w = Math.max(...SETTINGS.map((it) => it.label.length));
     const rows = SETTINGS.map((it, i) => {
@@ -791,6 +823,14 @@ export class Tui {
       e?.key === what
         ? [dim(`Type the ${what} · enter save (empty: none) · esc cancel`)]
         : [dim("Asked from other devices when sharing is on; apps on"), dim("this computer don't need it. Optional: empty means no login.")];
+    // A very short in-app guide for making the Apps Script keys, shown on the relay rows until one is set up.
+    const relayGuide = [
+      dim("Blocked vpn.mozilla.org (Iran)? Relay via your own Apps Script:"),
+      dim("1. script.google.com → New project, paste in Code.gs (see README)."),
+      dim("2. Set its AUTH_KEY: pick the auth-key row, press Tab to make one."),
+      dim("3. Deploy ▸ Web app (Me / Anyone), paste the Deployment ID here."),
+    ];
+    const relayOn = [green("Relay on — used only when vpn.mozilla.org can't be reached."), dim("Clear both fields to turn it off.")];
     const help = {
       share: s.share
         ? [
@@ -806,6 +846,12 @@ export class Tui {
         : [dim("One port serves SOCKS5 and HTTP. Default 1080.")],
       username: loginHelp("username"),
       password: loginHelp("password"),
+      relayId: e?.key === "relayId"
+        ? [dim("Paste your Apps Script deployment id · enter save · esc cancel")]
+        : s.relay ? relayOn : relayGuide,
+      relayKey: e?.key === "relayKey"
+        ? [dim("Type or paste the auth key · tab: generate a strong one"), dim("enter save · esc cancel")]
+        : s.relay ? relayOn : relayGuide,
     }[SETTINGS[this.#setSel].key];
     return box(
       ["", ...rows, "", ...help, this.#settingsNote, "", dim("↑↓ select · enter change · esc close")],

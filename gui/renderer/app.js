@@ -260,7 +260,7 @@ function drawRecent() {
 // ── Settings ───────────────────────────────────────────────────────────────────────────────
 
 function renderSettings() {
-  section("settings", [S.settings.share, S.settings.port, S.settings.username, S.settings.password, S.lanIp, S.fwHint], () => {
+  section("settings", [S.settings.share, S.settings.port, S.settings.username, S.settings.password, S.settings.relay, S.lanIp, S.fwHint], () => {
     const s = S.settings;
     const share = $("#share");
     share.classList.toggle("on", s.share);
@@ -277,6 +277,13 @@ function renderSettings() {
     if (document.activeElement !== $("#port")) $("#port").value = String(s.port);
     if (document.activeElement !== $("#username")) $("#username").value = s.username;
     if (document.activeElement !== $("#password")) $("#password").value = s.password;
+    // The relay: the auth key never reaches the window, so its field stays empty (placeholder says if one is set).
+    const r = s.relay; // { deploymentId, set } or null
+    if (document.activeElement !== $("#relay-id")) $("#relay-id").value = r?.deploymentId ?? "";
+    $("#relay-key").placeholder = r?.set ? "•••••••• — type to replace" : "Auth key";
+    $("#relay-state").innerHTML = r
+      ? "On — the control calls go through the relay when <code>vpn.mozilla.org</code> can't be reached directly."
+      : "Off — foxhole talks to Mozilla directly.";
   });
   const note = $("#settings-note");
   note.dataset.tone = S.settingsNote?.tone ?? "";
@@ -447,6 +454,27 @@ document.addEventListener("click", async (e) => {
       pw.type = pw.type === "password" ? "text" : "password";
       return;
     }
+    case "relay-reveal": {
+      const k = $("#relay-key");
+      k.type = k.type === "password" ? "text" : "password";
+      return;
+    }
+    case "relay-guide-toggle": {
+      const g = $("#relay-guide");
+      g.hidden = !g.hidden;
+      t.textContent = g.hidden ? "Show setup guide" : "Hide setup guide";
+      return;
+    }
+    case "relay-gen": {
+      // a strong random key, shown and copied, to paste into Code.gs's AUTH_KEY (no need to invent one)
+      const bytes = crypto.getRandomValues(new Uint8Array(24));
+      const key = btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      $("#relay-key").value = key;
+      $("#relay-key").type = "text"; // revealed so it can be checked against Code.gs
+      act("copy", key);
+      flash(t, `${icon("check")}Key copied — paste into Code.gs`);
+      return;
+    }
     case "switch-account":
       closeSheet();
       return act("switchAccount");
@@ -481,6 +509,15 @@ $("#login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const btn = e.target.querySelector("button[type=submit]");
   if (await act("setLogin", $("#username").value, $("#password").value)) flash(btn, `${icon("check")}Saved`);
+});
+
+$("#relay-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector("button[type=submit]");
+  if (await act("setRelay", $("#relay-id").value, $("#relay-key").value)) {
+    flash(btn, `${icon("check")}Saved`);
+    $("#relay-key").value = ""; // the key isn't kept in the window
+  }
 });
 
 $("#pw-form").addEventListener("submit", (e) => {

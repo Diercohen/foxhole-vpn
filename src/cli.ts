@@ -6,7 +6,8 @@ import { fetchServerList } from "./serverlist.js";
 import { findAccount, openBrowser, type AccountState } from "./profile.js";
 import { FirefoxAuth, StaticAuth, type Authenticator } from "./auth.js";
 import { Connection, findCountry } from "./connection.js";
-import { fetchEntitlement } from "./guardian.js";
+import { fetchEntitlement, useRelay } from "./guardian.js";
+import { loadRelay } from "./httprelay.js";
 import { startProxy } from "./proxy.js";
 import { firewallHint, lanIp } from "./netinfo.js";
 import { useSplit, splitSummary, type Split } from "./split.js";
@@ -521,6 +522,7 @@ async function main() {
   // Windows: global mode's helper, started as Administrator through Windows' admin prompt (global-win32.ts's uacPriv)
   if (process.argv[2] === HELPER_CMD) return serveElevated(process.argv[3]);
   checkUpdate(); // fire while the command runs; shown afterwards
+  useRelay(loadRelay(loadSettings())); // where vpn.mozilla.org is blocked, relay Guardian's control calls (httprelay.ts)
   const cmd = process.argv.slice(2).find((a) => a !== "--verbose") ?? "tui"; // --verbose can go anywhere
   if (cmd === "-v" || cmd === "--version" || cmd === "version") {
     await checkUpdate();

@@ -5,7 +5,8 @@ import { findAccount, openBrowser } from "./dist/profile.js";
 import { fetchServerList } from "./dist/serverlist.js";
 import { Connection } from "./dist/connection.js";
 import { FirefoxAuth, StaticAuth } from "./dist/auth.js";
-import { GuardianError } from "./dist/guardian.js";
+import { GuardianError, useRelay } from "./dist/guardian.js";
+import { loadRelay } from "./dist/httprelay.js";
 import { network, publicIp, lanIp, firewallHint } from "./dist/netinfo.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor } from "./dist/settings.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenProblem } from "./dist/tokenserver.js";
@@ -63,6 +64,7 @@ export class Controller extends EventEmitter {
 
   /** global: turn whole-system mode on once connected (the restart into an update, when it was on). */
   async start({ global = false } = {}) {
+    useRelay(loadRelay(this.#settings)); // where vpn.mozilla.org is blocked, relay Guardian's control calls (httprelay.ts)
     useSplit(() => this.#settings.split); // live: a change applies to the next connection
     onLog(() => this.emit("log", logLines[logLines.length - 1]));
     onProxyWarning((msg) => this.#say("error", `proxy: ${msg}`));
@@ -418,6 +420,13 @@ export class Controller extends EventEmitter {
     if (Buffer.byteLength(username) > 255 || Buffer.byteLength(password) > 255) return void this.#note("settings", "error", "255 bytes at most.");
     return this.#changeSetting({ username, password });
   }
+  /** The Apps Script relay for a blocked vpn.mozilla.org (httprelay.ts): both parts set it, both empty clear it. */
+  setRelay(deploymentId, authKey) {
+    const id = String(deploymentId ?? "").trim();
+    const key = String(authKey ?? "").trim();
+    if (Boolean(id) !== Boolean(key)) return void this.#note("settings", "error", "Enter both the deployment ID and the auth key, or clear both to turn the relay off.");
+    return this.#changeSetting({ relay: id ? { deploymentId: id, authKey: key } : undefined });
+  }
 
   /** Saves a change and applies it: a new address or port restarts a running proxy. */
   async #changeSetting(patch) {
@@ -429,6 +438,7 @@ export class Controller extends EventEmitter {
     }
     this.#settings = next;
     this.#settingsNote = null;
+    if ("relay" in patch) useRelay(loadRelay(next)); // takes effect at once, no restart
     if ("share" in patch || "port" in patch) {
       this.#host = proxyHost(next);
       this.#port = next.port;
@@ -610,7 +620,8 @@ export class Controller extends EventEmitter {
       ipNote: this.#ipNote,
       proxy: this.#active ? { addr: this.#proxyAddr(), shared: this.#host === "0.0.0.0" } : null,
       splitSummary: splitSummary(sp),
-      settings: { ...this.#settings },
+      // the relay's auth key stays in the main process, out of the window; the id (it's in a URL) and whether a key is set are shown
+      settings: { ...this.#settings, relay: this.#settings.relay ? { deploymentId: this.#settings.relay.deploymentId, set: true } : null },
       lanIp: lanIp(),
       fwHint: this.#fwHint,
       settingsNote: this.#settingsNote,

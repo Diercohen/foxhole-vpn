@@ -521,6 +521,10 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .via.direct { color: #ffd27a; background: rgba(255, 194, 71, 0.12); box-shadow: inset 0 0 0 1px rgba(255, 194, 71, 0.32), 0 0 16px -8px var(--amber); }
 .rules .empty { padding: 22px 16px; border-radius: 16px; background: rgba(255, 255, 255, 0.025); box-shadow: inset 0 0 0 1px var(--line); font-size: 12.5px; }
 
+.relay-guide { display: flex; flex-direction: column; gap: 14px; padding: 14px 16px; border-radius: 16px;
+  background: linear-gradient(135deg, rgba(139, 92, 255, 0.08), rgba(69, 182, 255, 0.05)); box-shadow: inset 0 0 0 1px rgba(139, 92, 255, 0.18); }
+.relay-guide .steps { margin: 0; }
+.relay-guide .btn { align-self: flex-start; }
 .share-box { display: flex; flex-direction: column; gap: 8px; }
 .share-box:empty { display: none; }
 .addr { display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 14px; border-radius: 14px;

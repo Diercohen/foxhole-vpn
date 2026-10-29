@@ -196,6 +196,25 @@
       </div>
       <div class="hint">Asked from other devices when sharing is on; apps on this computer don't need it. Empty means no login.</div>
     </form>
+    <form class="group" id="relay-form">
+      <div class="label"><svg class="i"><use href="#i-shield"/></svg>VPN relay</div>
+      <div class="hint">Where <code>vpn.mozilla.org</code> is blocked (e.g. Iran), reach it through your own free Google Apps Script — it carries only the small control calls, never your traffic. <span class="link" id="relay-guide-toggle">Show setup guide</span></div>
+      <div class="relay-guide" id="relay-guide" hidden>
+        <ol class="steps">
+          <li><span><b>Generate a key</b> below (it's copied to your clipboard), then open <span class="link" data-open="gas">script.google.com</span> → <b>New project</b> and delete the sample code.</span></li>
+          <li><span>Paste in <span class="link" data-open="codegs">Code.gs</span> from the relay project, and set its <code>AUTH_KEY</code> to the key you generated.</span></li>
+          <li><span><b>Deploy → New deployment → Web app</b> · Execute as <b>Me</b> · Who has access <b>Anyone</b>. Copy the <b>Deployment ID</b> it gives you.</span></li>
+          <li><span>Paste that Deployment ID below and press <b>Save</b>. foxhole uses the relay only when Mozilla can't be reached directly.</span></li>
+        </ol>
+        <button class="btn primary" type="button" id="relay-gen"><svg class="i"><use href="#i-refresh"/></svg>Generate a secure auth key</button>
+      </div>
+      <input id="relay-id" placeholder="Apps Script deployment ID" autocomplete="off" spellcheck="false">
+      <div class="input-row">
+        <div class="pw-wrap"><input id="relay-key" type="password" placeholder="Auth key" autocomplete="off"><button class="mini" type="button" id="relay-reveal" title="Show"><svg class="i"><use href="#i-eye"/></svg></button></div>
+        <button class="btn" type="submit">Save</button>
+      </div>
+      <div class="hint" id="relay-state"></div>
+    </form>
     <div class="note" id="settings-note"></div>
     <div class="group">
       <div class="label">Firefox account</div>

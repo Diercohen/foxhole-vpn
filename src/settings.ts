@@ -12,6 +12,9 @@ export interface Settings {
   username: string; // proxy login asked from other devices; both empty: none
   password: string;
   split: Split; // split tunneling: which sites use the VPN, which go direct
+  // Optional Apps Script relay for reaching Guardian where vpn.mozilla.org is blocked (see httprelay.ts). Hand-set
+  // in this file or given via FOXHOLE_RELAY_ID/KEY; not shown or edited in the UI. The authKey is a shared secret.
+  relay?: { deploymentId: string; authKey: string };
 }
 
 export const DEFAULTS: Settings = { share: false, port: 1080, username: "", password: "", split: NO_SPLIT };
@@ -33,6 +36,14 @@ function parseSplit(v: unknown): Split {
   return { default: isVia(o.default) ? o.default : NO_SPLIT.default, rules };
 }
 
+/** The relay a file holds, if both parts are non-empty strings; else undefined. Pure. */
+function parseRelay(v: unknown): Settings["relay"] {
+  const o = (v && typeof v === "object" ? v : {}) as { deploymentId?: unknown; authKey?: unknown };
+  return typeof o.deploymentId === "string" && o.deploymentId && typeof o.authKey === "string" && o.authKey
+    ? { deploymentId: o.deploymentId, authKey: o.authKey }
+    : undefined;
+}
+
 /** Keeps only well-formed values, falling back to the defaults. Pure. */
 export function parseSettings(json: string): Settings {
   let o: Partial<Record<keyof Settings, unknown>> = {};
@@ -48,6 +59,8 @@ export function parseSettings(json: string): Settings {
     username: typeof o.username === "string" ? o.username : DEFAULTS.username,
     password: typeof o.password === "string" ? o.password : DEFAULTS.password,
     split: parseSplit(o.split),
+    // kept so a hand-added relay survives the next save; no key at all when unset, to keep the file clean
+    ...(parseRelay(o.relay) ? { relay: parseRelay(o.relay) } : {}),
   };
 }
 
