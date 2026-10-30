@@ -24,6 +24,59 @@ function profileRoots(): string[] {
   ].filter(existsSync);
 }
 
+/** macOS's Privacy & Security → Full Disk Access pane. */
+export const FULL_DISK_ACCESS = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
+
+/**
+ * The app macOS asks about: it charges a program started from a terminal to that terminal (the desktop app too,
+ * as `npm start` runs it), else to the app itself: Foxhole, or Electron for a development copy.
+ */
+export function macApp(): string {
+  const names: Record<string, string> = { Apple_Terminal: "Terminal", "iTerm.app": "iTerm", vscode: "Visual Studio Code", WarpTerminal: "Warp", ghostty: "Ghostty", WezTerm: "WezTerm" };
+  const term = names[process.env.TERM_PROGRAM ?? ""];
+  if (term || !process.versions.electron) return term ?? "your terminal app";
+  return process.execPath.includes("node_modules") ? "Electron" : "Foxhole";
+}
+
+/**
+ * The system refused to let us read Firefox's profile (EPERM/EACCES). On macOS that's its privacy protection of
+ * other apps' data (~/Library/Application Support/Firefox): the app foxhole runs in needs Full Disk Access. On
+ * Linux and Windows there's no such gate; it means the files belong to another user (e.g. Firefox once run with sudo).
+ */
+export class ProfileAccessError extends Error {
+  constructor(readonly path: string, readonly code: string) {
+    const app = macApp();
+    super(
+      process.platform === "darwin"
+        ? [
+            `macOS didn't let ${process.versions.electron ? "Foxhole" : "foxhole"} read Firefox's sign-in (${path}).`,
+            "To allow it:",
+            "1. Open System Settings → Privacy & Security → Full Disk Access.",
+            `2. Turn on ${app}. Not in the list? Click +, then pick it in Applications${app === "Terminal" ? " → Utilities" : ""}.`,
+            `3. Quit ${app} completely (⌘Q) and open it again${process.versions.electron ? ", then Foxhole" : ", then run foxhole"}.`,
+            `If macOS asks whether ${app} may access data from other apps, click Allow.`,
+          ].join("\n")
+        : [
+            `Can't read Firefox's sign-in: ${path} (${code}).`,
+            process.platform === "win32"
+              ? "Run foxhole as the same Windows user who uses Firefox."
+              : `Its files likely belong to another user (Firefox run with sudo?). Make them yours: sudo chown -R "$USER" "${join(path, "..")}"`,
+          ].join("\n"),
+    );
+  }
+}
+
+/** Reads a file, turning the system's refusal into a ProfileAccessError. */
+function readProfileFile(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? "";
+    if (code === "EPERM" || code === "EACCES") throw new ProfileAccessError(path, code);
+    throw err;
+  }
+}
+
 /** Reads a flat INI into { section: { key: value } }. */
 function parseIni(text: string): Record<string, Record<string, string>> {
   const out: Record<string, Record<string, string>> = {};
@@ -47,7 +100,7 @@ function candidateProfiles(root: string): string[] {
   const dirs: string[] = [];
   const iniPath = join(root, "profiles.ini");
   if (existsSync(iniPath)) {
-    const ini = parseIni(readFileSync(iniPath, "utf8"));
+    const ini = parseIni(readProfileFile(iniPath));
     // Install sections point at the profile Firefox actually launches.
     for (const [name, sec] of Object.entries(ini)) {
       if (name.startsWith("Install") && sec.Default) dirs.push(join(root, sec.Default));
@@ -77,6 +130,7 @@ export interface AccountState {
   signedIn: boolean;
   verified: boolean;
   email: string | null;
+  blocked?: ProfileAccessError; // the system won't let us read the profile: signedIn is false, and this says how to allow it
 }
 
 /**
@@ -84,6 +138,15 @@ export interface AccountState {
  * sign-in state. Does NOT return or log the session token.
  */
 export function findAccount(): AccountState | null {
+  try {
+    return readAccount();
+  } catch (err) {
+    if (!(err instanceof ProfileAccessError)) throw err;
+    return { profileDir: join(err.path, ".."), signedIn: false, verified: false, email: null, blocked: err };
+  }
+}
+
+function readAccount(): AccountState | null {
   // Every install's profiles, the most recently used first (Firefox writes prefs.js as it runs):
   // Ubuntu can have a stale ~/.mozilla beside the snap's live one, or the other way round.
   const used = (dir: string) => {
@@ -99,7 +162,7 @@ export function findAccount(): AccountState | null {
     if (!existsSync(f)) continue;
     try {
       // Firefox writes `null` here on sign-out
-      const data = JSON.parse(readFileSync(f, "utf8")) as {
+      const data = JSON.parse(readProfileFile(f)) as {
         accountData?: { email?: string; verified?: boolean; sessionToken?: string };
       } | null;
       const acct = data?.accountData;
@@ -110,8 +173,9 @@ export function findAccount(): AccountState | null {
         verified: !!acct?.verified,
         email: acct?.email ?? null,
       };
-    } catch {
-      /* unreadable/locked profile, try the next */
+    } catch (err) {
+      if (err instanceof ProfileAccessError) throw err; // not ours to read: say how to allow it, rather than "not signed in"
+      /* half-written or malformed: try the next */
     }
   }
   // No profile has signedInUser.json at all → report the most recent as signed-out.

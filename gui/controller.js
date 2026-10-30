@@ -1,7 +1,7 @@
 // The desktop app's state and actions, on the same modules as the TUI (src/tui.ts, which this
 // follows step by step): the main process owns them, the window shows state() and asks for actions.
 import { EventEmitter } from "node:events";
-import { findAccount, openBrowser } from "./dist/profile.js";
+import { findAccount, openBrowser, macApp } from "./dist/profile.js";
 import { fetchServerList } from "./dist/serverlist.js";
 import { Connection } from "./dist/connection.js";
 import { FirefoxAuth, StaticAuth } from "./dist/auth.js";
@@ -118,6 +118,13 @@ export class Controller extends EventEmitter {
         if (!problem) return new StaticAuth(saved);
         forgetToken();
         errors.push(`Your saved token ${problem}.`);
+      }
+      if (account?.blocked) {
+        // macOS won't let the app read Firefox's profile: the window says how to allow it (Full Disk Access)
+        this.#auth = { stage: "blocked", error: account.blocked.message, app: macApp() }; // app: the one macOS asks about
+        this.#changed();
+        await this.#until(() => !findAccount()?.blocked); // allowed without a restart: carry on
+        continue;
       }
       if (account?.signedIn) return this.#captureToken(errors.join("\n"));
       // Signed out: the sign-in is all it takes, as the token then comes from that login.

@@ -3,7 +3,7 @@ import net from "node:net";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fetchServerList } from "./serverlist.js";
-import { findAccount, openBrowser, type AccountState } from "./profile.js";
+import { findAccount, openBrowser, FULL_DISK_ACCESS, type AccountState, type ProfileAccessError } from "./profile.js";
 import { FirefoxAuth, StaticAuth, type Authenticator } from "./auth.js";
 import { Connection, findCountry } from "./connection.js";
 import { fetchEntitlement, useRelay } from "./guardian.js";
@@ -17,7 +17,7 @@ import { restoreWindows, serveElevated, HELPER_CMD } from "./global-win32.js";
 import { Tui } from "./tui.js";
 import { checkUpdate, updateNotice, versionLines } from "./update.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenFile, tokenTtl, tokenProblem } from "./tokenserver.js";
-import { bold, dim, green, red, yellow, cyan, under, code, flag, countryName, gb, shortDate, box, vw, centerIn, copyText } from "./ui.js";
+import { bold, dim, green, red, yellow, cyan, under, code, flag, countryName, gb, shortDate, box, vw, centerIn, copyText, openUrl } from "./ui.js";
 
 // Node gives each server address only 250 ms before moving on; far VPN servers
 // take 600-900 ms to answer, so every attempt failed with a blank AggregateError.
@@ -60,9 +60,22 @@ function makeAuth(): Authenticator | null {
   return env ? new StaticAuth(env.value) : null;
 }
 
+/** The system won't let us read Firefox's profile: how to allow it (macOS: opens the Full Disk Access pane), then exit. */
+function blockedExit(err: ProfileAccessError): never {
+  const [first, ...rest] = err.message.split("\n");
+  console.error("\n" + red(first) + "\n" + rest.map((l) => (/^\d\./.test(l) ? "  " + l.replace(/(Full Disk Access|Allow)/g, (m) => bold(m)) : dim(l))).join("\n"));
+  if (process.platform === "darwin") {
+    openUrl(FULL_DISK_ACCESS);
+    console.error(dim("\n(System Settings is opening on that page.)"));
+  }
+  process.exit(1);
+}
+
 function requireAuth(): Authenticator {
   const auth = makeAuth();
   if (!auth) {
+    const blocked = findAccount()?.blocked;
+    if (blocked) blockedExit(blocked);
     console.error(red("Not signed in to Firefox") + ` and no ${bold("FOXHOLE_ACCESS_TOKEN")} set.`);
     console.error(dim(`Run ${bold("foxhole login")}, or set FOXHOLE_ACCESS_TOKEN=<vpn access token>.`));
     process.exit(1);
@@ -101,6 +114,8 @@ async function ensureAuth(): Promise<Authenticator> {
     forgetToken();
     errors.push(`Your saved token ${problem}.`, "Get a new one below.");
   }
+  // Firefox's profile can't be read (macOS privacy protection): signing in again wouldn't help, allowing it does
+  if (account?.blocked) blockedExit(account.blocked);
   const error = errors.join("\n");
   if (!process.stdin.isTTY) {
     if (error) {
@@ -274,8 +289,9 @@ async function cmdUsage() {
 async function cmdDoctor() {
   const account = findAccount();
   console.log(bold("\nfoxhole-vpn doctor\n"));
-  console.log(`  Firefox profile : ${account ? green("found") : red("not found")}`);
-  if (account) {
+  console.log(`  Firefox profile : ${account?.blocked ? red(`can't be read (${account.blocked.code})`) : account ? green("found") : red("not found")}`);
+  if (account?.blocked) console.log(dim(account.blocked.message.replace(/^/gm, "    ")));
+  else if (account) {
     console.log(`  Signed in       : ${account.signedIn ? green("yes") : red("no")}`);
     console.log(`  Account         : ${account.email ?? dim("unknown")}`);
   }
@@ -315,6 +331,7 @@ async function cmdDoctor() {
 /** Opens the browser's own sign-in and waits for it. The signed-in account, or undefined if not. */
 async function cmdLogin(): Promise<AccountState | undefined> {
   const account = findAccount();
+  if (account?.blocked) blockedExit(account.blocked);
   if (account?.signedIn) {
     console.log(green(`Already signed in to Firefox as ${account.email ?? "your account"}.`));
     return account;

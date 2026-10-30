@@ -356,6 +356,21 @@ function renderOnboard() {
         </div>
         ${wait("Waiting for the token from Firefox…")}
         <p class="fine">The token comes back over localhost only and is saved, readable only by you, for next time.</p>`,
+      blocked: () => fh.platform === "darwin"
+        ? `${fox}<h2>Let Foxhole read your Firefox sign-in</h2>
+          <p>macOS keeps other apps out of Firefox's data until you allow it. Foxhole only reads the sign-in, to get your VPN token.</p>
+          <ol class="steps">
+            <li><span>Open <b>System Settings → Privacy & Security → Full Disk Access</b> (the button below goes there).</span></li>
+            <li><span>Turn on <b>${esc(a.app)}</b>. Not in the list? Click <b>+</b> and pick ${esc(a.app)} in Applications.</span></li>
+            ${a.app === "Foxhole"
+              ? "<li><span>Click <b>Quit & reopen</b> (here or in System Settings).</span></li>"
+              // started from a terminal (or a development copy): macOS asks about that app, so it's the one to restart
+              : `<li><span>Quit <b>${esc(a.app)}</b> completely (<kbd>⌘Q</kbd>), open it again, and start Foxhole from it.</span></li>`}
+          </ol>
+          <p class="fine">If macOS asks whether ${esc(a.app)} may access data from other apps, click <b>Allow</b>.</p>
+          <div class="buttons"><button class="btn primary" data-open="fda">${icon("lock")}Open Full Disk Access</button>${a.app === "Foxhole" ? `<button class="btn" data-act="relaunch">${icon("refresh")}Quit & reopen</button>` : ""}</div>
+          ${wait("Waiting for access…")}`
+        : `${fox}<h2>Can't read your Firefox sign-in</h2>${err}${wait("Trying again…")}`,
       switch: () => `${fox}<h2>Switch account</h2>
         <p>In Firefox's <b>Sync</b> settings click <b>Sign out</b>, then sign in with the other account. Foxhole carries on once it sees the new one.</p>
         <div class="buttons"><button class="btn primary" data-act="openFirefox">${icon("external")}Open Firefox's Sync settings</button>${a.email ? `<button class="btn" data-act="keepAccount">Keep ${esc(a.email)}</button>` : ""}</div>

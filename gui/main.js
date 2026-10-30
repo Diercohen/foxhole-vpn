@@ -10,6 +10,7 @@ import { createTray } from "./tray.js";
 import { createBadge } from "./badge.js";
 import { Updater } from "./updater.js";
 import { REPO_URL } from "./dist/ui.js";
+import { FULL_DISK_ACCESS } from "./dist/profile.js";
 
 // Two copies would fight over the proxy's port and the routes: a second one only brings up the first.
 if (!app.requestSingleInstanceLock()) process.exit(0);
@@ -21,6 +22,7 @@ const LINKS = {
   repo: REPO_URL, releases: `${REPO_URL}/releases`, firefox: "https://www.mozilla.org/firefox/new/",
   relay: `${REPO_URL}#where-vpnmozillaorg-is-blocked-eg-iran`,
   gas: "https://script.google.com/home", // Google Apps Script, for the relay's setup
+  fda: FULL_DISK_ACCESS, // macOS: where the app is allowed to read Firefox's profile
 };
 // What the window may ask for: the Controller's actions, nothing else of it
 const ACTIONS = new Set([
@@ -141,7 +143,8 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle("act", (e, name, ...args) => {
-    if (e.sender !== win.webContents || !(ACTIONS.has(name) || name === "restartToUpdate")) throw new Error(`no such action: ${name}`);
+    if (e.sender !== win.webContents || !(ACTIONS.has(name) || name === "restartToUpdate" || name === "relaunch")) throw new Error(`no such action: ${name}`);
+    if (name === "relaunch") return void (app.relaunch(), app.quit()); // macOS applies Full Disk Access to a new process
     return name === "restartToUpdate" ? restartToUpdate() : controller[name](...args);
   });
   ipcMain.handle("open", (e, which) => e.sender === win.webContents && LINKS[which] && shell.openExternal(LINKS[which]));
