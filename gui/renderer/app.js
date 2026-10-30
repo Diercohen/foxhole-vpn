@@ -383,6 +383,83 @@ function closeSheet() {
   if (!S?.pw) $("#scrim").classList.remove("on");
 }
 
+// ── The relay's setup, step by step ────────────────────────────────────────────────────────
+
+const wz = { step: 0, key: "", id: "", setup: null }; // setup: the steps and the script's tokens (controller.relaySetup)
+
+/** A strong random key: 32 URL-safe characters, as relaysetup.ts newAuthKey(). */
+const newKey = () => btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(24)))).replace(/\+/g, "-").replace(/\//g, "_");
+
+async function openWizard() {
+  wz.setup ??= await act("relaySetup");
+  Object.assign(wz, { step: 0, key: newKey(), id: "" });
+  drawWizard();
+  $("#wizard").classList.add("on");
+}
+const closeWizard = () => $("#wizard").classList.remove("on");
+
+/** The script, highlighted, a line to a row (numbered by CSS), the key marked where it goes. */
+function codeHtml() {
+  let html = "";
+  for (const [kind, text] of wz.setup.tokens) {
+    const keyed = text.includes(wz.setup.placeholder);
+    html += text.split("\n").map((part) => {
+      if (!part) return "";
+      const h = keyed ? esc(part).replace(wz.setup.placeholder, `<mark>${esc(wz.key)}</mark>`) : esc(part);
+      return kind ? `<span class="${kind}">${h}</span>` : h;
+    }).join("\n");
+  }
+  return html.split("\n").map((l) => `<span class="ln">${l}</span>`).join("");
+}
+const showKey = () => document.querySelectorAll("#wz-code mark").forEach((m) => (m.textContent = wz.key));
+
+function drawWizard() {
+  const { steps } = wz.setup;
+  const st = steps[wz.step];
+  const last = wz.step === steps.length - 1;
+  $("#wz-stepper").innerHTML = steps.map((s, i) =>
+    `<li class="${i < wz.step ? "done" : i === wz.step ? "on" : ""}"><span>${i < wz.step ? icon("check") : i + 1}</span>${esc(s.short)}</li>`).join("");
+  const widget = [
+    `<div class="buttons"><button class="btn primary" data-open="gas">${icon("external")}Open script.google.com</button></div>`,
+    `<div class="label">Your secret key</div>
+     <div class="input-row"><input id="wz-key" class="mono" value="${esc(wz.key)}" spellcheck="false" autocomplete="off" aria-label="Your secret key"><button class="mini big" type="button" id="wz-newkey" title="Make a new key">${icon("refresh")}</button></div>
+     <div class="code"><pre id="wz-code">${codeHtml()}</pre><button class="btn" type="button" id="wz-copy">${icon("copy")}Copy code</button></div>`,
+    "",
+    `<input id="wz-id" class="mono" placeholder="Paste the Deployment ID or web app URL" value="${esc(wz.id)}" spellcheck="false" autocomplete="off" aria-label="Deployment ID">`,
+  ][wz.step];
+  $("#wz-body").innerHTML = `<div class="wz-top">
+      <div><h3>${wz.step + 1}. ${esc(st.title)}</h3><ol class="steps">${st.lines.map((l) => `<li><span>${esc(l).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")}</span></li>`).join("")}</ol></div>
+      <figure class="wz-shot" title="Click to enlarge"><img src="../dist/assets/relay/step-${wz.step + 1}.png" alt="Step ${wz.step + 1}"></figure>
+    </div>${widget}`;
+  $("#wz-body img").addEventListener("error", (e) => e.target.parentElement.remove()); // no screenshot for this step
+  $("#wz-prev").disabled = wz.step === 0;
+  $("#wz-next").innerHTML = last ? `${icon("check")}Finish` : `Next${icon("chevron")}`;
+  $("#wz-note").textContent = "";
+  $("#wz-key")?.addEventListener("input", (e) => {
+    e.target.value = e.target.value.replace(/[^\w-]/g, ""); // a plain JS string in the script: nothing to escape
+    wz.key = e.target.value;
+    showKey();
+  });
+  $("#wz-id")?.addEventListener("input", (e) => (wz.id = e.target.value));
+  $("#wz-id")?.focus();
+}
+
+async function wizardNext() {
+  const note = (text) => (($("#wz-note").textContent = text), replay($("#wz-note"), "shake"));
+  if (wz.step === 1 && !/^[\w-]{16,}$/.test(wz.key)) return note("The key needs at least 16 letters, digits, - or _. Press ↻ for a new one.");
+  if (wz.step < wz.setup.steps.length - 1) return void (wz.step++, drawWizard());
+  // as relaysetup.ts deploymentId(): the ID alone, or inside the web app's URL
+  const id = (wz.id.match(/\/macros\/s\/([\w-]+)/)?.[1] ?? wz.id).trim();
+  if (!/^[\w-]{20,}$/.test(id)) return note(wz.id.trim() ? "That isn't a Deployment ID or web app URL: copy it again from Google." : "Paste the Deployment ID first.");
+  if (await act("setRelay", id, wz.key)) {
+    closeWizard();
+    flash($("#relay-wizard"), `${icon("check")}Relay set up`);
+  } else note("Couldn't save it: see the note in Settings.");
+}
+
+$("#wz-body").addEventListener("click", (e) => e.target.closest(".wz-shot")?.classList.toggle("zoom"));
+$("#wz-body").addEventListener("keydown", (e) => e.key === "Enter" && e.target.id === "wz-id" && wizardNext());
+
 // ── Logs ───────────────────────────────────────────────────────────────────────────────────
 
 let logBuf = [];
@@ -459,22 +536,16 @@ document.addEventListener("click", async (e) => {
       k.type = k.type === "password" ? "text" : "password";
       return;
     }
-    case "relay-guide-toggle": {
-      const g = $("#relay-guide");
-      g.hidden = !g.hidden;
-      t.textContent = g.hidden ? "Show setup guide" : "Hide setup guide";
-      return;
-    }
-    case "relay-gen": {
-      // a strong random key, shown and copied, to paste into Code.gs's AUTH_KEY (no need to invent one)
-      const bytes = crypto.getRandomValues(new Uint8Array(24));
-      const key = btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-      $("#relay-key").value = key;
-      $("#relay-key").type = "text"; // revealed so it can be checked against Code.gs
-      act("copy", key);
-      flash(t, `${icon("check")}Key copied — paste into Code.gs`);
-      return;
-    }
+    case "relay-wizard": return openWizard();
+    case "wz-close": return closeWizard();
+    case "wz-prev": return void ((wz.step = Math.max(0, wz.step - 1)), drawWizard());
+    case "wz-next": return wizardNext();
+    case "wz-newkey":
+      $("#wz-key").value = wz.key = newKey();
+      return showKey();
+    case "wz-copy":
+      act("copy", wz.setup.tokens.map((tk) => tk[1]).join("").replace(wz.setup.placeholder, wz.key));
+      return flash(t, `${icon("check")}Copied`);
     case "switch-account":
       closeSheet();
       return act("switchAccount");
@@ -532,6 +603,7 @@ $("#search").addEventListener("input", () => S && renderList());
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (S?.pw) return void act("cancelPassword");
+    if ($("#wizard").classList.contains("on")) return closeWizard();
     if (openSheet) return closeSheet();
     if (document.activeElement === $("#search")) {
       $("#search").value = "";

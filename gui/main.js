@@ -20,13 +20,12 @@ net.setDefaultAutoSelectFamilyAttemptTimeout(3000);
 const LINKS = {
   repo: REPO_URL, releases: `${REPO_URL}/releases`, firefox: "https://www.mozilla.org/firefox/new/",
   relay: `${REPO_URL}#where-vpnmozillaorg-is-blocked-eg-iran`,
-  gas: "https://script.google.com", // Google Apps Script, for the relay setup guide
-  codegs: "https://github.com/masterking32/MasterHttpRelayVPN/blob/python_testing/apps_script/Code.gs",
+  gas: "https://script.google.com/home", // Google Apps Script, for the relay's setup
 };
 // What the window may ask for: the Controller's actions, nothing else of it
 const ACTIONS = new Set([
   "state", "power", "connect", "disconnect", "toggleGlobal", "submitPassword", "cancelPassword",
-  "setShare", "setPort", "setLogin", "setRelay", "openSettings", "openSplit", "setSplitDefault", "addRule", "toggleRule", "removeRule",
+  "setShare", "setPort", "setLogin", "setRelay", "relaySetup", "openSettings", "openSplit", "setSplitDefault", "addRule", "toggleRule", "removeRule",
   "logs", "copy", "copyLogs", "openFirefox", "copySnippet", "switchAccount", "keepAccount", "reloadList",
 ]);
 

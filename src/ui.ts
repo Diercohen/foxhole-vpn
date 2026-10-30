@@ -13,6 +13,7 @@ export const red = wrap("31");
 export const green = wrap("32");
 export const yellow = wrap("33");
 export const cyan = wrap("36");
+export const magenta = wrap("35");
 export const lit = wrap("1;7;32"); // bold green, reversed: a switch that's on
 
 /** --verbose: also print per-connection proxy failures and tun2socks logs. */

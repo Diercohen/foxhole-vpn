@@ -17,7 +17,8 @@ import { checkUpdate, canUpdate, runUpdate, restart, versionLines, UPDATE_COMMAN
 import { bold, dim, under, strike, green, red, yellow, cyan, lit, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
 import { fox, FOX_W, FOX_H, type Mood } from "./fox.js";
 import { loadRelay } from "./httprelay.js";
-import { randomBytes } from "node:crypto";
+import { newAuthKey } from "./relaysetup.js";
+import { RelayWizard } from "./relaywizard.js";
 
 const ESC = "\x1b[";
 // alternate screen + hidden cursor + mouse reports (SGR): clicks and the wheel, see #mouse()
@@ -50,6 +51,7 @@ const SETTINGS = [
   { key: "port", label: "Proxy port" },
   { key: "username", label: "Username" },
   { key: "password", label: "Password" },
+  { key: "relaySetup", label: "VPN relay · set up" },
   { key: "relayId", label: "VPN relay · deployment ID" },
   { key: "relayKey", label: "VPN relay · auth key" },
 ] as const;
@@ -94,6 +96,7 @@ export class Tui {
   #port: number;
   #settings: Settings = loadSettings();
   #settingsOpen = false; // the Settings popup is open
+  #wizard: RelayWizard | null = null; // the relay's setup, over Settings
   #setSel = 0;
   #edit: { key: "port" | "username" | "password" | "relayId" | "relayKey"; text: string } | null = null; // the setting being typed
   readonly #login = (address: string | undefined) => loginFor(this.#settings, address); // live: a change applies to the next client
@@ -291,6 +294,7 @@ export class Tui {
           else if (key.name === "c") void this.#copyLogs();
           return;
         }
+        if (this.#wizard) return this.#wizardKey(s, key);
         if (this.#settingsOpen) return this.#settingsKey(s, key);
         if (this.#splitOpen) return this.#splitKey(s, key);
         if (key.name === "q") return void quit();
@@ -346,7 +350,7 @@ export class Tui {
    */
   #mouse(b: number, x: number, y: number, press: (name: string) => void): void {
     if (b === 64 || b === 65) return press(b === 64 ? "up" : "down");
-    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#restoring) return;
+    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#restoring || this.#wizard) return;
     const h = this.#hit;
     const fx = x - h.left, fy = y - h.top;
     if (this.#settingsOpen) {
@@ -598,7 +602,7 @@ export class Tui {
           );
         }
       } else if (e.key === "relayKey" && key.name === "tab") {
-        e.text = randomBytes(24).toString("base64url"); // a strong key, to paste into Code.gs's AUTH_KEY
+        e.text = newAuthKey(); // a strong key, to paste into Code.gs's AUTH_KEY
       } else if (e.key === "port") {
         if (/^\d$/.test(s) && e.text.length < 5) e.text += s;
       } else if (s && s.length === 1 && s >= " " && !key.ctrl && !key.meta && Buffer.byteLength(e.text + s) <= 255) {
@@ -625,10 +629,24 @@ export class Tui {
       case "space": {
         const item = SETTINGS[this.#setSel].key;
         if (item === "share") return void this.#changeSetting({ share: !this.#settings.share });
+        if (item === "relaySetup") return void ((this.#wizard = new RelayWizard(() => this.#render())), this.#render());
         // typed in place: the username and relay id start from the current value, the rest from scratch
         this.#edit = { key: item, text: item === "username" ? this.#settings.username : item === "relayId" ? (this.#settings.relay?.deploymentId ?? "") : "" };
         this.#settingsNote = "";
       }
+    }
+    this.#render();
+  }
+
+  /** Keystrokes while the relay's setup is open; it finishes by saving the relay, back in Settings. */
+  #wizardKey(s: string, key: readline.Key): void {
+    const done = this.#wizard!.key(s, key);
+    if (done) this.#wizard = null;
+    if (done && done !== "close") {
+      return void this.#changeSetting({ relay: done }).then(() => {
+        if (this.#settings.relay) this.#settingsNote = green("✓ Relay set up. foxhole uses it whenever vpn.mozilla.org is blocked.");
+        this.#render();
+      });
     }
     this.#render();
   }
@@ -810,6 +828,7 @@ export class Tui {
       e?.key === "port" ? e.text + cursor : String(s.port),
       e?.key === "username" ? e.text + cursor : s.username || dim("optional"),
       e?.key === "password" ? "•".repeat(e.text.length) + cursor : s.password ? "••••••••" : dim("optional"),
+      (s.relay ? green("on") : dim("off")) + dim("  ⏎ step by step"),
       relayVal(e?.key === "relayId" ? e.text : s.relay?.deploymentId ?? "", e?.key === "relayId", false),
       relayVal(e?.key === "relayKey" ? e.text : s.relay?.authKey ?? "", e?.key === "relayKey", true),
     ];
@@ -823,12 +842,9 @@ export class Tui {
       e?.key === what
         ? [dim(`Type the ${what} · enter save (empty: none) · esc cancel`)]
         : [dim("Asked from other devices when sharing is on; apps on"), dim("this computer don't need it. Optional: empty means no login.")];
-    // A very short in-app guide for making the Apps Script keys, shown on the relay rows until one is set up.
     const relayGuide = [
-      dim("Blocked vpn.mozilla.org (Iran)? Relay via your own Apps Script:"),
-      dim("1. script.google.com → New project, paste in Code.gs (see README)."),
-      dim("2. Set its AUTH_KEY: pick the auth-key row, press Tab to make one."),
-      dim("3. Deploy ▸ Web app (Me / Anyone), paste the Deployment ID here."),
+      dim("Blocked vpn.mozilla.org (Iran)? Make your own free relay on"),
+      dim("Google Apps Script: “VPN relay · set up” walks you through it."),
     ];
     const relayOn = [green("Relay on — used only when vpn.mozilla.org can't be reached."), dim("Clear both fields to turn it off.")];
     const help = {
@@ -846,6 +862,7 @@ export class Tui {
         : [dim("One port serves SOCKS5 and HTTP. Default 1080.")],
       username: loginHelp("username"),
       password: loginHelp("password"),
+      relaySetup: s.relay ? relayOn : relayGuide,
       relayId: e?.key === "relayId"
         ? [dim("Paste your Apps Script deployment id · enter save · esc cancel")]
         : s.relay ? relayOn : relayGuide,
@@ -1009,7 +1026,9 @@ export class Tui {
       ? this.#restoringPopup()
       : this.#pwMode
         ? this.#passwordPopup()
-        : this.#settingsOpen
+        : this.#wizard
+          ? this.#wizard.render(cols, frame.length - 2)
+          : this.#settingsOpen
           ? this.#settingsPopup()
           : this.#splitOpen
             ? this.#splitPopup(frame.length)

@@ -7,6 +7,7 @@ import { Connection } from "./dist/connection.js";
 import { FirefoxAuth, StaticAuth } from "./dist/auth.js";
 import { GuardianError, useRelay } from "./dist/guardian.js";
 import { loadRelay } from "./dist/httprelay.js";
+import { STEPS, KEY_PLACEHOLDER, relayTemplate, highlightJs, deploymentId } from "./dist/relaysetup.js";
 import { network, publicIp, lanIp, firewallHint } from "./dist/netinfo.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor } from "./dist/settings.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenProblem } from "./dist/tokenserver.js";
@@ -420,12 +421,17 @@ export class Controller extends EventEmitter {
     if (Buffer.byteLength(username) > 255 || Buffer.byteLength(password) > 255) return void this.#note("settings", "error", "255 bytes at most.");
     return this.#changeSetting({ username, password });
   }
-  /** The Apps Script relay for a blocked vpn.mozilla.org (httprelay.ts): both parts set it, both empty clear it. */
-  setRelay(deploymentId, authKey) {
-    const id = String(deploymentId ?? "").trim();
+  /** The Apps Script relay for a blocked vpn.mozilla.org (httprelay.ts): both parts set it, both empty clear it. The ID may be the web app's URL. */
+  setRelay(id, authKey) {
+    const text = String(id ?? "").trim();
     const key = String(authKey ?? "").trim();
-    if (Boolean(id) !== Boolean(key)) return void this.#note("settings", "error", "Enter both the deployment ID and the auth key, or clear both to turn the relay off.");
-    return this.#changeSetting({ relay: id ? { deploymentId: id, authKey: key } : undefined });
+    if (Boolean(text) !== Boolean(key)) return void this.#note("settings", "error", "Enter both the deployment ID and the auth key, or clear both to turn the relay off.");
+    if (text && !deploymentId(text)) return void this.#note("settings", "error", "That isn't a Deployment ID or web app URL: copy it again from Google.");
+    return this.#changeSetting({ relay: text ? { deploymentId: deploymentId(text), authKey: key } : undefined });
+  }
+  /** The setup wizard's content (relaysetup.ts): its steps, and the script as highlighted tokens with the key's placeholder. */
+  relaySetup() {
+    return { steps: STEPS, tokens: highlightJs(relayTemplate()), placeholder: KEY_PLACEHOLDER };
   }
 
   /** Saves a change and applies it: a new address or port restarts a running proxy. */

@@ -521,10 +521,7 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .via.direct { color: #ffd27a; background: rgba(255, 194, 71, 0.12); box-shadow: inset 0 0 0 1px rgba(255, 194, 71, 0.32), 0 0 16px -8px var(--amber); }
 .rules .empty { padding: 22px 16px; border-radius: 16px; background: rgba(255, 255, 255, 0.025); box-shadow: inset 0 0 0 1px var(--line); font-size: 12.5px; }
 
-.relay-guide { display: flex; flex-direction: column; gap: 14px; padding: 14px 16px; border-radius: 16px;
-  background: linear-gradient(135deg, rgba(139, 92, 255, 0.08), rgba(69, 182, 255, 0.05)); box-shadow: inset 0 0 0 1px rgba(139, 92, 255, 0.18); }
-.relay-guide .steps { margin: 0; }
-.relay-guide .btn { align-self: flex-start; }
+.wizard-btn { align-self: flex-start; }
 .share-box { display: flex; flex-direction: column; gap: 8px; }
 .share-box:empty { display: none; }
 .addr { display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 14px; border-radius: 14px;
@@ -559,6 +556,50 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .modal input:placeholder-shown { font-size: 15px; letter-spacing: normal; }
 .modal .actions { display: flex; gap: 10px; margin-top: 4px; }
 .modal .actions .btn { flex: 1; }
+/* The relay's setup: a wide modal over Settings, a step at a time */
+.wizard { background: rgba(7, 6, 12, 0.55); opacity: 0; transition: opacity 0.35s; }
+.wizard.on { opacity: 1; }
+.wizard .box { width: min(880px, calc(100% - 40px)); max-height: calc(100% - 40px); padding: 0; text-align: left; gap: 0; overflow: hidden; }
+.wizard header { display: flex; align-items: center; gap: 14px; padding: 20px 22px 16px; border-bottom: 1px solid var(--line); }
+.wizard header > div { flex: 1; min-width: 0; }
+.wizard header p { margin-top: 2px; font-size: 12.5px; color: var(--ink-3); }
+.wz-stepper { display: flex; gap: 8px; margin: 0; padding: 14px 22px 0; }
+.wz-stepper li { flex: 1; list-style: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 12px; font-size: 12.5px; font-weight: 650; color: var(--ink-3);
+  background: rgba(255, 255, 255, 0.03); box-shadow: inset 0 0 0 1px var(--line); transition: color 0.3s, background 0.3s, box-shadow 0.3s; }
+.wz-stepper span { flex: none; width: 22px; height: 22px; border-radius: 8px; display: grid; place-items: center; font-size: 11.5px; font-weight: 800; background: rgba(255, 255, 255, 0.07); }
+.wz-stepper span .i { width: 13px; height: 13px; stroke-width: 2.6; }
+.wz-stepper .on { color: var(--ink); background: rgba(255, 122, 26, 0.1); box-shadow: inset 0 0 0 1px rgba(255, 122, 26, 0.4); }
+.wz-stepper .on span { color: #fff; background: linear-gradient(135deg, var(--fox), var(--fox-2)); }
+.wz-stepper .done { color: var(--mint); }
+.wz-stepper .done span { color: #03150f; background: var(--mint); }
+.wz-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 18px 22px 6px; animation: fadeIn 0.4s var(--out); }
+.wz-top { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; align-items: start; }
+.wz-top:not(:has(.wz-shot)) { grid-template-columns: 1fr; }
+.wz-body h3 { margin: 0 0 10px; font-size: 16px; font-weight: 740; }
+.wz-body .steps { margin: 0; padding: 0; }
+.wz-body .buttons { justify-content: flex-start; margin: 0; }
+.wz-shot { margin: 0; border-radius: 14px; overflow: hidden; cursor: zoom-in; box-shadow: inset 0 0 0 1px var(--line-2), 0 16px 34px -18px rgba(0, 0, 0, 0.9); }
+.wz-shot img { display: block; width: 100%; }
+/* clicked: the screenshot over the whole popup, clicked again: back */
+.wz-shot.zoom { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; padding: 18px; border-radius: inherit; cursor: zoom-out; background: rgba(7, 6, 12, 0.94); }
+.wz-shot.zoom img { width: auto; max-width: 100%; max-height: 100%; border-radius: 12px; }
+.wizard input { text-align: left; font-size: 13px; letter-spacing: normal; height: 42px; }
+.wizard input.mono { font-family: var(--mono); }
+.mini.big { width: 42px; height: 42px; border-radius: 14px; }
+.wizard .code { position: relative; }
+/* scrolls both ways, a line never wraps: what's copied is the button's, not a selection */
+.wizard .code pre { margin: 0; max-height: 280px; overflow: auto; padding: 12px 0; border-radius: 14px; font: 11.5px/1.6 var(--mono); color: #e9e4f5;
+  background: rgba(0, 0, 0, 0.45); box-shadow: inset 0 0 0 1px var(--line); counter-reset: ln; user-select: text; }
+.wizard .code .ln { display: block; padding-right: 16px; white-space: pre; }
+.wizard .code .ln::before { counter-increment: ln; content: counter(ln); display: inline-block; width: 3.2em; margin-right: 14px; padding-right: 10px; text-align: right;
+  color: var(--ink-4); border-right: 1px solid var(--line); user-select: none; }
+.wizard .code .btn { position: absolute; top: 8px; right: 14px; height: 32px; padding: 0 12px; font-size: 12px; background: rgba(30, 24, 44, 0.9); }
+.wizard .code .c { color: #8a8299; font-style: italic; } .wizard .code .s { color: #b5f5a6; } .wizard .code .kw { color: #d68cff; }
+.wizard .code .fn { color: #7fd7ff; } .wizard .code .n, .wizard .code .re { color: #ffb86b; }
+.wizard .code mark { color: #1d1200; background: var(--amber); border-radius: 4px; padding: 0 2px; }
+.wizard .note { padding: 0 22px; min-height: 0; }
+.wizard .actions { justify-content: space-between; padding: 14px 22px 20px; margin: 0; }
+.wizard .actions .btn { flex: none; min-width: 120px; }
 .lock-orb { width: 66px; height: 66px; margin: 0 auto 2px; border-radius: 22px; display: grid; place-items: center; color: #fff;
   background: linear-gradient(135deg, var(--amber), var(--fox) 55%, var(--fox-2));
   box-shadow: 0 18px 44px -12px var(--fox), inset 0 1px 0 rgba(255, 255, 255, 0.45); animation: glowPulse 2.6s ease-in-out infinite; }

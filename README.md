@@ -366,12 +366,17 @@ go directly through the tunnel once it's up, so the relay is used only to get
 the first connection.
 
 Set it up with your **own** deployment (the script sees the short-lived,
-VPN-scoped access token while it relays, so don't use someone else's):
+VPN-scoped access token while it relays, so don't use someone else's). The
+easy way: **Settings → VPN relay → Set up step by step**, in the terminal UI
+(press `S`) or the desktop app. It makes your secret key, puts it into the
+script for you to copy, shows each click with a screenshot, and saves the
+Deployment ID you paste (or the whole web app URL) at the end.
 
-1. In the [MasterHttpRelayVPN](https://github.com/masterking32/MasterHttpRelayVPN)
-   repo, open `apps_script/Code.gs`. Create a project at
-   <https://script.google.com>, paste it in, and set `AUTH_KEY` to a long random
-   secret of your own.
+By hand:
+
+1. Create a project at <https://script.google.com>, paste in
+   [`assets/relay/Code.gs`](assets/relay/Code.gs), and set `AUTH_KEY` to a long
+   random secret of your own.
 2. **Deploy → New deployment → Web app**, *Execute as: Me*, *Who has access:
    Anyone*. Copy the **Deployment ID**.
 3. Give both to foxhole, by environment:
