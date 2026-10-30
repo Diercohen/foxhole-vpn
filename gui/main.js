@@ -1,6 +1,6 @@
 // Foxhole's desktop app: one window and a tray icon over the Controller, which runs the VPN in this (main) process.
 import { app, BrowserWindow, ipcMain, clipboard, dialog, shell, nativeTheme, Notification, powerMonitor } from "electron";
-import { accessSync, constants, statSync } from "node:fs";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
 import net from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -33,21 +33,34 @@ const ACTIONS = new Set([
 
 const here = (p) => fileURLToPath(new URL(p, import.meta.url));
 
-/** This app's .app folder when an update can be swapped in there: a packaged Mac app in a folder it may write
- *  (not run from the disk image), on the same disk as the downloads. Otherwise updates are a link to the download. */
-function ownBundle() {
-  if (process.platform !== "darwin" || !app.isPackaged) return null;
-  const bundle = resolve(process.execPath, "../../..");
+const writable = (...paths) => {
   try {
-    accessSync(dirname(bundle), constants.W_OK);
-    accessSync(bundle, constants.W_OK);
-    return statSync(bundle).dev === statSync(homedir()).dev ? bundle : null;
+    for (const p of paths) accessSync(p, constants.W_OK);
+    return true;
   } catch {
-    return null;
+    return false;
   }
+};
+
+/** How this copy updates itself (updater.js), or null where it can't: then the window links to the download. */
+function updateTarget() {
+  if (!app.isPackaged) return null;
+  if (process.platform === "darwin") {
+    // a Mac app in a folder it may write (not run from the disk image), on the same disk as the downloads
+    const bundle = resolve(process.execPath, "../../..");
+    return writable(dirname(bundle), bundle) && statSync(bundle).dev === statSync(homedir()).dev ? { kind: "mac", bundle } : null;
+  }
+  if (process.platform === "win32") return process.arch === "ia32" ? null : { kind: "win", exe: process.execPath };
+  if (process.platform === "linux" && process.arch === "x64") {
+    // an AppImage in a folder it may write; or the .deb, installed with dpkg
+    const file = process.env.APPIMAGE;
+    if (file) return writable(dirname(file), file) ? { kind: "appimage", file } : null;
+    if (existsSync("/var/lib/dpkg/info/foxhole-desktop.list")) return { kind: "deb" };
+  }
+  return null;
 }
 
-const updater = new Updater({ dir: join(app.getPath("userData"), "update"), bundle: ownBundle(), via: () => controller.via(), changed: () => controller.emit("change") });
+const updater = new Updater({ dir: join(app.getPath("userData"), "update"), downloads: app.getPath("downloads"), target: updateTarget(), via: () => controller.via(), changed: () => controller.emit("change") });
 const controller = new Controller({ copy: (text) => clipboard.writeText(text), updates: updater });
 let win = null;
 let done = false; // global mode's routes are back and the proxy closed: free to quit
@@ -110,6 +123,7 @@ app.whenReady().then(() => {
       toggleGlobal: () => controller.toggleGlobal(),
       show,
       update: restartToUpdate,
+      getUpdate: () => (show(), void updater.update()),
       releases: () => shell.openExternal(LINKS.releases),
       quit: () => app.quit(),
     },
@@ -143,8 +157,12 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle("act", (e, name, ...args) => {
-    if (e.sender !== win.webContents || !(ACTIONS.has(name) || name === "restartToUpdate" || name === "relaunch")) throw new Error(`no such action: ${name}`);
-    if (name === "relaunch") return void (app.relaunch(), app.quit()); // macOS applies Full Disk Access to a new process
+    if (e.sender !== win.webContents || !(ACTIONS.has(name) || ["restartToUpdate", "relaunch", "update", "installUpdateFile", "showUpdateFile"].includes(name))) throw new Error(`no such action: ${name}`);
+    if (name === "update") return updater.update(); // resolves once the new version is ready (true) or the try failed
+    // the downloaded update, to install by hand
+    if (name === "installUpdateFile") return void (updater.installByHand() && app.quit()); // opened once the app has quit
+    if (name === "showUpdateFile") return updater.file() && void shell.showItemInFolder(updater.file());
+    if (name === "relaunch") return void (app.relaunch({ execPath: process.env.APPIMAGE ?? process.execPath }), app.quit()); // macOS applies Full Disk Access to a new process
     return name === "restartToUpdate" ? restartToUpdate() : controller[name](...args);
   });
   ipcMain.handle("open", (e, which) => e.sender === win.webContents && LINKS[which] && shell.openExternal(LINKS[which]));
@@ -173,9 +191,12 @@ app.on("before-quit", (e) => {
   if (whole) show(); // the window says what's happening meanwhile
   void controller.shutdown().finally(() => {
     done = true;
-    updater.install(); // a downloaded version goes in on any quit
     // the restart into it turns whole-system mode back on if it was
-    if (relaunch) app.relaunch({ args: [...process.argv.slice(1).filter((a) => a !== "--whole-system"), ...(whole ? ["--whole-system"] : [])] });
+    const args = [...process.argv.slice(1).filter((a) => a !== "--whole-system"), ...(whole ? ["--whole-system"] : [])];
+    // a downloaded version goes in (Windows: only on a restart, its installer then starts it)
+    const started = updater.install({ relaunch, args });
+    // an AppImage from its file: the folder it runs from goes away with it
+    if (relaunch && !started) app.relaunch({ execPath: process.env.APPIMAGE ?? process.execPath, args });
     app.exit(0); // a dial or IP check still in flight mustn't hold the quit
   });
 });

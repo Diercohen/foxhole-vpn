@@ -27,6 +27,9 @@
     "files": ["main.js", "controller.js", "tray.js", "badge.js", "updater.js", "preload.cjs", "renderer/**/*", "dist/**/*", "build/icon.png", "build/tray/*.png"],
     "mac": { "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }], "category": "public.app-category.utilities", "identity": "-", "hardenedRuntime": false, "artifactName": "${productName}-${version}-${arch}.${ext}" },
     "win": { "target": "nsis" },
+    "nsis": { "artifactName": "${productName}-${version}-setup.${ext}" },
+    "appImage": { "artifactName": "${productName}-${version}.${ext}" },
+    "deb": { "artifactName": "foxhole-desktop_${version}_amd64.${ext}" },
     "linux": {
       "target": ["deb", "AppImage"],
       "category": "Network",

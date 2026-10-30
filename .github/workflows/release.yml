@@ -1,6 +1,6 @@
 # A version tag (git tag v1.2.3 && git push origin v1.2.3) builds the desktop app for macOS (Apple chip and Intel),
 # Windows and Linux, and puts them all in a draft release. Check it, then Publish: that's the download for everyone,
-# and what installed Mac apps update themselves to.
+# and what installed apps update themselves to (gui/updater.js looks for the files by the names gui/package.json gives them).
 name: Release
 
 on:

@@ -73,20 +73,31 @@ function renderHeader() {
     $("#data-v").textContent = !u ? "—" : u.unlimited ? "Unlimited" : `${u.left} left`;
     $("#data-chip").title = !u ? "Data left this month: not known yet" : u.unlimited ? "Unlimited data" : `${u.left} of ${u.max} left this month${u.reset ? ` · resets ${u.reset}` : ""}`;
     $("#data-ring").style.strokeDashoffset = String(CIRCUMFERENCE * (1 - (!u ? 0 : u.unlimited ? 1 : u.fraction)));
-    // The titlebar speaks up once there's something to do: restart into the downloaded version, or (where Foxhole
-    // can't replace itself) download it. Until then a download runs quietly; Settings shows how far it got.
+    // The titlebar's Update button: a click downloads the new version (the button fills as it goes), installs it, and
+    // asks to restart. Where Foxhole can't update itself (updater.js) it opens the download page instead.
     const up = S.update;
     const pill = $("#update");
-    pill.hidden = !up || (up.auto && !up.ready);
-    pill.title = !up ? "" : up.ready ? `Foxhole ${up.version} is downloaded: restart to switch to it, or it goes in when you quit` : `Foxhole ${up.version} is out`;
-    $("#update span").textContent = up?.ready ? "Restart to update" : `Update ${up?.version ?? ""}`;
+    pill.hidden = !up;
+    pill.classList.toggle("busy", !!up?.phase);
+    pill.style.setProperty("--p", `${up?.progress ?? 0}%`);
+    pill.title = !up ? "" : up.error ? `Couldn't update: ${up.error}` : up.ready ? `Foxhole ${up.version} is ready: restart to switch to it` : `Foxhole ${up.version} is out`;
+    $("#update span").textContent = !up ? ""
+      : up.phase === "downloading" ? `Downloading ${up.progress ?? 0}%`
+      : up.phase === "installing" ? "Installing…"
+      : up.error && up.file ? "Install update"
+      : up.error ? "Update failed · retry"
+      : up.ready ? "Restart to update"
+      : `Update to ${up.version}`;
+    const page = '<span class="link" data-open="releases">download page</span>';
     $("#about-update").innerHTML = !up
       ? "Firefox's free VPN for your whole system. Unofficial, not affiliated with Mozilla."
-      : up.ready
-        ? `Version ${esc(up.version)} is ready: it goes in when Foxhole restarts or quits. <span class="link" id="get-update">Restart now</span>`
-        : up.auto
-          ? `Downloading version ${esc(up.version)} in the background${up.progress === null ? "" : ` · ${up.progress}%`}…`
-          : `Version ${esc(up.version)} is out. <span class="link" id="get-update">Download it</span>`;
+      : !up.auto ? `Version ${esc(up.version)} is out. <span class="link" id="get-update">Download it</span>`
+      : up.ready ? `Version ${esc(up.version)} is ready: restart Foxhole to switch to it. <span class="link" id="get-update">Restart now</span>`
+      : up.phase === "downloading" ? `Downloading version ${esc(up.version)} · ${up.progress ?? 0}%…`
+      : up.phase === "installing" ? `Installing version ${esc(up.version)}…`
+      : up.error && up.file ? `Couldn't update to ${esc(up.version)} by itself: ${esc(up.error)}. <span class="link" id="get-update">Install it yourself</span>`
+      : up.error ? `Couldn't update to ${esc(up.version)}: ${esc(up.error)}. <span class="link" id="get-update">Try again</span> or get it from the ${page}.`
+      : `Version ${esc(up.version)} is out. <span class="link" id="get-update">Update now</span>`;
   });
 }
 
@@ -398,6 +409,26 @@ function closeSheet() {
   if (!S?.pw) $("#scrim").classList.remove("on");
 }
 
+// ── An update to install by hand ───────────────────────────────────────────────────────────
+
+/** The downloaded file and how to install it, when it didn't go in by itself (updater.js keeps it in Downloads). */
+function showManual(up) {
+  const name = esc(up.file.split(/[\\/]/).pop());
+  $("#manual-why").innerHTML = `Foxhole ${esc(up.version)} couldn't be installed automatically (${esc(up.error ?? "")}). It's saved in your Downloads folder as <b>${name}</b>.`;
+  const then = {
+    mac: ["Foxhole quits and opens it.", "Drag <b>Foxhole</b> onto <b>Applications</b> and click <b>Replace</b>.", "Open Foxhole again."],
+    win: ["Foxhole quits, puts your network back, and opens the installer.", "Follow it: Foxhole starts again when it's done."],
+    appimage: ["Foxhole quits and starts the new version from your Downloads folder.", "Keep that file, or move it where the old one was and delete the old one."],
+    deb: ["Foxhole quits and opens it in your software center: click <b>Install</b>.",
+      `Or in a terminal: <code>sudo apt install "${esc(up.file)}"</code>`, "Open Foxhole again."],
+  }[up.kind] ?? [];
+  $("#manual-steps").innerHTML = then.map((l) => `<li><span>${l}</span></li>`).join("");
+  $("#manual-install").disabled = false;
+  $("#manual-install").textContent = "Quit & install";
+  $("#manual-modal").classList.add("on");
+}
+$("#manual-later").addEventListener("click", () => $("#manual-modal").classList.remove("on"));
+
 // ── The relay's setup, step by step ────────────────────────────────────────────────────────
 
 const wz = { step: 0, key: "", id: "", setup: null }; // setup: the steps and the script's tokens (controller.relaySetup)
@@ -565,9 +596,27 @@ document.addEventListener("click", async (e) => {
       closeSheet();
       return act("switchAccount");
     case "open-repo": return fh.open("repo");
-    case "update": case "get-update":
-      if (!S.update?.ready) return fh.open("releases");
-      $("#update span").textContent = "Restarting…";
+    case "update": case "get-update": {
+      const up = S.update;
+      if (!up?.auto) return fh.open("releases");
+      if (up.phase) return;
+      if (up.error && up.file) return showManual(up); // it didn't go in by itself: install it by hand
+      if (up.ready) return $("#update-modal").classList.add("on");
+      // downloads and installs; once it's ready, asks to restart; failed with the file there, offers it by hand
+      if (await act("update")) return $("#update-modal").classList.add("on");
+      const now = (await act("state")).update;
+      if (now?.file) showManual(now);
+      return;
+    }
+    case "manual-show": return act("showUpdateFile");
+    case "manual-install":
+      t.disabled = true;
+      t.textContent = "Quitting…";
+      return act("installUpdateFile");
+    case "up-later": return $("#update-modal").classList.remove("on");
+    case "up-restart":
+      t.disabled = true;
+      t.textContent = "Restarting…";
       return act("restartToUpdate");
     case "add-ir": return act("addRule", "*.ir");
     case "pw-cancel": return act("cancelPassword");
@@ -619,6 +668,8 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (S?.pw) return void act("cancelPassword");
     if ($("#wizard").classList.contains("on")) return closeWizard();
+    if ($("#update-modal").classList.contains("on")) return $("#update-modal").classList.remove("on");
+    if ($("#manual-modal").classList.contains("on")) return $("#manual-modal").classList.remove("on");
     if (openSheet) return closeSheet();
     if (document.activeElement === $("#search")) {
       $("#search").value = "";

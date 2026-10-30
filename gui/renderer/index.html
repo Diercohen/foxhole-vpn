@@ -243,6 +243,34 @@
   </form>
 </div>
 
+<!-- An update downloaded and installed: restart into it now, or later -->
+<div class="modal backdrop" id="update-modal">
+  <div class="box glass">
+    <div class="lock-orb"><svg class="i"><use href="#i-up"/></svg></div>
+    <h2>The update is ready</h2>
+    <p>Restart Foxhole to switch to the new version. The VPN drops for a few seconds and connects again by itself.</p>
+    <div class="actions">
+      <button class="btn" type="button" id="up-later">Later</button>
+      <button class="btn primary" type="button" id="up-restart">Restart now</button>
+    </div>
+  </div>
+</div>
+
+<!-- The update didn't go in by itself: the downloaded file, to install by hand -->
+<div class="modal backdrop" id="manual-modal">
+  <div class="box glass">
+    <div class="lock-orb"><svg class="i"><use href="#i-up"/></svg></div>
+    <h2>Install the update yourself</h2>
+    <p id="manual-why"></p>
+    <ol class="steps" id="manual-steps"></ol>
+    <div class="actions">
+      <button class="btn" type="button" id="manual-show">Show in folder</button>
+      <button class="btn primary" type="button" id="manual-install">Quit & install</button>
+    </div>
+    <span class="link fine" id="manual-later">Later</span>
+  </div>
+</div>
+
 <!-- The relay's setup, step by step (relaysetup.ts has the wording and the script) -->
 <div class="modal wizard" id="wizard" aria-label="Set up the VPN relay">
   <div class="box glass">

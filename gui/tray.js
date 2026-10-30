@@ -42,8 +42,10 @@ export function trayView(s, act) {
       { type: "separator" },
       ...(s.update?.ready
         ? [{ label: `Restart to Update (${s.update.version})`, click: () => act.update() }]
-        : s.update && !s.update.auto
-          ? [{ label: `Get Foxhole ${s.update.version}…`, click: () => act.releases() }]
+        : s.update
+          ? [s.update.auto
+            ? { label: s.update.phase ? `Updating to ${s.update.version}…` : `Update to Foxhole ${s.update.version}`, enabled: !s.update.phase, click: () => act.getUpdate() }
+            : { label: `Get Foxhole ${s.update.version}…`, click: () => act.releases() }]
           : []),
       { label: "Show Foxhole", click: () => act.show() },
       { label: "Quit Foxhole", click: () => act.quit() },

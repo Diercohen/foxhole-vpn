@@ -174,6 +174,10 @@ body.mac .titlebar { padding-left: 96px; }
 .pill.update { padding: 0 14px; color: #fff; font-size: 12.5px; font-weight: 700;
   background: linear-gradient(135deg, var(--fox), var(--fox-2)); box-shadow: 0 8px 26px -8px var(--fox-2), inset 0 1px 0 rgba(255, 255, 255, 0.3);
   animation: swap 0.9s var(--out) both, glowPulse 2.6s ease-in-out 0.9s infinite; } /* fades in, then glows softly */
+/* downloading: the button fills from the left as it goes */
+.pill.update.busy { cursor: default; animation: none;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.3) var(--p), transparent var(--p)), linear-gradient(135deg, var(--fox), var(--fox-2)); }
+.pill.update span { font-variant-numeric: tabular-nums; }
 @keyframes glowPulse { 50% { box-shadow: 0 8px 34px -4px var(--fox-2), inset 0 1px 0 rgba(255, 255, 255, 0.3); } }
 
 /* ── Layout ───────────────────────────────────────────────────────────────────────────────── */
@@ -557,8 +561,8 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .modal .actions { display: flex; gap: 10px; margin-top: 4px; }
 .modal .actions .btn { flex: 1; }
 /* The relay's setup: a wide modal over Settings, a step at a time */
-.wizard { background: rgba(7, 6, 12, 0.55); opacity: 0; transition: opacity 0.35s; }
-.wizard.on { opacity: 1; }
+.wizard, .modal.backdrop { background: rgba(7, 6, 12, 0.55); opacity: 0; transition: opacity 0.35s; }
+.wizard.on, .modal.backdrop.on { opacity: 1; }
 .wizard .box { width: min(880px, calc(100% - 40px)); max-height: calc(100% - 40px); padding: 0; text-align: left; gap: 0; overflow: hidden; }
 .wizard header { display: flex; align-items: center; gap: 14px; padding: 20px 22px 16px; border-bottom: 1px solid var(--line); }
 .wizard header > div { flex: 1; min-width: 0; }
@@ -600,6 +604,8 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .wizard .note { padding: 0 22px; min-height: 0; }
 .wizard .actions { justify-content: space-between; padding: 14px 22px 20px; margin: 0; }
 .wizard .actions .btn { flex: none; min-width: 120px; }
+#manual-modal .box { width: min(480px, calc(100% - 40px)); }
+#manual-modal code { overflow-wrap: anywhere; }
 .lock-orb { width: 66px; height: 66px; margin: 0 auto 2px; border-radius: 22px; display: grid; place-items: center; color: #fff;
   background: linear-gradient(135deg, var(--amber), var(--fox) 55%, var(--fox-2));
   box-shadow: 0 18px 44px -12px var(--fox), inset 0 1px 0 rgba(255, 255, 255, 0.45); animation: glowPulse 2.6s ease-in-out infinite; }

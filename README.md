@@ -101,12 +101,24 @@ Windows' own overlay badge instead; docks that always draw the installed app's
 icon (Ubuntu's) don't show it.
 
 It keeps itself up to date. A minute after it starts, then every 6 hours, it
-looks for a newer release on GitHub. On a Mac it downloads that one in the
-background (through the VPN once connected), then shows **Restart to update**.
-Click it, or do nothing: the new version goes in the next time Foxhole quits.
-That needs Foxhole in a folder it can write to, such as Applications. A copy
-opened straight from the disk image, and the app on Windows and Linux, only say
-there's a new version and link to its download.
+looks for a newer release on GitHub, and an orange **Update** button appears at
+the top right. Click it: the button fills as it downloads the file for your
+system (through the VPN once connected; a broken-off download carries on where
+it stopped), installs it, and asks to restart into the new version:
+
+- **macOS**: the disk image for your Mac's chip, checked (its signature and
+  version), swapped in on the restart, or the next time Foxhole quits. That
+  needs Foxhole in a folder it can write to, such as Applications.
+- **Windows**: the installer, run silently once Foxhole has quit and put the
+  network back, then the new version starts.
+- **Linux**: an AppImage replaces itself (in a folder it can write to); the
+  `.deb` installs at once, after the system asks for your password.
+
+The downloaded file stays in your **Downloads** folder until the new version
+runs. If the update doesn't go in by itself, Foxhole says so and offers it to
+install by hand: **Quit & install** quits Foxhole (putting the network back
+first), then opens it. A copy that can't update itself (opened straight from
+the disk image, Linux on Arm) links to the download instead.
 
 To build it from a checkout (Node.js 22.12 or newer, for Electron's installer):
 
@@ -127,7 +139,7 @@ To publish a version, push a tag: `git tag v0.5.2 && git push origin v0.5.2`.
 GitHub then builds the Mac, Windows and Linux apps, versioned after the tag
 (`.github/workflows/release.yml`), and puts them in a draft release. Check it on
 the Releases page and click **Publish release**: everyone can download it from
-there, and installed Mac apps update to it within 6 hours. Your own builds work
+there, and installed apps offer it within 6 hours. Your own builds work
 too: `gh release create v0.5.2 gui/release/*.dmg`. A release without the disk
 images (the CLI's alone) changes nothing for the Mac app.
 
