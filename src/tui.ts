@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { userHome, findAccount } from "./profile.js";
 import { fetchServerList, type Country } from "./serverlist.js";
 import { Connection } from "./connection.js";
-import { GuardianError, useRelay } from "./guardian.js";
+import { GuardianError, GuardianBlocked, useRelay } from "./guardian.js";
 import { network, publicIp, lanIp, firewallHint } from "./netinfo.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor, type Settings } from "./settings.js";
 import { forgetToken } from "./tokenserver.js";
@@ -97,6 +97,8 @@ export class Tui {
   #settings: Settings = loadSettings();
   #settingsOpen = false; // the Settings popup is open
   #wizard: RelayWizard | null = null; // the relay's setup, over Settings
+  #blocked = false; // the popup saying vpn.mozilla.org is blocked here, with the relay's setup a key away
+  #blockedTold = false; // said once already: a background check doesn't say it again, a connect does
   #setSel = 0;
   #edit: { key: "port" | "username" | "password" | "relayId" | "relayKey"; text: string } | null = null; // the setting being typed
   readonly #login = (address: string | undefined) => loginFor(this.#settings, address); // live: a change applies to the next client
@@ -218,7 +220,7 @@ export class Tui {
 
   /** Re-reads the data used, quietly: a failed check keeps what's shown. */
   #refreshUsage(): void {
-    this.#conn.refreshUsage().then(() => this.#render(), () => {});
+    this.#conn.refreshUsage().then(() => this.#render(), (err) => !this.#blockedTold && this.#saysBlocked(err) && this.#render());
   }
 
   #loop(): Promise<"update" | "logout" | undefined> {
@@ -301,6 +303,11 @@ export class Tui {
           return;
         }
         if (this.#wizard) return this.#wizardKey(s, key);
+        if (this.#blocked) {
+          if (key.name === "return") this.#wizard = new RelayWizard(() => this.#render());
+          if (key.name === "return" || key.name === "escape") (this.#blocked = false), this.#render();
+          return;
+        }
         if (this.#settingsOpen) return this.#settingsKey(s, key);
         if (this.#splitOpen) return this.#splitKey(s, key);
         if (key.name === "q") return void quit();
@@ -356,7 +363,7 @@ export class Tui {
    */
   #mouse(b: number, x: number, y: number, press: (name: string) => void): void {
     if (b === 64 || b === 65) return press(b === 64 ? "up" : "down");
-    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#restoring || this.#wizard) return;
+    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#restoring || this.#wizard || this.#blocked) return;
     const h = this.#hit;
     const fx = x - h.left, fy = y - h.top;
     if (this.#settingsOpen) {
@@ -410,6 +417,7 @@ export class Tui {
         forgetToken(); // so the next start shows the token window
         this.#message = red("token rejected (expired) — quit and run foxhole again to get a new one");
       } else {
+        this.#saysBlocked(err);
         // fetch's own message is just "fetch failed"; the network reason is in its cause
         const cause = (err as Error).cause as { code?: string; message?: string } | undefined;
         this.#message = red(`connect failed: ${(err as Error).message}${cause ? ` (${cause.code ?? cause.message})` : ""}`);
@@ -650,7 +658,8 @@ export class Tui {
     if (done) this.#wizard = null;
     if (done && done !== "close") {
       return void this.#changeSetting({ relay: done }).then(() => {
-        if (this.#settings.relay) this.#settingsNote = green("✓ Relay set up. foxhole uses it whenever vpn.mozilla.org is blocked.");
+        // in Settings, or (opened from the blocked popup) the status line
+        if (this.#settings.relay) this.#settingsNote = this.#message = green("✓ Relay set up. foxhole uses it whenever vpn.mozilla.org is blocked.");
         this.#render();
       });
     }
@@ -1034,6 +1043,8 @@ export class Tui {
         ? this.#passwordPopup()
         : this.#wizard
           ? this.#wizard.render(cols, frame.length - 2)
+          : this.#blocked
+          ? this.#blockedPopup()
           : this.#settingsOpen
           ? this.#settingsPopup()
           : this.#splitOpen
@@ -1125,6 +1136,33 @@ export class Tui {
   }
 
   /** The popup shown while quitting restores global mode's routes and DNS. */
+  /** Shows the blocked popup when err says vpn.mozilla.org is blocked here (with no relay set); whether it did. */
+  #saysBlocked(err: unknown): boolean {
+    if (!(err instanceof GuardianBlocked)) return false;
+    this.#blocked = this.#blockedTold = true;
+    return true;
+  }
+
+  #blockedPopup(): string[] {
+    return box(
+      [
+        "",
+        bold(yellow("Mozilla's VPN service is blocked here")),
+        "",
+        "It seems your government or internet provider blocks",
+        "Firefox's VPN service (vpn.mozilla.org) in your country.",
+        "",
+        "Set up a relay to get around it: a free script on your",
+        "own Google account that reaches it for foxhole. It takes",
+        "a few minutes, and foxhole shows you each click.",
+        "",
+        `${bold(cyan("[⏎ Set up a relay]"))}   ${dim("[esc Not now]")}`,
+        "",
+      ],
+      { title: bold(yellow("vpn.mozilla.org blocked")) },
+    );
+  }
+
   #restoringPopup(): string[] {
     return box(
       [

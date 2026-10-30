@@ -91,7 +91,7 @@ async function request(method: "GET" | "HEAD", path: string, accessToken: string
   try {
     return await directRequest(method, path, accessToken, signal);
   } catch (err) {
-    if (!relay) throw err;
+    if (!relay) throw !signal?.aborted && (await reachable(RELAY_HOST)) ? new GuardianBlocked(err as Error) : err;
     // UrlFetchApp has no HEAD, and here we only read the response's headers, so a HEAD goes through as GET.
     log(`guardian: ${GUARDIAN_HOST} unreachable, relaying ${path} via Apps Script`);
     return relayRequest(
@@ -138,6 +138,32 @@ function directRequest(method: "GET" | "HEAD", path: string, accessToken: string
       },
     );
     req.on("timeout", () => req.destroy(new Error("timed out"))).on("error", fail).end();
+  });
+}
+
+/** Where a relay runs (httprelay.ts): Google's Apps Script. */
+const RELAY_HOST = "script.google.com";
+
+/**
+ * vpn.mozilla.org won't connect while Google answers: the network is fine and it's blocked on it (Iran), not
+ * offline. With no relay set, that's what to set up; each UI offers its setup (relaysetup.ts).
+ */
+export class GuardianBlocked extends Error {
+  constructor(cause: Error) {
+    super(`${GUARDIAN_HOST} seems blocked on this network: set up a relay (Settings → VPN relay)`, { cause });
+  }
+}
+
+/** Whether host answers HTTPS at all (any status) within 5 seconds. */
+function reachable(host: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    https
+      .request({ host, method: "HEAD", path: "/", timeout: 5000 }, (res) => (res.resume(), resolve(true)))
+      .on("timeout", function (this: import("node:http").ClientRequest) {
+        this.destroy();
+      })
+      .on("error", () => resolve(false))
+      .end();
   });
 }
 

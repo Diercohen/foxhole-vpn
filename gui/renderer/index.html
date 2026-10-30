@@ -244,6 +244,20 @@
 </div>
 
 <!-- An update downloaded and installed: restart into it now, or later -->
+<!-- vpn.mozilla.org doesn't connect while Google does: blocked here; a relay gets around it -->
+<div class="modal backdrop" id="blocked-modal">
+  <div class="box glass">
+    <div class="lock-orb"><svg class="i"><use href="#i-shield"/></svg></div>
+    <h2>Mozilla's VPN service is blocked here</h2>
+    <p>It seems your government or internet provider blocks Firefox's VPN service (vpn.mozilla.org) in your country.</p>
+    <p>Set up a relay to get around it: a free script on your own Google account that reaches it for Foxhole. It takes a few minutes, and Foxhole shows you each click.</p>
+    <div class="actions">
+      <button class="btn" type="button" id="blocked-later">Not now</button>
+      <button class="btn primary" type="button" id="blocked-setup"><svg class="i"><use href="#i-spark"/></svg>Set up a relay</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal backdrop" id="update-modal">
   <div class="box glass">
     <div class="lock-orb"><svg class="i"><use href="#i-up"/></svg></div>

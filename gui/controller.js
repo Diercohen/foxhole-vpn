@@ -5,7 +5,7 @@ import { findAccount, openBrowser, macApp } from "./dist/profile.js";
 import { fetchServerList } from "./dist/serverlist.js";
 import { Connection } from "./dist/connection.js";
 import { FirefoxAuth, StaticAuth } from "./dist/auth.js";
-import { GuardianError, useRelay } from "./dist/guardian.js";
+import { GuardianError, GuardianBlocked, useRelay } from "./dist/guardian.js";
 import { loadRelay } from "./dist/httprelay.js";
 import { STEPS, KEY_PLACEHOLDER, relayTemplate, highlightJs, deploymentId } from "./dist/relaysetup.js";
 import { network, publicIp, lanIp, firewallHint } from "./dist/netinfo.js";
@@ -30,6 +30,8 @@ export class Controller extends EventEmitter {
   #port = this.#settings.port;
   #conn = null;
   #countries = [];
+  #blocked = 0; // times vpn.mozilla.org was found blocked here: the window says so (with the relay's setup) as it goes up
+  #blockedTold = false; // said once already: a background check doesn't say it again, a connect does
   #listError = null;
   #selected = loadLastCountry(); // where the power button connects
   #proxy = null;
@@ -234,7 +236,7 @@ export class Controller extends EventEmitter {
 
   /** Re-reads the data used, quietly: a failed check keeps what's shown. */
   #refreshUsage() {
-    this.#conn?.refreshUsage().then(() => this.#changed(), () => {});
+    this.#conn?.refreshUsage().then(() => this.#changed(), (err) => !this.#blockedTold && this.#saysBlocked(err) && this.#changed());
   }
 
   async connect(code = this.#selected) {
@@ -259,6 +261,7 @@ export class Controller extends EventEmitter {
         forgetToken(); // so the next start asks for a new one
         this.#say("error", "token rejected (expired) — quit and open Foxhole again to get a new one");
       } else {
+        this.#saysBlocked(err);
         // fetch's own message is just "fetch failed"; the network reason is in its cause
         const cause = err.cause;
         this.#say("error", `connect failed: ${err.message}${cause ? ` (${cause.code ?? cause.message})` : ""}`);
@@ -272,6 +275,14 @@ export class Controller extends EventEmitter {
       this.#connecting = null;
       this.#refreshNet();
     }
+  }
+
+  /** Counts err when it says vpn.mozilla.org is blocked here (with no relay set), for the window to say so; whether it did. */
+  #saysBlocked(err) {
+    if (!(err instanceof GuardianBlocked)) return false;
+    this.#blocked++;
+    this.#blockedTold = true;
+    return true;
   }
 
   async disconnect() {
@@ -647,6 +658,7 @@ export class Controller extends EventEmitter {
       splitNote: this.#splitNote,
       pw: this.#pw,
       restoring: this.#restoring,
+      blocked: this.#blocked,
     };
   }
 }

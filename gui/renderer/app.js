@@ -629,6 +629,10 @@ document.addEventListener("click", async (e) => {
       t.textContent = "Quitting…";
       return act("installUpdateFile");
     case "up-later": return $("#update-modal").classList.remove("on");
+    case "blocked-later": return $("#blocked-modal").classList.remove("on");
+    case "blocked-setup":
+      $("#blocked-modal").classList.remove("on");
+      return openWizard();
     case "up-restart":
       t.disabled = true;
       t.textContent = "Restarting…";
@@ -684,6 +688,7 @@ document.addEventListener("keydown", (e) => {
     if (S?.pw) return void act("cancelPassword");
     if ($("#wizard").classList.contains("on")) return closeWizard();
     if ($("#update-modal").classList.contains("on")) return $("#update-modal").classList.remove("on");
+    if ($("#blocked-modal").classList.contains("on")) return $("#blocked-modal").classList.remove("on");
     if ($("#manual-modal").classList.contains("on")) return $("#manual-modal").classList.remove("on");
     if (openSheet) return closeSheet();
     if (document.activeElement === $("#search")) {
@@ -749,11 +754,19 @@ window.addEventListener("focus", () => document.body.classList.remove("idle"));
   $("#split-suggest .flag").outerHTML = flag("IR");
 }
 
+let blockedSeen = 0; // the controller's count of times vpn.mozilla.org was found blocked, as far as the window said so
+/** Says vpn.mozilla.org is blocked here, offering the relay's setup, each time the controller finds it anew. */
+function sayBlocked() {
+  if (S.blocked > blockedSeen && !S.settings.relay) $("#blocked-modal").classList.add("on");
+  blockedSeen = S.blocked;
+}
 fh.onState((state) => {
   S = state;
   render();
+  sayBlocked();
 });
 void act("state").then((state) => {
   S ??= state;
   render();
+  sayBlocked();
 });

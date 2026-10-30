@@ -382,7 +382,9 @@ VPN-scoped access token while it relays, so don't use someone else's). The
 easy way: **Settings → VPN relay → Set up step by step**, in the terminal UI
 (press `S`) or the desktop app. It makes your secret key, puts it into the
 script for you to copy, shows each click with a screenshot, and saves the
-Deployment ID you paste (or the whole web app URL) at the end.
+Deployment ID you paste (or the whole web app URL) at the end. When foxhole
+finds vpn.mozilla.org blocked (it won't connect while Google does), it says
+so in a popup with this setup a click or a key away.
 The terminal UI shows the screenshots as real pictures in kitty, Ghostty,
 iTerm2, WezTerm, foot, Konsole and Windows Terminal, and as colored blocks
 elsewhere; `FOXHOLE_IMAGES=kitty`, `iterm`, `sixel` or `blocks` picks the kind
