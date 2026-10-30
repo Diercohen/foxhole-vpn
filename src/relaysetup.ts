@@ -60,7 +60,7 @@ export const STEPS = [
       "Click **Deploy** → **New deployment** at the top right.",
       "Click the gear next to Select type and pick **Web app**.",
       "Set Execute as to **Me** and Who has access to **Anyone**, then click **Deploy**.",
-      "Google asks for access the first time: **Authorize access** → your account → **Advanced** → **Go to Untitled project (unsafe)** → **Allow**. It's your own script, so this is safe.",
+      "Google asks for access the first time: **Authorize access** → your account → **Advanced** → **Go to Untitled project (unsafe)** → **Continue**. It's your own script, so this is safe.",
     ],
   },
   {
