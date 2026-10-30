@@ -21,6 +21,15 @@ export const verbose = process.argv.includes("--verbose");
 // code block: near-white text on dark grey, readable on light and dark terminals
 export const code = wrap("48;5;236;38;5;255");
 
+/**
+ * Whether the TUI shows emoji and flags. Windows has no flag pictures at all and its terminals draw emoji poorly or
+ * not at all (letters or boxes in their place); the Linux console has none either. FOXHOLE_EMOJI=1 or 0 says otherwise.
+ */
+export const EMOJI = process.env.FOXHOLE_EMOJI ? process.env.FOXHOLE_EMOJI !== "0" : process.platform !== "win32" && process.env.TERM !== "linux";
+
+/** e where the TUI shows emoji (EMOJI), else alt. */
+export const emoji = (e: string, alt = "") => (EMOJI ? e : alt);
+
 /** ISO 3166-1 alpha-2 → regional-indicator flag emoji. */
 export function flag(code: string): string {
   if (code.length !== 2) return "  ";

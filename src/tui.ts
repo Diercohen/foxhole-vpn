@@ -14,7 +14,7 @@ import { logLines, onLog } from "./log.js";
 import { useSplit, splitOn, splitSummary, parseSite, hits, recentSites, type Split, type Via } from "./split.js";
 import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, restart, versionLines, UPDATE_COMMAND } from "./update.js";
-import { bold, dim, under, strike, green, red, yellow, cyan, lit, flag, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
+import { bold, dim, under, strike, green, red, yellow, cyan, lit, flag, EMOJI, emoji, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
 import { fox, FOX_W, FOX_H, type Mood } from "./fox.js";
 import { loadRelay } from "./httprelay.js";
 import { newAuthKey } from "./relaysetup.js";
@@ -55,6 +55,9 @@ const SETTINGS = [
   { key: "relayId", label: "VPN relay · deployment ID" },
   { key: "relayKey", label: "VPN relay · auth key" },
 ] as const;
+
+/** A country's name with its flag in front, where the TUI shows flags (EMOJI). */
+const flagged = (code: string, name: string) => (EMOJI ? `${flag(code)} ${name}` : name);
 
 /** Merges a relay change into the current config; undefined (off) once both parts are empty. */
 const relayWith = (cur: Settings["relay"], patch: { deploymentId?: string; authKey?: string }): Settings["relay"] => {
@@ -213,7 +216,7 @@ export class Tui {
     void publicIp(proxy).then((ip) => {
       if (seq !== this.#netSeq) return;
       this.#ip = ip;
-      this.#ipNote = country ? `VPN · ${flag(country.code)} ${countryName(country.code, country.name)}` : "your real IP";
+      this.#ipNote = country ? `VPN · ${flagged(country.code, countryName(country.code, country.name))}` : "your real IP";
       this.#render();
     });
   }
@@ -925,9 +928,9 @@ export class Tui {
         : `${bold(gb(u.remaining).replace(" GB", ""))} of ${gb(u.max)} left` + (u.reset ? dim(` · resets ${shortDate(u.reset)}`) : ""); // as Firefox shows it
     const gc = this.#globalCountry;
     const state = this.#global
-      ? `${lit(" GLOBAL TUN ON ")} ${green(`${flag(gc!.code)} ${countryName(gc!.code, gc!.name)}`)}`
+      ? `${lit(" GLOBAL TUN ON ")} ${green(flagged(gc!.code, countryName(gc!.code, gc!.name)))}`
       : this.#active
-        ? green(`● connected ${flag(this.#active.code)} ${countryName(this.#active.code, this.#active.name)}`)
+        ? green(`● connected ${flagged(this.#active.code, countryName(this.#active.code, this.#active.name))}`)
         : dim("○ disconnected");
     const sp = this.#settings.split;
     const split = splitSummary(sp);
@@ -964,7 +967,7 @@ export class Tui {
       ? rows - foot - (tips ? 3 : 0) - 6 // beside the details: the window's height
       : rows - (tips ? 21 : 18) - version.length - (foxOn ? FOX_H + 1 : 0));
     const { start, slice } = window(this.#sel, this.#countries.length, room);
-    const label = (c: Country) => `${flag(c.code)} ${countryName(c.code, c.name)}`;
+    const label = (c: Country) => flagged(c.code, countryName(c.code, c.name));
     const body = slice.map((i) => {
       const c = this.#countries[i];
       const here = i === this.#sel;
@@ -981,7 +984,7 @@ export class Tui {
       ? `${start + 1}–${start + slice.length} of ${this.#countries.length}`
       : this.#countries.length ? `${this.#countries.length} countries` : ""; // none yet: the list says loading…
 
-    const title = bold(cyan("🦊 foxhole-vpn"));
+    const title = bold(cyan(emoji("🦊 ") + "foxhole-vpn"));
     const key = (k: string, rest: string) => `[${under(k)}${rest}]`;
     // Lit while on, each part on its own: the underline's reset would end an outer style
     const globalBtn = this.#global ? ["[", under("G"), "lobal TUN]"].map(lit).join("") : dim(key("G", "lobal TUN"));
@@ -1026,10 +1029,10 @@ export class Tui {
       ...panels,
       // The free locations' IPs are shared widely, so picky sites flag them.
       ...(tips ? [
-        centerIn(dim("💡 Claude, ChatGPT, Gemini, Netflix, YouTube Music, Spotify and banks"), width),
+        centerIn(dim(emoji("💡 ") + "Claude, ChatGPT, Gemini, Netflix, YouTube Music, Spotify and banks"), width),
         // Each part dimmed on its own: an inner style's reset would end an outer dim.
         centerIn(["often block shared VPN IPs: pick a ", under("paid location"), " for them."].map(dim).join(""), width),
-        centerIn(["Foxhole made the paid servers ", green("free")].map(dim).join("") + " for you 🦊", width),
+        centerIn(["Foxhole made the paid servers ", green("free")].map(dim).join("") + " for you" + emoji(" 🦊"), width),
       ] : []),
       "",
       centerIn(buttons, width),
@@ -1169,8 +1172,8 @@ export class Tui {
         "",
         "Restoring networking…",
         "",
-        "🦊 The fox is putting your routes and DNS",
-        "   back exactly where it found them.",
+        emoji("🦊 ") + "The fox is putting your routes and DNS",
+        emoji("   ") + "back exactly where it found them.",
         "",
         yellow("Please don't force quit: a half-tidied"),
         yellow("den means no internet until you reboot."),
@@ -1200,7 +1203,7 @@ export class Tui {
         "",
         dim("enter OK · esc cancel"),
       ],
-      { title: bold(yellow("🔒 Administrator password")), width: 44 },
+      { title: bold(yellow(emoji("🔒 ") + "Administrator password")), width: 44 },
     );
   }
 }

@@ -258,6 +258,10 @@ On **Linux** a global session undoes itself even when foxhole is killed; should
 the computer still be left offline, the same `foxhole restore` (it asks for your
 password) removes what's left.
 
+The TUI leaves out flags and emoji on Windows, which has no flag pictures and
+draws emoji poorly in its terminals, and in the Linux console;
+`FOXHOLE_EMOJI=1` (or `0`) turns them on (or off) anywhere.
+
 `foxhole-vpn` works too, as an alias. From a checkout: `npm install && npm run build`,
 then `node dist/cli.js` in place of `foxhole`.
 
