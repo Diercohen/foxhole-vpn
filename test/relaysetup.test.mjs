@@ -2,7 +2,7 @@
 // Deployment ID, and the PNG decoder that draws the step screenshots in the terminal.
 import assert from "node:assert";
 import { deflateSync } from "node:zlib";
-import { relayTemplate, relayScript, KEY_PLACEHOLDER, newAuthKey, keyOk, deploymentId, highlightJs, stepImage } from "../dist/relaysetup.js";
+import { relayTemplate, relayScript, KEY_PLACEHOLDER, newAuthKey, keyOk, deploymentId, highlightJs, relayAsset, STEPS } from "../dist/relaysetup.js";
 import { decodePng, halfBlocks, wrap } from "../dist/relaywizard.js";
 
 // The script: the placeholder is there once, and the key replaces it
@@ -54,11 +54,15 @@ assert.deepEqual([img.px(0, 0), img.px(1, 0), img.px(0, 1), img.px(1, 1)], [[255
 const rgba = decodePng(png(2, 1, 6, [[1, 10, 20, 30, 255, 5, 5, 5, 1]]));
 assert.deepEqual([rgba.px(0, 0), rgba.px(1, 0)], [[10, 20, 30], [0, 0, 0]]);
 assert.equal(decodePng(Buffer.from("not a png")), null);
-for (let n = 1; n <= 4; n++) {
-  const shot = decodePng((await import("node:fs")).readFileSync(stepImage(n)));
-  assert.ok(shot && shot.w > 0, `step ${n}'s screenshot decodes`);
-  const lines = halfBlocks(stepImage(n), 30, 9);
-  if (lines) assert.ok(lines.length <= 9 && lines.some((l) => l.includes("▀")), `step ${n} draws in half blocks`);
+for (const st of STEPS) {
+  // a step of several clicks has a screenshot a line
+  assert.ok(st.shots.length === 1 || st.shots.length === st.lines.length, `${st.short}: one screenshot, or one a line`);
+  for (const name of st.shots) {
+    const shot = decodePng((await import("node:fs")).readFileSync(relayAsset(name)));
+    assert.ok(shot && shot.w > 0, `${name} decodes`);
+    const lines = halfBlocks(relayAsset(name), 30, 9);
+    if (lines) assert.ok(lines.length <= 9 && lines.some((l) => l.includes("▀")), `${name} draws in half blocks`);
+  }
 }
 
 console.log("relaysetup: ok");

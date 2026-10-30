@@ -8,8 +8,6 @@ import { fileURLToPath } from "node:url";
 /** assets/relay/<name>, copied next to this file by the build (dist/assets/relay). */
 export const relayAsset = (name: string) => fileURLToPath(new URL(`./assets/relay/${name}`, import.meta.url));
 
-/** Each step's screenshot; a missing one is simply not shown. */
-export const stepImage = (n: number) => relayAsset(`step-${n}.png`);
 
 /** Code.gs's AUTH_KEY value, replaced by the user's key. */
 export const KEY_PLACEHOLDER = "YOUR_AUTH_KEY";
@@ -33,7 +31,11 @@ export function deploymentId(text: string): string | null {
   return /^[\w-]{20,}$/.test(id) ? id : null;
 }
 
-/** The steps. **…** marks what to look for on screen (bold); each UI adds its own buttons and keys. */
+/**
+ * The steps. **…** marks what to look for on screen (bold); each UI adds its own buttons and keys. `shots` are the
+ * step's screenshots in assets/relay (a missing one is simply not shown): one for the step, or one a line for a step
+ * of several clicks, shown in turn as Next goes through its lines.
+ */
 export const STEPS = [
   {
     title: "Open Google Apps Script",
@@ -43,6 +45,7 @@ export const STEPS = [
       "Open **script.google.com** and sign in with your Google account.",
       "Click **New project** at the top left.",
     ],
+    shots: ["step-1.png"],
   },
   {
     title: "Paste the relay code",
@@ -52,6 +55,7 @@ export const STEPS = [
       "Copy the code below and paste it in. Your secret key is already in it.",
       "Click the **Save** icon above the code.",
     ],
+    shots: ["step-2.png"],
   },
   {
     title: "Deploy it",
@@ -60,8 +64,19 @@ export const STEPS = [
       "Click **Deploy** → **New deployment** at the top right.",
       "Click the gear next to Select type and pick **Web app**.",
       "Set Execute as to **Me** and Who has access to **Anyone**, then click **Deploy**.",
-      "Google asks for access the first time: **Authorize access** → your account → **Advanced** → **Go to Untitled project (unsafe)** → **Continue**. It's your own script, so this is safe.",
     ],
+    shots: ["step-3.png"],
+  },
+  {
+    title: "Allow it to run",
+    short: "Allow",
+    lines: [
+      "Google asks for access the first time: click **Authorize access**.",
+      "Google warns that it hasn't checked this app. It's your own script, so it's safe: click **Advanced**.",
+      "Then click **Go to Untitled project (unsafe)**.",
+      "Click **Continue**.",
+    ],
+    shots: ["step-4-1.png", "step-4-2.png", "step-4-3.png", "step-4-4.png"],
   },
   {
     title: "Paste the Deployment ID",
@@ -70,6 +85,7 @@ export const STEPS = [
       "Google now shows a **Deployment ID** and a web app URL. Click **Copy** under either one.",
       "Paste it below. foxhole keeps it and your key, and uses the relay only when vpn.mozilla.org can't be reached directly.",
     ],
+    shots: ["step-5.png"],
   },
 ];
 

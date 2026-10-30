@@ -5,7 +5,7 @@ import type readline from "node:readline";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
-import { STEPS, KEY_PLACEHOLDER, KEY_CHARS, keyOk, newAuthKey, relayScript, relayTemplate, highlightJs, deploymentId, stepImage, type Token } from "./relaysetup.js";
+import { STEPS, KEY_PLACEHOLDER, KEY_CHARS, keyOk, newAuthKey, relayScript, relayTemplate, highlightJs, deploymentId, relayAsset, type Token } from "./relaysetup.js";
 import { bold, dim, cyan, green, yellow, red, magenta, useColor, fit, pad, box, openUrl, copyText } from "./ui.js";
 import { userHome } from "./profile.js";
 
@@ -16,6 +16,7 @@ export type WizardResult = "close" | { deploymentId: string; authKey: string } |
 
 export class RelayWizard {
   #step = 0;
+  #shot = 0; // in a step with a screenshot a line: the line, and its screenshot, being shown
   #key = newAuthKey();
   #editKey = false; // the key is being typed
   #id = ""; // the last step's input
@@ -40,12 +41,17 @@ export class RelayWizard {
       return;
     }
     if (n === "escape") return "close";
-    if (n === "left") return void (this.#step = Math.max(0, this.#step - 1));
+    if (n === "left") {
+      if (this.#shot > 0) return void (this.#shot -= 1);
+      this.#step = Math.max(0, this.#step - 1);
+      return void (this.#shot = Math.max(0, STEPS[this.#step].shots.length - 1)); // back onto its last line
+    }
     const last = this.#step === STEPS.length - 1;
     if (n === "right" || n === "return") {
+      if (this.#shot < STEPS[this.#step].shots.length - 1) return void (this.#shot += 1);
       if (!last) {
         if (this.#step === 1 && !keyOk(this.#key)) return void (this.#note = red("Make a key first: press r."));
-        return void ((this.#step += 1), (this.#scroll = 0));
+        return void ((this.#step += 1), (this.#shot = 0), (this.#scroll = 0));
       }
       if (n === "right") return;
       const id = deploymentId(this.#id);
@@ -58,7 +64,7 @@ export class RelayWizard {
       else if (s && s.length === 1 && s > " " && !key.ctrl && !key.meta && this.#id.length < 300) this.#id += s;
       return;
     }
-    if (n === "o") return void openUrl(stepImage(this.#step + 1));
+    if (n === "o") return void openUrl(this.#image());
     if (this.#step === 0 && n === "b") return void openUrl("https://script.google.com/home");
     if (this.#step !== 1) return;
     const lines = relayTemplate().split("\n").length;
@@ -72,6 +78,9 @@ export class RelayWizard {
     else if (n === "c") void this.#copy();
     this.#scroll = Math.max(0, Math.min(this.#scroll, lines - this.#codeRows));
   }
+
+  /** The screenshot shown now. */
+  #image = () => relayAsset(STEPS[this.#step].shots[this.#shot]);
 
   /** The code on the clipboard; without a clipboard tool, in a file to copy it from. */
   async #copy(): Promise<void> {
@@ -103,10 +112,11 @@ export class RelayWizard {
       this.#step < STEPS.length - 1 ? "⏎ next" : "⏎ finish",
       ...(this.#step === 0 ? ["b open script.google.com"] : []),
       ...(this.#step === 1 ? (this.#editKey ? ["type the key · ⏎ done"] : ["c copy code", "↑↓ scroll", "r new key", "e edit key"]) : []),
-      ...(this.#step < STEPS.length - 1 && !this.#editKey && existsSync(stepImage(this.#step + 1)) ? ["o full screenshot"] : []),
+      ...(this.#step < STEPS.length - 1 && !this.#editKey && existsSync(this.#image()) ? ["o full screenshot"] : []),
       "esc close",
     ].filter(Boolean);
-    const head = ["", stepper, "", bold(`${this.#step + 1}. ${st.title}`), ""];
+    const many = st.shots.length > 1;
+    const head = ["", stepper, "", bold(`${this.#step + 1}. ${st.title}`) + (many ? dim(` · ${this.#shot + 1} of ${st.shots.length}`) : ""), ""];
     // the keys on as few lines as fit the width
     const keyLines = keys.reduce<string[]>((ls, k) => (ls.length && ls[ls.length - 1].length + 3 + k.length <= inner ? (ls[ls.length - 1] += " · " + k) : ls.push(k), ls), []);
     const foot = [this.#note, ...keyLines.map(dim)];
@@ -114,9 +124,14 @@ export class RelayWizard {
 
     // The text, with the screenshot beside it when there's room for both and (step 2) the code below
     const extra = this.#step === 1 ? 2 + 5 : this.#step === STEPS.length - 1 ? 2 : 0; // key + gap + 5 lines of code; the input
-    const img = inner >= 64 ? halfBlocks(stepImage(this.#step + 1), IMG_W, IMG_H) : null;
+    const img = inner >= 64 ? halfBlocks(this.#image(), IMG_W, IMG_H) : null;
     const textW = img ? inner - IMG_W - 3 : inner;
-    const text = (w: number) => st.lines.flatMap((l, i) => wrap(`${i + 1}. ${l}`, w, 3));
+    // a step of several clicks: ▸ at the line its screenshot shows, the lines done dim
+    const text = (w: number) => st.lines.flatMap((l, i) => {
+      if (!many) return wrap(`${i + 1}. ${l}`, w, 3);
+      const ls = wrap(`${i + 1}. ${l}`, w - 2, 3).map((x, j) => (j || i !== this.#shot ? "  " : cyan("▸ ")) + x);
+      return i < this.#shot ? ls.map((x) => dim(x.replace(/\x1b\[[0-9;]*m/g, ""))) : ls;
+    });
     const beside = text(textW);
     const h = Math.max(beside.length, IMG_H);
     const body = img && h + extra <= room

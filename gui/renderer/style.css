@@ -584,6 +584,12 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .wz-body .buttons { justify-content: flex-start; margin: 0; }
 .wz-shot { margin: 0; border-radius: 14px; overflow: hidden; cursor: zoom-in; box-shadow: inset 0 0 0 1px var(--line-2), 0 16px 34px -18px rgba(0, 0, 0, 0.9); }
 .wz-shot img { display: block; width: 100%; }
+.wz-shot figcaption { padding: 6px 10px; font-size: 11.5px; font-weight: 650; color: var(--ink-3); text-align: center; }
+.wz-shot.zoom figcaption { display: none; }
+/* a step of several clicks: the line the screenshot shows stands out, the ones done fade */
+.wz-body .steps.clicks li { cursor: pointer; padding: 6px 8px; margin: -6px -8px; border-radius: 12px; transition: background 0.2s, color 0.2s; }
+.wz-body .steps.clicks li.on { color: var(--ink); background: rgba(255, 122, 26, 0.1); box-shadow: inset 0 0 0 1px rgba(255, 122, 26, 0.35); }
+.wz-body .steps.clicks li.done { opacity: 0.55; }
 /* clicked: the screenshot over the whole popup, clicked again: back */
 .wz-shot.zoom { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; padding: 18px; border-radius: inherit; cursor: zoom-out; background: rgba(7, 6, 12, 0.94); }
 .wz-shot.zoom img { width: auto; max-width: 100%; max-height: 100%; border-radius: 12px; }

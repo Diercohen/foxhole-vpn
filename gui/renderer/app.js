@@ -431,14 +431,14 @@ $("#manual-later").addEventListener("click", () => $("#manual-modal").classList.
 
 // ── The relay's setup, step by step ────────────────────────────────────────────────────────
 
-const wz = { step: 0, key: "", id: "", setup: null }; // setup: the steps and the script's tokens (controller.relaySetup)
+const wz = { step: 0, shot: 0, key: "", id: "", setup: null }; // setup: the steps and the script's tokens (controller.relaySetup); shot: a step of several clicks' line shown
 
 /** A strong random key: 32 URL-safe characters, as relaysetup.ts newAuthKey(). */
 const newKey = () => btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(24)))).replace(/\+/g, "-").replace(/\//g, "_");
 
 async function openWizard() {
   wz.setup ??= await act("relaySetup");
-  Object.assign(wz, { step: 0, key: newKey(), id: "" });
+  Object.assign(wz, { step: 0, shot: 0, key: newKey(), id: "" });
   drawWizard();
   $("#wizard").classList.add("on");
 }
@@ -463,6 +463,7 @@ function drawWizard() {
   const { steps } = wz.setup;
   const st = steps[wz.step];
   const last = wz.step === steps.length - 1;
+  const many = st.shots.length > 1; // a screenshot a line: Next goes through them
   $("#wz-stepper").innerHTML = steps.map((s, i) =>
     `<li class="${i < wz.step ? "done" : i === wz.step ? "on" : ""}"><span>${i < wz.step ? icon("check") : i + 1}</span>${esc(s.short)}</li>`).join("");
   const widget = [
@@ -471,14 +472,16 @@ function drawWizard() {
      <div class="input-row"><input id="wz-key" class="mono" value="${esc(wz.key)}" spellcheck="false" autocomplete="off" aria-label="Your secret key"><button class="mini big" type="button" id="wz-newkey" title="Make a new key">${icon("refresh")}</button></div>
      <div class="code"><pre id="wz-code">${codeHtml()}</pre><button class="btn" type="button" id="wz-copy">${icon("copy")}Copy code</button></div>`,
     "",
+    "",
     `<input id="wz-id" class="mono" placeholder="Paste the Deployment ID or web app URL" value="${esc(wz.id)}" spellcheck="false" autocomplete="off" aria-label="Deployment ID">`,
   ][wz.step];
   $("#wz-body").innerHTML = `<div class="wz-top">
-      <div><h3>${wz.step + 1}. ${esc(st.title)}</h3><ol class="steps">${st.lines.map((l) => `<li><span>${esc(l).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")}</span></li>`).join("")}</ol></div>
-      <figure class="wz-shot" title="Click to enlarge"><img src="../dist/assets/relay/step-${wz.step + 1}.png" alt="Step ${wz.step + 1}"></figure>
+      <div><h3>${wz.step + 1}. ${esc(st.title)}</h3><ol class="steps${many ? " clicks" : ""}">${st.lines.map((l, i) =>
+        `<li${many ? ` data-shot="${i}" class="${i === wz.shot ? "on" : i < wz.shot ? "done" : ""}"` : ""}><span>${esc(l).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")}</span></li>`).join("")}</ol></div>
+      <figure class="wz-shot" title="Click to enlarge"><img src="../dist/assets/relay/${st.shots[wz.shot]}" alt="Step ${wz.step + 1}">${many ? `<figcaption>${wz.shot + 1} of ${st.shots.length}</figcaption>` : ""}</figure>
     </div>${widget}`;
   $("#wz-body img").addEventListener("error", (e) => e.target.parentElement.remove()); // no screenshot for this step
-  $("#wz-prev").disabled = wz.step === 0;
+  $("#wz-prev").disabled = wz.step === 0 && wz.shot === 0;
   $("#wz-next").innerHTML = last ? `${icon("check")}Finish` : `Next${icon("chevron")}`;
   $("#wz-note").textContent = "";
   $("#wz-key")?.addEventListener("input", (e) => {
@@ -493,7 +496,8 @@ function drawWizard() {
 async function wizardNext() {
   const note = (text) => (($("#wz-note").textContent = text), replay($("#wz-note"), "shake"));
   if (wz.step === 1 && !/^[\w-]{16,}$/.test(wz.key)) return note("The key needs at least 16 letters, digits, - or _. Press ↻ for a new one.");
-  if (wz.step < wz.setup.steps.length - 1) return void (wz.step++, drawWizard());
+  if (wz.shot < wz.setup.steps[wz.step].shots.length - 1) return void (wz.shot++, drawWizard());
+  if (wz.step < wz.setup.steps.length - 1) return void (wz.step++, (wz.shot = 0), drawWizard());
   // as relaysetup.ts deploymentId(): the ID alone, or inside the web app's URL
   const id = (wz.id.match(/\/macros\/s\/([\w-]+)/)?.[1] ?? wz.id).trim();
   if (!/^[\w-]{20,}$/.test(id)) return note(wz.id.trim() ? "That isn't a Deployment ID or web app URL: copy it again from Google." : "Paste the Deployment ID first.");
@@ -503,7 +507,18 @@ async function wizardNext() {
   } else note("Couldn't save it: see the note in Settings.");
 }
 
-$("#wz-body").addEventListener("click", (e) => e.target.closest(".wz-shot")?.classList.toggle("zoom"));
+/** Previous: the line before in a step of several clicks, else the step before (on its last line). */
+function wizardPrev() {
+  if (wz.shot > 0) wz.shot--;
+  else if (wz.step > 0) wz.shot = wz.setup.steps[--wz.step].shots.length - 1;
+  drawWizard();
+}
+
+$("#wz-body").addEventListener("click", (e) => {
+  const line = e.target.closest("[data-shot]");
+  if (line) return void ((wz.shot = +line.dataset.shot), drawWizard());
+  e.target.closest(".wz-shot")?.classList.toggle("zoom");
+});
 $("#wz-body").addEventListener("keydown", (e) => e.key === "Enter" && e.target.id === "wz-id" && wizardNext());
 
 // ── Logs ───────────────────────────────────────────────────────────────────────────────────
@@ -584,7 +599,7 @@ document.addEventListener("click", async (e) => {
     }
     case "relay-wizard": return openWizard();
     case "wz-close": return closeWizard();
-    case "wz-prev": return void ((wz.step = Math.max(0, wz.step - 1)), drawWizard());
+    case "wz-prev": return wizardPrev();
     case "wz-next": return wizardNext();
     case "wz-newkey":
       $("#wz-key").value = wz.key = newKey();
