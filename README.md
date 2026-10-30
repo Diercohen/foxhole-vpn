@@ -129,6 +129,10 @@ npm start                    # run it from here
 npm run dist                 # an installer for this OS in gui/release: .dmg, .exe (NSIS), .deb and .AppImage
 ```
 
+The flags are pictures in `gui/renderer/flags` (one SVG a country); after
+changing one, `npm run flags` (in `gui`) redraws the tray menu's copies in
+`gui/build/flags`.
+
 Where GitHub is slow or blocked, `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`
 in front of those commands fetches Electron from a mirror. `npm run dist` fetches
 Electron (about 130 MB for each architecture) again on every build: on a slow

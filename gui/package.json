@@ -13,7 +13,8 @@
     "core": "npm --prefix .. run build && node -e \"fs.rmSync('dist', { recursive: true, force: true }); fs.cpSync('../dist', 'dist', { recursive: true })\"",
     "start": "npm run core && electron .",
     "dist": "npm run core && electron-builder",
-    "test": "npm run core && node updater.test.mjs"
+    "test": "npm run core && node updater.test.mjs",
+    "flags": "electron flag-icons.mjs"
   },
   "devDependencies": {
     "electron": "44.7.0",
@@ -24,7 +25,7 @@
     "productName": "Foxhole",
     "asar": false,
     "directories": { "output": "release" },
-    "files": ["main.js", "controller.js", "tray.js", "badge.js", "updater.js", "preload.cjs", "renderer/**/*", "dist/**/*", "build/icon.png", "build/tray/*.png"],
+    "files": ["main.js", "controller.js", "tray.js", "badge.js", "updater.js", "preload.cjs", "renderer/**/*", "dist/**/*", "build/icon.png", "build/tray/*.png", "build/flags/*.png"],
     "mac": { "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }], "category": "public.app-category.utilities", "identity": "-", "hardenedRuntime": false, "artifactName": "${productName}-${version}-${arch}.${ext}" },
     "win": { "target": "nsis" },
     "nsis": { "artifactName": "${productName}-${version}-setup.${ext}" },
