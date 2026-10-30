@@ -3,7 +3,7 @@
 import assert from "node:assert";
 import { deflateSync } from "node:zlib";
 import { relayTemplate, relayScript, KEY_PLACEHOLDER, newAuthKey, keyOk, deploymentId, highlightJs, relayAsset, STEPS } from "../dist/relaysetup.js";
-import { decodePng, halfBlocks, wrap } from "../dist/relaywizard.js";
+import { decodePng, halfBlocks, wrap, sixel } from "../dist/relaywizard.js";
 
 // The script: the placeholder is there once, and the key replaces it
 assert.equal(relayTemplate().split(KEY_PLACEHOLDER).length, 2, "Code.gs has the key placeholder once");
@@ -64,5 +64,9 @@ for (const st of STEPS) {
     if (lines) assert.ok(lines.length <= 9 && lines.some((l) => l.includes("▀")), `${name} draws in half blocks`);
   }
 }
+
+// Sixels: the 2×2 image above (red, green / magenta, cyan) fit into 8×4 pixels keeps its shape, 4×4. Each color's
+// columns of six: red's top two rows set is 63 + 0b000011 = "B", magenta's bottom two 63 + 0b001100 = "K"
+assert.equal(sixel(img, 8, 4), '\x1bP0;1;0q"1;1;4;4#180;2;100;0;0#30;2;0;100;0#185;2;100;0;100#35;2;0;100;100#180BB??$#30??BB$#185KK??$#35??KK-\x1b\\');
 
 console.log("relaysetup: ok");

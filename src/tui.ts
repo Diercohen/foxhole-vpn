@@ -18,7 +18,7 @@ import { bold, dim, under, strike, green, red, yellow, cyan, lit, flag, countryN
 import { fox, FOX_W, FOX_H, type Mood } from "./fox.js";
 import { loadRelay } from "./httprelay.js";
 import { newAuthKey } from "./relaysetup.js";
-import { RelayWizard } from "./relaywizard.js";
+import { RelayWizard, GRAPHICS, CELL_QUERY, cellSize, pictureAt } from "./relaywizard.js";
 
 const ESC = "\x1b[";
 // alternate screen + hidden cursor + mouse reports (SGR): clicks and the wheel, see #mouse()
@@ -233,12 +233,18 @@ export class Tui {
           // as a keypress, so it goes where a key would (and nowhere once quitting)
           if (kind === "M") this.#mouse(Number(b), Number(x) - 1, Number(y) - 1, (name) => input.emit("keypress", undefined, { name }));
           return "";
+        }).replace(/\x1b\[([46]);(\d+);(\d+)t/g, (_, what: string, h: string, w: string) => {
+          // CELL_QUERY's answers, in pixels: a cell (6), or the window (4) to divide by its cells
+          const [cols, rows] = what === "6" ? [1, 1] : [process.stdout.columns || 80, process.stdout.rows || 24];
+          cellSize(Math.floor(Number(w) / cols), Math.floor(Number(h) / rows));
+          return "";
         });
         if (rest) input.write(rest);
       };
       process.stdin.on("data", onData);
       if (process.stdin.isTTY) process.stdin.setRawMode(true);
       process.stdin.resume();
+      if (GRAPHICS === "sixel") process.stdout.write(CELL_QUERY); // the wizard's pictures need a cell's size in pixels
       const onResize = () => this.#render();
       process.stdout.on("resize", onResize);
 
@@ -1036,6 +1042,12 @@ export class Tui {
             ? this.#logsPopup(width, frame.length)
             : null;
     const { top, left } = draw(popup ? overlay(frame, popup, width) : frame);
+    // the wizard's screenshot as a real picture, over the room it left (as overlay() places the popup: centered, a 1-cell margin)
+    if (GRAPHICS) {
+      const at = popup && this.#wizard?.picture ? this.#wizard.picture : null;
+      const y = top + Math.floor((frame.length - (popup?.length ?? 0) - 2) / 2) + 1, x = left + Math.floor((width - (popup ? vw(popup[0]) : 0) - 2) / 2) + 1;
+      process.stdout.write(pictureAt(at, y, x));
+    }
     // the fox's next frames go over this one (#animate); under a popup it waits
     this.#foxAt = foxOn && !popup ? { x: left + foxX, y: top + foxY, cols, rows } : null;
     this.#foxDrawn = foxLines;
