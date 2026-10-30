@@ -2,10 +2,12 @@
 const fh = window.foxhole;
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-const NO_FLAGS = fh.platform === "win32"; // Windows draws no flag emoji, just two letters
-const emoji = (code) => String.fromCodePoint(...[...code].map((ch) => 0x1f1e6 + ch.charCodeAt(0) - 65));
-const flag = (code) => (NO_FLAGS || code.length !== 2 ? `<span class="flag code">${esc(code)}</span>` : `<span class="flag">${emoji(code)}</span>`);
-const flagText = (code) => (NO_FLAGS || code.length !== 2 ? "" : `${emoji(code)} `);
+// The countries with a picture in flags/ (<code>.svg; pictures, as Windows draws no flag emoji); the rest show their code
+const FLAGS = new Set("AR AT AU BE BG BR CA CL CO DE DK ES FI FR GB GH IE IR IT JP KR MX MY NL NO NZ PE PH PT SE SG TH US ZA".split(" "));
+const flagSrc = (code) => `flags/${code.toLowerCase()}.svg`;
+const flag = (code) => (FLAGS.has(code) ? `<span class="flag"><img src="${flagSrc(code)}" alt=""></span>` : `<span class="flag code">${esc(code)}</span>`);
+/** A small flag inside a line of text, or nothing. */
+const flagInline = (code) => (FLAGS.has(code) ? `<img class="flag-i" src="${flagSrc(code)}" alt="">` : "");
 const icon = (name) => `<svg class="i"><use href="#i-${name}"/></svg>`;
 const act = (name, ...args) => fh.act(name, ...args);
 const CIRCUMFERENCE = 94.25; // the data ring's: 2π × 15
@@ -105,10 +107,10 @@ function renderHeader() {
 
 function renderHero(ph) {
   const c = country(S.connecting ?? S.global ?? S.active ?? S.selected);
-  const where = c ? `${flagText(c.code)}${c.name}` : "";
+  const where = c ? `${flagInline(c.code)}${esc(c.name)}` : ""; // HTML: the subtitle shows the flag
   let title, sub, label;
   if (S.restoring) [title, sub, label] = ["Restoring…", "Putting your routes and DNS back", "Wait"];
-  else if (ph === "busy") [title, sub, label] = [S.connecting ? "Connecting…" : "Working…", S.message?.text ?? "", "Wait"];
+  else if (ph === "busy") [title, sub, label] = [S.connecting ? "Connecting…" : "Working…", esc(S.message?.text ?? ""), "Wait"];
   else if (ph === "global") [title, sub, label] = ["Fully protected", `${where} · all of this computer's traffic`, "Disconnect"];
   else if (ph === "on") [title, sub, label] = ["Connected", `${where} · apps set to use the proxy`, "Disconnect"];
   else [title, sub, label] = ["Not connected", c ? `Tap to connect · ${where}` : "Pick a location to connect", "Connect"];
@@ -117,7 +119,7 @@ function renderHero(ph) {
     t.textContent = title;
     replay(t, "swap");
   }
-  $("#status-sub").textContent = sub;
+  if ($("#status-sub").dataset.html !== sub) $("#status-sub").innerHTML = $("#status-sub").dataset.html = sub; // each state, not each second: the flag stays put
   $("#orb-label").textContent = label;
   $("#orb").setAttribute("aria-label", label);
   $("#orb").disabled = ph === "busy" || S.auth.stage !== "ready";
