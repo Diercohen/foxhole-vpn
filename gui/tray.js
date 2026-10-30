@@ -32,8 +32,9 @@ export function trayView(s, act) {
   const ready = s.auth.stage === "ready" && !s.busy && !s.restoring;
   const here = s.active ?? s.selected; // where Connect goes, and the location ticked
   return {
-    icon: s.globalOn ? "global" : s.active ? "on" : "off",
-    title: s.busy ? "…" : s.active && !flagFile(s.active) ? flag(s.active) : "", // a flag with a picture goes into the icon (macOS)
+    // relay mode: a purple dot where Firefox VPN's is mint or pink (on macOS, monochrome: "Relay" beside it)
+    icon: s.globalOn ? (s.relayOn ? "relayGlobal" : "global") : s.active ? (s.relayOn ? "relay" : "on") : "off",
+    title: s.busy ? "…" : s.relayOn ? "Relay" : s.active && !flagFile(s.active) ? flag(s.active) : "", // a flag with a picture goes into the icon (macOS)
     flag: !s.busy && flagFile(s.active) ? s.active : null,
     tooltip: `Foxhole · ${status}`,
     menu: [
@@ -50,7 +51,10 @@ export function trayView(s, act) {
         enabled: ready && s.countries.length > 0,
         submenu: s.countries
           .filter((c) => c.available || c.locked)
-          .map((c) => ({ label: named(s, c.code), type: "radio", checked: c.code === here, click: () => act.connect(c.code), ...flagIcon(c.code) })),
+          .flatMap((c) => [
+            { label: named(s, c.code), type: "radio", checked: c.code === here, click: () => act.connect(c.code), ...flagIcon(c.code) },
+            ...(c.code === "RELAY" ? [{ type: "separator" }] : []), // the relay, first, apart from the countries
+          ]),
       },
       { type: "separator" },
       ...(s.update?.ready
@@ -66,9 +70,9 @@ export function trayView(s, act) {
   };
 }
 
-/** The tray, redrawn by update() when what it shows changed. `icon(name)`: the file for off, on or global. */
+/** The tray, redrawn by update() when what it shows changed. `icon(name)`: the file for off, on, global, relay or relayGlobal. */
 export function createTray(controller, act, icon) {
-  const images = Object.fromEntries(["off", "on", "global"].map((n) => [n, nativeImage.createFromPath(icon(n))]));
+  const images = Object.fromEntries(["off", "on", "global", "relay", "relayGlobal"].map((n) => [n, nativeImage.createFromPath(icon(n))]));
   const mac = process.platform === "darwin";
   // The menu bar's own appearance: the app's is dark whatever the system's (main.js), so nativeTheme can't tell
   const darkBar = () => systemPreferences.getUserDefault("AppleInterfaceStyle", "string") === "Dark";

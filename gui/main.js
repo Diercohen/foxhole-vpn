@@ -29,6 +29,7 @@ const ACTIONS = new Set([
   "state", "power", "connect", "disconnect", "toggleGlobal", "submitPassword", "cancelPassword",
   "setShare", "setPort", "setLogin", "setRelay", "relaySetup", "openSettings", "openSplit", "setSplitDefault", "addRule", "toggleRule", "removeRule",
   "logs", "copy", "copyLogs", "openFirefox", "copySnippet", "switchAccount", "keepAccount", "reloadList",
+  "trustCa", "untrustCa", "dismissTrust", "copyEnv",
 ]);
 
 const here = (p) => fileURLToPath(new URL(p, import.meta.url));

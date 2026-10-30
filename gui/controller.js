@@ -3,7 +3,7 @@
 import { EventEmitter } from "node:events";
 import { findAccount, openBrowser, macApp } from "./dist/profile.js";
 import { fetchServerList } from "./dist/serverlist.js";
-import { Connection } from "./dist/connection.js";
+import { Connection, RELAY_CODE } from "./dist/connection.js";
 import { FirefoxAuth, StaticAuth } from "./dist/auth.js";
 import { GuardianError, GuardianBlocked, useRelay } from "./dist/guardian.js";
 import { loadRelay } from "./dist/httprelay.js";
@@ -18,10 +18,15 @@ import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUse
 import { VERSION } from "./dist/update.js";
 import { countryName, gb, shortDate } from "./dist/ui.js";
 import { order, loadLastCountry, saveLastCountry } from "./dist/tui.js";
+import { relayCheck, relayStats, onRelayNotice } from "./dist/relaymode.js";
+import { caTrusted, setCaTrust, envLines } from "./dist/catrust.js";
+import { loadCa } from "./dist/mitm.js";
 
 const SYNC = "about:preferences#sync"; // Firefox's own sign-in: the VPN needs the browser signed in, not a website
 const flip = (v) => (v === "vpn" ? "direct" : "vpn");
 const label = (c) => countryName(c.code, c.name);
+/** The Relay "location", first in the list once a relay is set up: the web through the user's own Apps Script (relaymode.ts). */
+const RELAY_ROW = { code: RELAY_CODE, name: "Relay", locked: false, available: true, servers: [] };
 
 export class Controller extends EventEmitter {
   #copy; // puts text on the clipboard
@@ -50,7 +55,9 @@ export class Controller extends EventEmitter {
   #ip; // undefined: checking
   #ipNote = "";
   #netSeq = 0; // drops answers from an older check
-  #pw = null; // the administrator password popup: { error, checking }
+  #pw = null; // the administrator password popup: { error, checking, for: global | trust | untrust }
+  #trustAsk = false; // the window asks to trust foxhole's certificate (relay mode)
+  #caOk; // whether this computer trusts it; undefined: not checked yet
   #fwHint = null;
   #settingsNote = null;
   #splitNote = null;
@@ -71,6 +78,8 @@ export class Controller extends EventEmitter {
     useSplit(() => this.#settings.split); // live: a change applies to the next connection
     onLog(() => this.emit("log", logLines[logLines.length - 1]));
     onProxyWarning((msg) => this.#say("error", `proxy: ${msg}`));
+    onRelayNotice((msg) => this.#say("warn", msg));
+    void caTrusted().then((ok) => ((this.#caOk = ok), this.#changed()));
     const list = this.reloadList(); // needs no login: ready once the sign-in is
     this.#refreshNet();
     // A network switch changes the public IP too; the LAN address catches switches the name can't show.
@@ -85,7 +94,7 @@ export class Controller extends EventEmitter {
     await this.#signIn();
     await list;
     // Connects at once to the last country used; a first run waits for a pick.
-    if (this.#countries.some((c) => c.code === loadLastCountry())) void this.connect(loadLastCountry()).then(() => global && this.#active && this.toggleGlobal());
+    if (this.#rows().some((c) => c.code === loadLastCountry())) void this.connect(loadLastCountry()).then(() => global && this.#active && this.toggleGlobal());
     setInterval(() => this.#refreshUsage(), 3 * 60_000).unref();
   }
 
@@ -201,7 +210,7 @@ export class Controller extends EventEmitter {
     this.#changed();
     try {
       this.#countries = order(await fetchServerList());
-      if (!this.#countries.some((c) => c.code === this.#selected)) this.#selected = this.#countries.find((c) => !c.locked && c.available)?.code ?? null;
+      if (!this.#rows().some((c) => c.code === this.#selected)) this.#selected = this.#countries.find((c) => !c.locked && c.available)?.code ?? null;
     } catch (err) {
       this.#listError = `server list failed: ${err.message}`;
     }
@@ -221,10 +230,11 @@ export class Controller extends EventEmitter {
       this.#net = n;
       this.#changed();
     });
-    void publicIp(proxy).then((ip) => {
+    // relay mode: HTTP, as HTTPS in global mode would meet foxhole's own certificate, which Node doesn't trust
+    void publicIp(proxy, 3, country === RELAY_ROW).then((ip) => {
       if (seq !== this.#netSeq) return;
       this.#ip = ip;
-      this.#ipNote = country ? `VPN · ${label(country)}` : "your real IP";
+      this.#ipNote = country === RELAY_ROW ? "Google's · sites can still see yours" : country ? `VPN · ${label(country)}` : "your real IP";
       this.#changed();
     });
   }
@@ -240,31 +250,43 @@ export class Controller extends EventEmitter {
   }
 
   async connect(code = this.#selected) {
-    const country = this.#countries.find((c) => c.code === code);
+    const country = this.#rows().find((c) => c.code === code);
     if (!country || this.#busy || !this.#conn) return;
+    const relay = country === RELAY_ROW ? loadRelay(this.#settings) : null;
     this.#busy = true;
     this.#connecting = this.#selected = country.code;
-    this.#say("info", `connecting to ${label(country)}…`);
+    this.#say("info", relay ? "connecting through your relay…" : `connecting to ${label(country)}…`);
+    // between Firefox VPN and the relay: connections open now would go on the old way, so the proxy drops them
+    const switching = !!this.#active && !!relay !== !!this.#conn.relay;
     try {
       // Global on: the new server's IP is pinned first, or the proxy's dial to it would loop through the tunnel.
       const session = this.#global;
-      await this.#conn.selectServer(country.locked ? country : country.available ? country : null, session ? (s) => session.addServer(s) : undefined);
+      if (relay) {
+        await relayCheck({ relay, server: null }); // it answers, before anything moves to it
+        await this.#conn.selectRelay(relay, session ? (s) => session.addServer(s) : undefined);
+      } else {
+        await this.#conn.currentPass(); // warm the pass; surfaces auth/quota errors now, while the relay (if on) still works
+        await this.#conn.selectServer(country.locked ? country : country.available ? country : null, session ? (s) => session.addServer(s) : undefined);
+      }
       if (!this.#proxy) this.#proxy = await this.#startProxy();
-      await this.#conn.currentPass(); // warm the pass; surfaces auth/quota errors now
+      else if (switching) this.#proxy.reset();
       this.#active = country;
       if (this.#global) this.#globalCountry = country;
       saveLastCountry(country.code);
-      this.#say("ok", "connected");
-      this.#refreshUsage();
+      this.#say("ok", relay ? "connected through your relay" : "connected");
+      if (relay) void this.#askTrust();
+      else this.#refreshUsage();
     } catch (err) {
-      if (err instanceof GuardianError && err.status === 401) {
+      if (relay) this.#say("error", err.message);
+      else if (err instanceof GuardianError && err.status === 401) {
         forgetToken(); // so the next start asks for a new one
         this.#say("error", "token rejected (expired) — quit and open Foxhole again to get a new one");
       } else {
         this.#saysBlocked(err);
         // fetch's own message is just "fetch failed"; the network reason is in its cause
         const cause = err.cause;
-        this.#say("error", `connect failed: ${err.message}${cause ? ` (${cause.code ?? cause.message})` : ""}`);
+        const hint = this.#rows()[0] === RELAY_ROW ? " · or pick Relay, first in Locations" : "";
+        this.#say("error", `connect failed: ${err.message}${cause ? ` (${cause.code ?? cause.message})` : ""}${hint}`);
       }
       if (this.#proxy && !this.#active) {
         await this.#proxy.close();
@@ -326,7 +348,7 @@ export class Controller extends EventEmitter {
       this.#message = null;
       note = "No Touch ID: type your password instead."; // cancelled, or no sensor (lid closed)
     }
-    this.#pw = { error: note, checking: false };
+    this.#pw = { error: note, checking: false, for: "global" };
     this.#changed();
   }
 
@@ -339,14 +361,16 @@ export class Controller extends EventEmitter {
   /** Checks the password with the popup still open: a wrong one shows an error there and can be retyped. */
   async submitPassword(password) {
     if (!this.#pw || this.#pw.checking || typeof password !== "string") return;
-    this.#pw = { error: null, checking: true };
+    const what = this.#pw.for;
+    this.#pw = { error: null, checking: true, for: what };
     this.#changed();
     if (!(await validateSudo(password))) {
-      this.#pw = { error: "Incorrect password, try again.", checking: false };
+      this.#pw = { error: "Incorrect password, try again.", checking: false, for: what };
       return this.#changed();
     }
     this.#pw = null;
-    void this.#enableGlobal(password);
+    if (what === "global") void this.#enableGlobal(password);
+    else void this.#trust(what === "trust", sudoPriv(password));
   }
 
   /** password: for sudo; null when none is asked for here (root, or Windows). */
@@ -387,9 +411,9 @@ export class Controller extends EventEmitter {
       this.#global = session;
       this.#globalCountry = this.#active;
       this.#say("info", "verifying…");
-      const ip = await session.verifyExitIp();
+      const ip = await session.verifyExitIp(this.#relayOn());
       if (ip) this.#say("ok", `global ON · exit IP ${ip}`);
-      else this.#say("warn", "global on, but internet check failed — DNS or VPN issue");
+      else this.#say("warn", `global on, but internet check failed — DNS or ${this.#relayOn() ? "relay" : "VPN"} issue`);
     } catch (err) {
       this.#say("error", `global failed: ${err.message}`);
       await session?.stop().catch(() => {});
@@ -462,7 +486,11 @@ export class Controller extends EventEmitter {
     }
     this.#settings = next;
     this.#settingsNote = null;
-    if ("relay" in patch) useRelay(loadRelay(next)); // takes effect at once, no restart
+    if ("relay" in patch) {
+      useRelay(loadRelay(next)); // takes effect at once, no restart
+      // relay mode follows: through the new relay, or off without one
+      if (this.#active === RELAY_ROW) void (loadRelay(next) ? this.connect(RELAY_CODE) : this.disconnect());
+    }
     if ("share" in patch || "port" in patch) {
       this.#host = proxyHost(next);
       this.#port = next.port;
@@ -477,6 +505,7 @@ export class Controller extends EventEmitter {
   openSettings() {
     this.#settingsNote = null;
     this.#checkFirewall();
+    void caTrusted().then((ok) => ((this.#caOk = ok), this.#changed()));
     this.#changed();
   }
 
@@ -570,6 +599,67 @@ export class Controller extends EventEmitter {
     return true;
   }
 
+  /** The Locations: the relay first when one is set up, then the countries. */
+  #rows() {
+    return loadRelay(this.#settings) ? [RELAY_ROW, ...this.#countries] : this.#countries;
+  }
+
+  /** Connected through the relay (relaymode.ts), not Firefox VPN. */
+  #relayOn() {
+    return this.#active === RELAY_ROW && !!this.#conn?.relay;
+  }
+
+  /** After connecting to the relay: asks to trust foxhole's certificate, if this computer doesn't yet (sites won't open). */
+  async #askTrust() {
+    this.#caOk = await caTrusted();
+    this.#trustAsk = !this.#caOk && this.#relayOn();
+    this.#changed();
+  }
+
+  /** The trust question's "Not now". */
+  dismissTrust() {
+    this.#trustAsk = false;
+    this.#changed();
+  }
+
+  trustCa() {
+    return this.#trust(true);
+  }
+
+  untrustCa() {
+    return this.#trust(false);
+  }
+
+  /** Trusts foxhole's certificate (`add`), or stops: macOS and Windows ask in a window of their own, Linux for the password here. */
+  async #trust(add, priv) {
+    if (this.#busy) return;
+    this.#trustAsk = false;
+    if (process.platform === "linux" && !priv) {
+      if (!(await isPrivileged())) return void ((this.#pw = { error: null, checking: false, for: add ? "trust" : "untrust" }), this.#changed());
+      priv = await adminPriv(true);
+    }
+    this.#busy = true;
+    this.#say("info", process.platform === "darwin" ? "macOS asks for your password…" : process.platform === "win32" ? "Windows asks you to confirm: choose Yes…" : add ? "trusting the certificate…" : "removing the certificate…");
+    try {
+      await setCaTrust(add, priv);
+      this.#caOk = await caTrusted();
+      if (!add) this.#say("info", "certificate removed");
+      else if (this.#caOk) this.#say("ok", "Certificate trusted. Restart your browser, then sites open through the relay.");
+      else this.#say("warn", "certificate added, but not trusted yet");
+    } catch (err) {
+      this.#say("error", `certificate ${add ? "not trusted" : "not removed"}: ${err.message}`);
+    } finally {
+      this.#busy = false;
+      this.#changed();
+    }
+  }
+
+  /** Copies what makes terminal tools trust relay mode's certificate and use the proxy (as `foxhole env` prints). */
+  copyEnv() {
+    loadCa(); // the files it names must be there
+    this.#copy(envLines(`127.0.0.1:${this.#proxy?.port ?? this.#port}`).join("\n") + "\n");
+  }
+
   logs() {
     return logLines;
   }
@@ -623,7 +713,7 @@ export class Controller extends EventEmitter {
       platform: process.platform,
       auth: this.#auth,
       email: this.#email,
-      countries: this.#countries.map((c) => ({ code: c.code, name: label(c), locked: c.locked, available: c.available })),
+      countries: this.#rows().map((c) => ({ code: c.code, name: label(c), locked: c.locked, available: c.available })),
       listError: this.#listError,
       selected: this.#selected,
       active: this.#active?.code ?? null,
@@ -657,6 +747,10 @@ export class Controller extends EventEmitter {
       },
       splitNote: this.#splitNote,
       pw: this.#pw,
+      relayOn: this.#relayOn(),
+      relayStats: this.#relayOn() ? { ...relayStats } : null,
+      caOk: this.#caOk ?? null,
+      trustAsk: this.#trustAsk,
       restoring: this.#restoring,
       blocked: this.#blocked,
     };

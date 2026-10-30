@@ -15,6 +15,8 @@ import { runGlobal, directPriv, isPrivileged, dialHost, staleCleanupScript, pars
 import { loadSettings, proxyHost, loginFor } from "./settings.js";
 import { restoreWindows, serveElevated, HELPER_CMD } from "./global-win32.js";
 import { Tui } from "./tui.js";
+import { envLines } from "./catrust.js";
+import { loadCa } from "./mitm.js";
 import { checkUpdate, updateNotice, versionLines } from "./update.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenFile, tokenTtl, tokenProblem } from "./tokenserver.js";
 import { bold, dim, green, red, yellow, cyan, under, code, flag, countryName, gb, shortDate, box, vw, centerIn, copyText, openUrl } from "./ui.js";
@@ -429,6 +431,7 @@ async function cmdProxy() {
 async function cmdTui() {
   const host = arg("host") ?? proxyHost(loadSettings());
   const port = Number(arg("port") ?? loadSettings().port);
+  // ponytail: a Firefox login first, even for relay mode; a relay-only start (no Guardian auth) if users without one need it
   if ((await new Tui(new Connection(await ensureAuth()), host, port).run()) !== "logout") return;
   forgetToken();
   openBrowser("about:preferences#sync");
@@ -515,6 +518,8 @@ ${bold("Commands:")}
   global [--country XX] [--force]
                        Route ALL system traffic through the VPN (needs ${WIN ? "Administrator" : "sudo"})${WIN || process.platform === "linux" ? `
   restore              Undo a global session that was killed (${WIN ? "Administrator" : "asks for your password"})` : ""}
+  env                  Print settings that make terminal tools trust relay mode's
+                       certificate and use the proxy: ${WIN ? "foxhole env | iex" : 'eval "$(foxhole env)"'}
   -v, --version        Show the version and whether an update is available
   help                 Show this help
 
@@ -538,6 +543,11 @@ async function notice() {
 async function main() {
   // Windows: global mode's helper, started as Administrator through Windows' admin prompt (global-win32.ts's uacPriv)
   if (process.argv[2] === HELPER_CMD) return serveElevated(process.argv[3]);
+  if (process.argv[2] === "env") {
+    // for a shell to read, at once: no update check
+    loadCa(); // the files it names must be there: a missing SSL_CERT_FILE breaks every tool that reads it
+    return void console.log(envLines(`127.0.0.1:${loadSettings().port}`).join("\n"));
+  }
   checkUpdate(); // fire while the command runs; shown afterwards
   useRelay(loadRelay(loadSettings())); // where vpn.mozilla.org is blocked, relay Guardian's control calls (httprelay.ts)
   const cmd = process.argv.slice(2).find((a) => a !== "--verbose") ?? "tui"; // --verbose can go anywhere

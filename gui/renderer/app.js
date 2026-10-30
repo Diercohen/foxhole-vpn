@@ -5,7 +5,10 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(
 // The countries with a picture in flags/ (<code>.svg; pictures, as Windows draws no flag emoji); the rest show their code
 const FLAGS = new Set("AR AT AU BE BG BR CA CL CO DE DK ES FI FR GB GH IE IR IT JP KR MX MY NL NO NZ PE PH PT SE SG TH US ZA".split(" "));
 const flagSrc = (code) => `flags/${code.toLowerCase()}.svg`;
-const flag = (code) => (FLAGS.has(code) ? `<span class="flag"><img src="${flagSrc(code)}" alt=""></span>` : `<span class="flag code">${esc(code)}</span>`);
+const RELAY = "RELAY"; // the Relay "location" (controller.js): the web through the user's own Apps Script
+const flag = (code) =>
+  code === RELAY ? `<span class="flag relay">${icon("relay")}</span>`
+  : FLAGS.has(code) ? `<span class="flag"><img src="${flagSrc(code)}" alt=""></span>` : `<span class="flag code">${esc(code)}</span>`;
 /** A small flag inside a line of text, or nothing. */
 const flagInline = (code) => (FLAGS.has(code) ? `<img class="flag-i" src="${flagSrc(code)}" alt="">` : "");
 const icon = (name) => `<svg class="i"><use href="#i-${name}"/></svg>`;
@@ -50,6 +53,7 @@ function phase() {
 function render() {
   const ph = phase();
   document.body.dataset.phase = ph;
+  document.body.toggleAttribute("data-relay", S.relayOn); // purple, where Firefox VPN is mint and pink
   renderHeader();
   renderHero(ph);
   renderCards();
@@ -58,6 +62,7 @@ function render() {
   renderSplit();
   renderSettings();
   renderPassword();
+  renderTrust();
   renderOnboard();
   $("#restoring").classList.toggle("on", S.restoring);
 }
@@ -65,16 +70,20 @@ function render() {
 // ── Header ─────────────────────────────────────────────────────────────────────────────────
 
 function renderHeader() {
-  section("head", [S.email, S.usage, S.update, S.version], () => {
+  section("head", [S.email, S.usage, S.update, S.version, S.relayStats], () => {
     const u = S.usage;
+    const r = S.relayStats; // relay mode: its requests instead of Firefox VPN's data
     $("#ver").textContent = `v${S.version}`;
     $("#about-ver").textContent = S.version;
     for (const el of [$("#acct-avatar"), $("#acct-avatar-2")]) el.textContent = (S.email ?? "?")[0].toUpperCase();
     $("#acct-name").textContent = S.email ?? "Firefox account";
     $("#acct-email").textContent = S.email ?? "unknown";
-    $("#data-v").textContent = !u ? "—" : u.unlimited ? "Unlimited" : `${u.left} left`;
-    $("#data-chip").title = !u ? "Data left this month: not known yet" : u.unlimited ? "Unlimited data" : `${u.left} of ${u.max} left this month${u.reset ? ` · resets ${u.reset}` : ""}`;
-    $("#data-ring").style.strokeDashoffset = String(CIRCUMFERENCE * (1 - (!u ? 0 : u.unlimited ? 1 : u.fraction)));
+    $("#data-k").textContent = r ? "Relay" : "Data";
+    $("#data-v").textContent = r ? `${r.relayed.toLocaleString()} sent` : !u ? "—" : u.unlimited ? "Unlimited" : `${u.left} left`;
+    $("#data-chip").title = r
+      ? `${r.relayed.toLocaleString()} requests through your relay and ${r.fronted.toLocaleString()} straight to Google since Foxhole started. Google allows about 20,000 relayed a day.`
+      : !u ? "Data left this month: not known yet" : u.unlimited ? "Unlimited data" : `${u.left} of ${u.max} left this month${u.reset ? ` · resets ${u.reset}` : ""}`;
+    $("#data-ring").style.strokeDashoffset = String(CIRCUMFERENCE * (1 - (r ? Math.max(0, 1 - r.relayed / 20000) : !u ? 0 : u.unlimited ? 1 : u.fraction)));
     // The titlebar's Update button: a click downloads the new version (the button fills as it goes), installs it, and
     // asks to restart. Where Foxhole can't update itself (updater.js) it opens the download page instead.
     const up = S.update;
@@ -111,6 +120,9 @@ function renderHero(ph) {
   let title, sub, label;
   if (S.restoring) [title, sub, label] = ["Restoring…", "Putting your routes and DNS back", "Wait"];
   else if (ph === "busy") [title, sub, label] = [S.connecting ? "Connecting…" : "Working…", esc(S.message?.text ?? ""), "Wait"];
+  // relay mode carries the web only: the rest goes direct, so it isn't "fully protected"
+  else if (ph === "global" && S.relayOn) [title, sub, label] = ["Relay, system-wide", "The web through your relay · the rest direct", "Disconnect"];
+  else if (ph === "on" && S.relayOn) [title, sub, label] = ["Relay on", "Through your Google script · apps set to use the proxy", "Disconnect"];
   else if (ph === "global") [title, sub, label] = ["Fully protected", `${where} · all of this computer's traffic`, "Disconnect"];
   else if (ph === "on") [title, sub, label] = ["Connected", `${where} · apps set to use the proxy`, "Disconnect"];
   else [title, sub, label] = ["Not connected", c ? `Tap to connect · ${where}` : "Pick a location to connect", "Connect"];
@@ -130,7 +142,7 @@ function renderHero(ph) {
 }
 
 function renderCards() {
-  section("cards", [S.net, S.netChecking, S.ip, S.ipChecking, S.ipNote, S.proxy, S.splitSummary, S.globalOn, S.lanIp], () => {
+  section("cards", [S.net, S.netChecking, S.ip, S.ipChecking, S.ipNote, S.proxy, S.splitSummary, S.globalOn, S.lanIp, S.relayOn], () => {
     const fill = (id, v, s, cls = "") => {
       $(`${id} .v`).className = `v ${cls}`;
       $(`${id} .v`).innerHTML = v;
@@ -146,7 +158,7 @@ function renderCards() {
     fill("#c-proxy", p ? esc(p.addr) : "—", p ? `SOCKS5 + HTTP${p.shared ? " · shared" : ""}` : "SOCKS5 + HTTP, once connected", p ? "" : "dim");
     $("#copy-proxy").hidden = !p;
     const split = S.splitSummary;
-    fill("#c-split", esc(split ?? "Off"), split ? (S.globalOn ? "for the whole system" : "for the proxy") : "everything through the VPN", split ? "" : "dim");
+    fill("#c-split", esc(split ?? "Off"), split ? (S.globalOn ? "for the whole system" : "for the proxy") : `everything through the ${S.relayOn ? "relay" : "VPN"}`, split ? "" : "dim");
   });
 }
 
@@ -159,9 +171,12 @@ function renderList() {
   section("list", [S.countries, S.active, S.connecting, S.listError, q, S.auth.stage === "ready"], () => {
     const list = $("#list");
     const shown = S.countries.filter((c) => !q || c.name.toLowerCase().includes(q) || c.code.toLowerCase() === q);
-    $("#loc-count").textContent = S.countries.length ? `${S.countries.length} countries` : "";
+    const relay = S.countries.find((c) => c.code === RELAY);
+    const count = S.countries.length - (relay ? 1 : 0);
+    $("#loc-count").textContent = count ? `${count} countries` : "";
     if (S.listError) {
-      list.innerHTML = `<div class="empty"><b>Couldn't load the locations</b>${esc(S.listError)}<br><button class="btn" data-act="reloadList">${icon("refresh")}Try again</button></div>`;
+      // the relay still goes: it's for when Mozilla can't be reached
+      list.innerHTML = `${relay ? rowHtml(relay, 0, false) : ""}<div class="empty"><b>Couldn't load the locations</b>${esc(S.listError)}<br><button class="btn" data-act="reloadList">${icon("refresh")}Try again</button></div>`;
       return;
     }
     if (!S.countries.length) {
@@ -174,19 +189,22 @@ function renderList() {
     }
     const rise = !listShown;
     listShown = true;
-    list.innerHTML = shown
-      .map((c, i) => {
-        const cls = [c.code === S.active && "active", c.code === S.connecting && "connecting", !c.available && !c.locked && "off", rise && "rise"].filter(Boolean).join(" ");
-        const tiers = !c.available && !c.locked
-          ? '<span class="tier none">no servers</span>'
-          : c.locked ? '<span class="tier paid">paid</span><span class="tier free">free</span>' : '<span class="tier free">free</span>';
-        return `<button class="row ${cls}" data-code="${esc(c.code)}" style="--i:${i}" title="${c.code === S.active ? "Connected" : `Connect to ${esc(c.name)}`}">
-          ${flag(c.code)}<span><div class="nm">${esc(c.name)}</div><div class="cd">${esc(c.code)}</div></span>
-          <span class="tiers">${tiers}</span><span class="state-dot"></span></button>`;
-      })
-      .join("");
+    list.innerHTML = shown.map((c, i) => rowHtml(c, i, rise)).join("");
   });
   reveal();
+}
+
+/** A location's row: a country, or the relay. */
+function rowHtml(c, i, rise) {
+  const cls = [c.code === S.active && "active", c.code === S.connecting && "connecting", !c.available && !c.locked && "off", rise && "rise"].filter(Boolean).join(" ");
+  const relay = c.code === RELAY;
+  const tiers = relay ? '<span class="tier relay">relay</span>'
+    : !c.available && !c.locked ? '<span class="tier none">no servers</span>'
+    : c.locked ? '<span class="tier paid">paid</span><span class="tier free">free</span>' : '<span class="tier free">free</span>';
+  const title = c.code === S.active ? "Connected" : relay ? "Browse through your own relay" : `Connect to ${esc(c.name)}`;
+  return `<button class="row ${cls}" data-code="${esc(c.code)}" style="--i:${i}" title="${title}">
+    ${flag(c.code)}<span><div class="nm">${esc(c.name)}</div><div class="cd">${relay ? "via Google · your Apps Script" : esc(c.code)}</div></span>
+    <span class="tiers">${tiers}</span><span class="state-dot"></span></button>`;
 }
 
 let revealed = null; // the country last brought into view
@@ -273,7 +291,7 @@ function drawRecent() {
 // ── Settings ───────────────────────────────────────────────────────────────────────────────
 
 function renderSettings() {
-  section("settings", [S.settings.share, S.settings.port, S.settings.username, S.settings.password, S.settings.relay, S.lanIp, S.fwHint], () => {
+  section("settings", [S.settings.share, S.settings.port, S.settings.username, S.settings.password, S.settings.relay, S.lanIp, S.fwHint, S.caOk], () => {
     const s = S.settings;
     const share = $("#share");
     share.classList.toggle("on", s.share);
@@ -295,8 +313,13 @@ function renderSettings() {
     if (document.activeElement !== $("#relay-id")) $("#relay-id").value = r?.deploymentId ?? "";
     $("#relay-key").placeholder = r?.set ? "•••••••• — type to replace" : "Auth key";
     $("#relay-state").innerHTML = r
-      ? "On — the control calls go through the relay when <code>vpn.mozilla.org</code> can't be reached directly."
-      : "Off — foxhole talks to Mozilla directly.";
+      ? "On: Firefox VPN goes through it when <code>vpn.mozilla.org</code> can't be reached, and <b>Relay</b> is first in Locations."
+      : "Off: Foxhole talks to Mozilla directly.";
+    $("#cert-group").hidden = !r && !S.caOk;
+    $("#cert-state").className = S.caOk ? "ok" : "warn";
+    $("#cert-state").textContent = S.caOk ? "Trusted on this computer" : "Not trusted yet: sites won't open through the relay";
+    $("#cert-btn").textContent = S.caOk ? "Remove" : "Trust it";
+    $("#cert-btn").classList.toggle("primary", !S.caOk);
   });
   const note = $("#settings-note");
   note.dataset.tone = S.settingsNote?.tone ?? "";
@@ -315,13 +338,25 @@ function renderPassword() {
     if (!open) return;
     const input = $("#pw-input");
     input.disabled = S.pw.checking;
-    $("#pw-ok").innerHTML = S.pw.checking ? '<span class="spin"></span><span>Checking…</span>' : "<span>Go whole system</span>";
+    const f = S.pw.for ?? "global"; // what it's for: whole-system mode, or relay mode's certificate
+    $("#pw-why").innerHTML = `${f === "global" ? "Whole-system mode routes all of this computer's traffic through the VPN, which needs" : `${f === "trust" ? "Trusting" : "Removing"} Foxhole's certificate for the system and its browsers needs`} administrator rights. Enter your <b>login password</b> (used by sudo):`;
+    $("#pw-ok").innerHTML = S.pw.checking ? '<span class="spin"></span><span>Checking…</span>' : `<span>${{ global: "Go whole system", trust: "Trust it", untrust: "Remove it" }[f]}</span>`;
     $("#pw-ok").disabled = S.pw.checking;
     const note = $("#pw-note");
     note.dataset.tone = "error";
     note.textContent = S.pw.error ?? "";
     if (S.pw.error && wasOpen) replay($("#pw-form"), "shake");
     if (!S.pw.checking) setTimeout(() => input.focus(), wasOpen ? 0 : 250);
+  });
+}
+
+// ── Relay mode's certificate ───────────────────────────────────────────────────────────────
+
+function renderTrust() {
+  section("trust", [S.trustAsk], () => {
+    $("#trust-modal").classList.toggle("on", S.trustAsk);
+    const how = { darwin: "macOS asks for your password once", win32: "Windows asks you to confirm once: choose Yes" }[fh.platform] ?? "It takes your login password once";
+    $("#trust-how").textContent = `${how}, then restart your browser.`;
   });
 }
 
@@ -632,6 +667,9 @@ document.addEventListener("click", async (e) => {
       return act("installUpdateFile");
     case "up-later": return $("#update-modal").classList.remove("on");
     case "blocked-later": return $("#blocked-modal").classList.remove("on");
+    case "trust-later": return act("dismissTrust");
+    case "trust-ok": return act("trustCa");
+    case "cert-btn": return act(S.caOk ? "untrustCa" : "trustCa");
     case "blocked-setup":
       $("#blocked-modal").classList.remove("on");
       return openWizard();
@@ -688,6 +726,7 @@ $("#search").addEventListener("input", () => S && renderList());
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (S?.pw) return void act("cancelPassword");
+    if (S?.trustAsk) return void act("dismissTrust");
     if ($("#wizard").classList.contains("on")) return closeWizard();
     if ($("#update-modal").classList.contains("on")) return $("#update-modal").classList.remove("on");
     if ($("#blocked-modal").classList.contains("on")) return $("#blocked-modal").classList.remove("on");

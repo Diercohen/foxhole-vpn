@@ -220,7 +220,13 @@ function _json(obj) {
   // HtmlService responses can stay on script.google.com for /dev, while
   // ContentService commonly bounces through script.googleusercontent.com.
   // The Python client extracts the JSON payload from the body either way.
-  return HtmlService.createHtmlOutput(JSON.stringify(obj)).setXFrameOptionsMode(
+  // HtmlService refuses text that looks like broken HTML ("Malformed HTML
+  // content"), and sites' headers often hold some (Link: <https://...>), so
+  // <, > and & go as JSON's own \u escapes, which parse back the same.
+  var text = JSON.stringify(obj).replace(/[<>&]/g, function (c) {
+    return "\\u00" + c.charCodeAt(0).toString(16);
+  });
+  return HtmlService.createHtmlOutput(text).setXFrameOptionsMode(
     HtmlService.XFrameOptionsMode.ALLOWALL
   );
 }

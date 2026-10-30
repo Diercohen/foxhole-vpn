@@ -7,10 +7,11 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
 // busy: the window's amber; on and global: the tray icons' dots
-const COLORS = { busy: [0xff, 0xc2, 0x47], on: [0x2d, 0xf1, 0xaf], global: [0xfe, 0x4c, 0x7c] };
-const INK = { busy: [0x1d, 0x12, 0x00], on: [0x03, 0x15, 0x0f], global: [0xff, 0xff, 0xff] }; // the glyph's, as on the window's mode switch
+// relay mode: the window's purples
+const COLORS = { busy: [0xff, 0xc2, 0x47], on: [0x2d, 0xf1, 0xaf], global: [0xfe, 0x4c, 0x7c], relay: [0xb7, 0x6b, 0xff], relayGlobal: [0xd3, 0x5c, 0xff] };
+const INK = { busy: [0x1d, 0x12, 0x00], on: [0x03, 0x15, 0x0f], global: [0xff, 0xff, 0xff], relay: [0x1a, 0x03, 0x26], relayGlobal: [0xff, 0xff, 0xff] }; // the glyph's, as on the window's mode switch
 const RING = [0x07, 0x06, 0x0c]; // the app's dark, between the dot and the icon
-const LABEL = { busy: "Working", on: "Connected", global: "Whole system" }; // Windows reads an overlay out
+const LABEL = { busy: "Working", on: "Connected", global: "Whole system", relay: "Relay", relayGlobal: "Relay, whole system" }; // Windows reads an overlay out
 // One red pixel: where its byte lands gives this platform's channel order in bitmaps (BGRA on macOS and Windows)
 const RED = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 let rgb = null; // where red, green and blue sit in a pixel
@@ -35,6 +36,8 @@ const GLYPHS = {
     seg(x, y, 18, 7, 18, 10.5), cup(x, y, 12, 10.5, 6), seg(x, y, 12, 16.5, 12, 21)), // a plug
   global: (x, y) => Math.min(frame(x, y, 3, 4, 21, 16.5, 2.5), seg(x, y, 8.5, 20.5, 15.5, 20.5), seg(x, y, 12, 16.5, 12, 20.5)), // a screen
 };
+GLYPHS.relay = GLYPHS.on;
+GLYPHS.relayGlobal = GLYPHS.global;
 export const FRAMES = { busy: 3 }; // its dots light up in turn
 
 /** A copy of `img` with the dot for `key` (in frame f) centered at (cx, cy), radius r (pixels): lit at its top left, ringed in the dark, its glyph on it. */
@@ -101,7 +104,7 @@ export function createBadge(win, file) {
   if (process.platform === "win32") win.on("show", () => key && ((pin = pinned()), apply()));
   return {
     update(s) {
-      const next = s.busy || s.restoring ? "busy" : s.globalOn ? "global" : s.active ? "on" : "off";
+      const next = s.busy || s.restoring ? "busy" : s.globalOn ? (s.relayOn ? "relayGlobal" : "global") : s.active ? (s.relayOn ? "relay" : "on") : "off";
       if (next === key) return;
       [key, f, pin] = [next, 0, process.platform === "win32" && pinned()];
       clearInterval(timer);

@@ -15,7 +15,7 @@ import { createHash } from "node:crypto";
 import { join, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import type { Connection } from "./connection.js";
-import { startProxy, setDirectFrom, holdDirect, directReady, type ProxyLogin } from "./proxy.js";
+import { startProxy, setDirectFrom, holdDirect, directReady, setPinDirect, type ProxyLogin } from "./proxy.js";
 import { startDnsForwarder, DOH_HOST, type DnsForwarder } from "./dns.js";
 import { GUARDIAN_HOST, pinGuardian } from "./guardian.js";
 import { publicIp, ipv4Of } from "./netinfo.js";
@@ -559,6 +559,9 @@ export class GlobalSession {
     holdDirect(); // until #direct(): the tun's routes come first
     if (this.#mac) {
       const res = await this.#mac.start((code, signal) => this.#exitCb?.(code ?? signal));
+      // relay mode's direct connections (what the relay can't carry) get routed around the tun first, by address
+      const mac = this.#mac;
+      if (mac instanceof DarwinRouting) setPinDirect((ip) => mac.pin(ip));
       await this.#direct();
       this.#arm(this.#mac as Rerouter<unknown>);
       return res;
@@ -784,9 +787,9 @@ export class GlobalSession {
     if (this.#mac instanceof DarwinRouting) this.#mac.splitChanged();
   }
 
-  /** The public exit IP (confirms the tunnel works), or null if unreachable. */
-  async verifyExitIp(): Promise<string | null> {
-    return publicIp(); // retries: right after start, tun2socks may not be reading the tun yet
+  /** The public exit IP (confirms the tunnel works), or null if unreachable. `plain`: over HTTP (relay mode). */
+  async verifyExitIp(plain = false): Promise<string | null> {
+    return publicIp(undefined, 3, plain); // retries: right after start, tun2socks may not be reading the tun yet
   }
 
   /** Restores routing and stops tun2socks. Best-effort, idempotent. */
@@ -796,7 +799,7 @@ export class GlobalSession {
     if (this.#watchTimer) clearTimeout(this.#watchTimer);
     await this.#tick; // a re-pin in flight would add routes after the teardown below
     holdDirect(); // until the routes are gone: a direct site dialed now would loop through the tun
-    if (this.#mac) return void (await this.#mac.stop(), setDirectFrom(null));
+    if (this.#mac) return void (await this.#mac.stop(), setDirectFrom(null), setPinDirect(null));
     if (this.#udpBlocked)
       await this.#o.priv.run(["iptables", "-D", "OUTPUT", "-o", TUN, "-p", "udp", "-j", "REJECT"], true);
     for (const cidr of this.#addedPrivate) await this.#o.priv.run(["ip", "route", "del", cidr], true);

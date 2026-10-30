@@ -2,6 +2,7 @@ import dgram from "node:dgram";
 import net from "node:net";
 import tls from "node:tls";
 import { viaOf } from "./split.js";
+import { caPem } from "./mitm.js";
 
 // A local DNS resolver that forwards every query as DNS-over-HTTPS (RFC 8484)
 // *through the SOCKS proxy*. This keeps name resolution inside the tunnel on
@@ -35,8 +36,15 @@ function readName(m: Buffer, off: number): [string, number] {
 
 /** The (first) name a DNS message asks about, or null if malformed. Pure. */
 export function questionName(msg: Buffer): string | null {
+  return question(msg)?.name ?? null;
+}
+
+/** A DNS message's (first) question: the name, its type (1 A, 28 AAAA…), and where the question ends; null if malformed. Pure. */
+export function question(msg: Buffer): { name: string; type: number; end: number } | null {
   try {
-    return msg.readUInt16BE(4) ? readName(msg, 12)[0] : null;
+    if (!msg.readUInt16BE(4)) return null;
+    const [name, off] = readName(msg, 12);
+    return { name, type: msg.readUInt16BE(off), end: off + 4 };
   } catch {
     return null;
   }
@@ -166,7 +174,9 @@ export class DohClient {
   async #ensure(): Promise<tls.TLSSocket> {
     if (this.#sock && !this.#sock.destroyed) return this.#sock;
     const raw = await socksConnect(this.#socksHost, this.#socksPort, this.#dohHost, 443);
-    const sock = tls.connect({ socket: raw, servername: this.#dohHost, ALPNProtocols: ["http/1.1"] });
+    // in relay mode the proxy answers DoH itself, with a certificate from its own CA (mitm.ts), as made by then
+    const ca = caPem();
+    const sock = tls.connect({ socket: raw, servername: this.#dohHost, ALPNProtocols: ["http/1.1"], ...(ca && { ca: [...tls.rootCertificates, ca] }) });
     await new Promise<void>((res, rej) => {
       sock.once("secureConnect", res);
       sock.once("error", rej);

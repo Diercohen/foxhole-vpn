@@ -70,6 +70,9 @@ interface Envelope {
 /** The JSON envelope from Code.gs, out of its wrapper — parsed directly, or from the Apps Script page, or a last-ditch {…} match. */
 export function parseEnvelope(text: string): Envelope {
   const obj = tryJson(text) ?? tryJson(unwrapAppsScript(text) ?? "") ?? tryJson(text.match(/\{[\s\S]*\}/)?.[0] ?? "");
+  // Apps Script's own error page: the script threw, and the message is in a monospace box
+  const thrown = text.match(/font-family:monospace[^>]*>([^<]+)/)?.[1];
+  if (!obj && thrown) throw new Error(`relay: ${thrown.replace(/&(quot|#39|lt|gt|amp);/g, (_, e: string) => ({ quot: '"', "#39": "'", lt: "<", gt: ">", amp: "&" })[e]!).slice(0, 200)}`);
   if (!obj) throw new Error(`relay: response wasn't the expected JSON (${text.slice(0, 120).replace(/\s+/g, " ")}…)`);
   if (typeof obj.e === "string") throw new Error(`relay: ${obj.e}`);
   return obj as Envelope;

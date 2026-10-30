@@ -123,32 +123,42 @@ export function describeNetwork(wifi: string | null, iface: string | undefined):
 }
 
 export const IP_HOST = "api.ipify.org";
+// Relay mode asks Cloudflare instead: Google's fetches pass the user's own IP on in X-Forwarded-For, which ipify
+// reports; Cloudflare's trace reports the address that connected (Google's), which is what most sites go by.
+export const TRACE_HOST = "www.cloudflare.com";
 const isIp = (s: string) => /^[0-9a-f.:]+$/i.test(s) && s.length <= 45;
+/** The IP in an answer from ipify (just the IP), or from Cloudflare's trace (`trace`: an ip= line). Pure. */
+export const ipIn = (text: string, trace: boolean): string | null => {
+  const ip = (trace ? (text.match(/^ip=(.+)$/m)?.[1] ?? "") : text).trim();
+  return isIp(ip) ? ip : null;
+};
 
 /**
  * The public IP the internet sees. With `proxy`, asks through foxhole's own HTTP
  * proxy, so it's the VPN exit's; without, it's whatever the system routes (global
  * mode tunnels that too). Tries `tries` times, 1.5s apart: the first check often
- * races a tunnel that's still coming up. Null if unreachable.
+ * races a tunnel that's still coming up. Null if unreachable. `plain`: relay mode (over plain HTTP, from TRACE_HOST).
  */
-export async function publicIp(proxy?: { host: string; port: number }, tries = 3): Promise<string | null> {
+export async function publicIp(proxy?: { host: string; port: number }, tries = 3, plain = false): Promise<string | null> {
   for (let i = 1; ; i++) {
-    const ip = await publicIpOnce(proxy);
+    const ip = await publicIpOnce(proxy, plain);
     if (ip || i >= tries) return ip;
     await new Promise((r) => setTimeout(r, 1500));
   }
 }
 
-async function publicIpOnce(proxy?: { host: string; port: number }): Promise<string | null> {
+async function publicIpOnce(proxy?: { host: string; port: number }, plain = false): Promise<string | null> {
   try {
+    const [host, path] = plain ? [TRACE_HOST, "/cdn-cgi/trace"] : [IP_HOST, "/"];
     if (!proxy) {
-      const text = (await (await fetch(`https://${IP_HOST}`, { signal: AbortSignal.timeout(8000) })).text()).trim();
-      return isIp(text) ? text : null;
+      // plain: relay mode in global mode, where HTTPS would end at relay mode's certificate, which Node doesn't trust
+      const text = await (await fetch(`${plain ? "http" : "https"}://${host}${path}`, { signal: AbortSignal.timeout(8000) })).text();
+      return ipIn(text, plain);
     }
     // Plain-HTTP GET in absolute form: the proxy forwards it through the tunnel.
     const text = await new Promise<string>((resolve, reject) => {
       const req = http.get(
-        { host: proxy.host, port: proxy.port, path: `http://${IP_HOST}/`, headers: { Host: IP_HOST }, timeout: 8000 },
+        { host: proxy.host, port: proxy.port, path: `http://${host}${path}`, headers: { Host: host }, timeout: 8000 },
         (res) => {
           let body = "";
           res.setEncoding("utf8");
@@ -159,7 +169,7 @@ async function publicIpOnce(proxy?: { host: string; port: number }): Promise<str
       );
       req.on("timeout", () => req.destroy(new Error("timed out"))).on("error", reject);
     });
-    return isIp(text) ? text : null;
+    return ipIn(text, plain);
   } catch {
     return null;
   }

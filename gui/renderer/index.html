@@ -48,6 +48,7 @@
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.7-4.4L4 8"/><path d="M4 3.5V8h4.5"/><path d="M4 13a8 8 0 0 0 14.7 4.4L20 16"/><path d="M20 20.5V16h-4.5"/></symbol>
   <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-8.5 8.5"/><path d="M18 14v3.5a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 4 17.5v-9A2.5 2.5 0 0 1 6.5 6H10"/></symbol>
   <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 19.5 6v5.6c0 4.4-3.1 8.2-7.5 9.4-4.4-1.2-7.5-5-7.5-9.4V6z"/><path d="m8.8 12 2.3 2.3 4.3-4.6"/></symbol>
+  <symbol id="i-relay" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M8.2 8.2a5.4 5.4 0 0 0 0 7.6M15.8 8.2a5.4 5.4 0 0 1 0 7.6"/><path d="M5.2 5.2a9.6 9.6 0 0 0 0 13.6M18.8 5.2a9.6 9.6 0 0 1 0 13.6"/></symbol>
   <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12.5" rx="2.5"/><path d="M8.5 20.5h7M12 16.5v4"/></symbol>
   <symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.8"/><path d="M11 18.5h2"/></symbol>
   <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.5 13.7 9 19 10.5 13.7 12.3 12 17.5 10.3 12.3 5 10.5 10.3 9z"/><path d="M18.5 16.5 19 18l1.5.5-1.5.5-.5 1.5-.5-1.5-1.5-.5 1.5-.5z"/></symbol>
@@ -78,7 +79,7 @@
       <circle class="track" cx="18" cy="18" r="15"/>
       <circle class="bar" id="data-ring" cx="18" cy="18" r="15" transform="rotate(-90 18 18)"/>
     </svg>
-    <div class="txt"><span class="k">Data</span><span class="v" id="data-v">—</span></div>
+    <div class="txt"><span class="k" id="data-k">Data</span><span class="v" id="data-v">—</span></div>
   </div>
   <button class="chip account" id="account" title="Account and settings">
     <span class="avatar" id="acct-avatar">?</span><span class="name" id="acct-name"></span>
@@ -198,7 +199,7 @@
     </form>
     <form class="group" id="relay-form">
       <div class="label"><svg class="i"><use href="#i-shield"/></svg>VPN relay</div>
-      <div class="hint">Where <code>vpn.mozilla.org</code> is blocked (e.g. Iran), reach it through your own free Google Apps Script — it carries only the small control calls, never your traffic.</div>
+      <div class="hint">Where <code>vpn.mozilla.org</code> is blocked (e.g. Iran), your own free Google Apps Script reaches it for Foxhole. Once it's set up, <b>Relay</b>, first in Locations, can also carry your browsing when nothing else gets through.</div>
       <button class="btn primary wizard-btn" type="button" id="relay-wizard"><svg class="i"><use href="#i-spark"/></svg>Set up step by step</button>
       <input id="relay-id" placeholder="Apps Script deployment ID" autocomplete="off" spellcheck="false">
       <div class="input-row">
@@ -207,6 +208,13 @@
       </div>
       <div class="hint" id="relay-state"></div>
     </form>
+    <div class="group" id="cert-group">
+      <div class="label"><svg class="i"><use href="#i-lock"/></svg>Relay certificate</div>
+      <div class="hint">The relay can only fetch web pages, so Foxhole opens each site's encryption on this computer, with certificates from its own authority: made here, and never sent anywhere. Browsers and apps trust it once.</div>
+      <div class="cert-line"><span id="cert-state"></span><button class="btn" type="button" id="cert-btn"></button></div>
+      <div class="hint">Terminal tools (npm, pip, git, curl…) keep their own list: paste this into a terminal and they trust it too, and use the proxy.</div>
+      <button class="btn" type="button" data-act="copyEnv" data-copied><svg class="i"><use href="#i-copy"/></svg>Copy terminal setup</button>
+    </div>
     <div class="note" id="settings-note"></div>
     <div class="group">
       <div class="label">Firefox account</div>
@@ -233,7 +241,7 @@
   <form class="box glass" id="pw-form">
     <div class="lock-orb"><svg class="i"><use href="#i-lock"/></svg></div>
     <h2>Administrator password</h2>
-    <p>Whole-system mode routes all of this computer's traffic through the VPN, which needs administrator rights. Enter your <b>login password</b> (used by sudo):</p>
+    <p id="pw-why">Whole-system mode routes all of this computer's traffic through the VPN, which needs administrator rights. Enter your <b>login password</b> (used by sudo):</p>
     <input type="password" id="pw-input" placeholder="Login password" autocomplete="off" aria-label="Login password">
     <div class="note" id="pw-note"></div>
     <div class="actions">
@@ -254,6 +262,20 @@
     <div class="actions">
       <button class="btn" type="button" id="blocked-later">Not now</button>
       <button class="btn primary" type="button" id="blocked-setup"><svg class="i"><use href="#i-spark"/></svg>Set up a relay</button>
+    </div>
+  </div>
+</div>
+
+<!-- relay mode: this computer doesn't trust Foxhole's certificate yet, so sites won't open -->
+<div class="modal backdrop" id="trust-modal">
+  <div class="box glass">
+    <div class="lock-orb relay"><svg class="i"><use href="#i-lock"/></svg></div>
+    <h2>One more step: trust Foxhole's certificate</h2>
+    <p>The relay can only fetch web pages, so Foxhole opens each site's encryption on this computer to carry it, with certificates from its own authority: made on this computer, and never sent anywhere.</p>
+    <p id="trust-how"></p>
+    <div class="actions">
+      <button class="btn" type="button" id="trust-later">Not now</button>
+      <button class="btn primary" type="button" id="trust-ok"><svg class="i"><use href="#i-shield"/></svg>Trust it</button>
     </div>
   </div>
 </div>

@@ -7,16 +7,23 @@ import {
   type Usage,
 } from "./guardian.js";
 import { fetchServerList, pickServer, type Country, type Server } from "./serverlist.js";
+import type { RelayConfig } from "./httprelay.js";
+import { FRONT_AT } from "./relaymode.js";
+
+/** The Relay "location": where the location list, the saved last location and the tray name it. */
+export const RELAY_CODE = "RELAY";
 
 /**
  * Owns the live VPN session: the chosen upstream server and a proxy pass that
  * it refreshes before expiry. The proxy asks it for a valid pass per dial.
+ * In relay mode (relaymode.ts) the "server" is Google's front, and no pass is needed.
  */
 export class Connection {
   readonly #auth: Authenticator;
   #pass: ProxyPass | null = null;
   #usage: Usage | null = null;
   #server: Server | null = null;
+  #relay: RelayConfig | null = null;
   #passPromise: Promise<ProxyPass> | null = null;
 
   constructor(auth: Authenticator) {
@@ -29,6 +36,20 @@ export class Connection {
 
   get server(): Server | null {
     return this.#server;
+  }
+
+  /** The Apps Script relay carrying the traffic, in relay mode; null on Firefox VPN. */
+  get relay(): RelayConfig | null {
+    return this.#relay;
+  }
+
+  /** Relay mode, through `relay`. `prepare` as for selectServer: global mode pins Google's front first. */
+  async selectRelay(relay: RelayConfig, prepare?: (server: Server) => Promise<void>): Promise<Server> {
+    const server: Server = { hostname: FRONT_AT, port: 443, quarantined: false };
+    await prepare?.(server);
+    this.#server = server;
+    this.#relay = relay;
+    return server;
   }
 
   /**
@@ -46,6 +67,7 @@ export class Connection {
     }
     await prepare?.(server);
     this.#server = server;
+    this.#relay = null;
     return server;
   }
 

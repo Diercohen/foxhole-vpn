@@ -15,6 +15,9 @@ export const yellow = wrap("33");
 export const cyan = wrap("36");
 export const magenta = wrap("35");
 export const lit = wrap("1;7;32"); // bold green, reversed: a switch that's on
+// relay mode's colors, where Firefox VPN's are green
+export const purple = wrap("38;5;141");
+export const litPurple = wrap("1;7;38;5;141");
 
 /** --verbose: also print per-connection proxy failures and tun2socks logs. */
 export const verbose = process.argv.includes("--verbose");

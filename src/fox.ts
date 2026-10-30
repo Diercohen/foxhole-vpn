@@ -55,8 +55,11 @@ const ZZZ: [number, number, string][] = [[37, 4, "z"], [39, 2, "z"], [41, 0, "Z"
 const SPARKS = [[21, 2], [3, 8], [39, 5], [5, 19], [37, 14]];
 const TWINKLE = [[[0, 0]], [[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1]], [[0, 0]], [], [], [], []];
 
-/** The fox in a mood at time t (ms): FOX_H lines, each FOX_W columns wide. plain: its shape alone, no colors (always, with NO_COLOR). */
-export function fox(mood: Mood, t: number, plain = false): string[] {
+/**
+ * The fox in a mood at time t (ms): FOX_H lines, each FOX_W columns wide. plain: its shape alone, no colors (always,
+ * with NO_COLOR). relay: relay mode's purple where Firefox VPN's green and pink go.
+ */
+export function fox(mood: Mood, t: number, plain = false, relay = false): string[] {
   plain ||= !useColor;
   const pal = mood === "off" ? ASH : FUR;
   const px = ART.map((row) => Array.from({ length: FOX_W }, (_, x) => pal[row[x - M]] ?? null));
@@ -70,18 +73,18 @@ export function fox(mood: Mood, t: number, plain = false): string[] {
   const blink = t % 4000 < 150;
   const glance = mood === "waiting" ? [0, -1, 0, 1][Math.floor(t / 600) % 4] : 0; // looking around
   const eye = mood === "off" || blink ? SHUT : OPEN;
-  const eyeColor = mood === "global" && !plain ? [213, 219][Math.floor(t / 500) % 2] : pal.k; // glowing in global mode
+  const eyeColor = mood === "global" && !plain ? (relay ? [183, 189] : [213, 219])[Math.floor(t / 500) % 2] : pal.k; // glowing in global mode
   for (const [x, y] of eye) {
     px[y][M + x + glance] = eyeColor;
     px[y][M + ART[0].length - 1 - x + glance] = eyeColor;
   }
 
-  const dot = { off: null, waiting: t % 800 < 400 ? 220 : null, proxy: [49, 43, 37, 43], global: [204, 198, 162, 198] }[mood];
+  const dot = { off: null, waiting: t % 800 < 400 ? 220 : null, proxy: relay ? [141, 135, 99, 135] : [49, 43, 37, 43], global: relay ? [177, 171, 135, 171] : [204, 198, 162, 198] }[mood];
   const dotColor = Array.isArray(dot) ? dot[Math.floor(t / 400) % 4] : dot;
   if (dotColor !== null) for (const [x, y] of DOT) px[20 + y][M + 24 + x] = dotColor;
   if (mood === "global")
     for (const [i, [x, y]] of SPARKS.entries())
-      for (const [dx, dy] of TWINKLE[(Math.floor(t / 180) + i * 3) % TWINKLE.length]) px[y + dy][x + dx] = i % 2 ? 222 : 213;
+      for (const [dx, dy] of TWINKLE[(Math.floor(t / 180) + i * 3) % TWINKLE.length]) px[y + dy][x + dx] = i % 2 ? 222 : relay ? 183 : 213;
 
   const text = new Map<string, [number, string]>();
   if (mood === "off") for (const [x, y, z] of ZZZ.slice(0, Math.floor(t / 700) % 4)) text.set(`${x},${y}`, [z === "Z" ? 252 : 248, z]);

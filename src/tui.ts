@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { userHome, findAccount } from "./profile.js";
 import { fetchServerList, type Country } from "./serverlist.js";
-import { Connection } from "./connection.js";
+import { Connection, RELAY_CODE } from "./connection.js";
 import { GuardianError, GuardianBlocked, useRelay } from "./guardian.js";
 import { network, publicIp, lanIp, firewallHint } from "./netinfo.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor, type Settings } from "./settings.js";
@@ -12,13 +12,15 @@ import { forgetToken } from "./tokenserver.js";
 import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { logLines, onLog } from "./log.js";
 import { useSplit, splitOn, splitSummary, parseSite, hits, recentSites, type Split, type Via } from "./split.js";
-import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost } from "./global.js";
+import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost, type Priv } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, restart, versionLines, UPDATE_COMMAND } from "./update.js";
-import { bold, dim, under, strike, green, red, yellow, cyan, lit, flag, EMOJI, emoji, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
+import { bold, dim, under, strike, green, red, yellow, cyan, lit, purple, litPurple, flag, EMOJI, emoji, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
 import { fox, FOX_W, FOX_H, type Mood } from "./fox.js";
 import { loadRelay } from "./httprelay.js";
 import { newAuthKey } from "./relaysetup.js";
 import { RelayWizard, GRAPHICS, CELL_QUERY, cellSize, pictureAt } from "./relaywizard.js";
+import { relayCheck, relayStats, onRelayNotice } from "./relaymode.js";
+import { caTrusted, setCaTrust } from "./catrust.js";
 
 const ESC = "\x1b[";
 // alternate screen + hidden cursor + mouse reports (SGR): clicks and the wheel, see #mouse()
@@ -54,7 +56,11 @@ const SETTINGS = [
   { key: "relaySetup", label: "VPN relay · set up" },
   { key: "relayId", label: "VPN relay · deployment ID" },
   { key: "relayKey", label: "VPN relay · auth key" },
+  { key: "relayCert", label: "VPN relay · certificate" },
 ] as const;
+
+/** The Relay "location", first in the list once a relay is set up: the web through the user's own Apps Script (relaymode.ts). */
+const RELAY_ROW: Country = { code: RELAY_CODE, name: "Relay", locked: false, available: true, servers: [] };
 
 /** A country's name with its flag in front, where the TUI shows flags (EMOJI). */
 const flagged = (code: string, name: string) => (EMOJI ? `${flag(code)} ${name}` : name);
@@ -109,7 +115,8 @@ export class Tui {
   #fwHint: string[] | null = null; // commands that open the proxy's port in an active firewall (Linux)
   #proxyStale = false; // the running proxy still has the old address (changed during global mode)
   #proxyAt = ""; // the address the running proxy was started on
-  #countries: Country[] = [];
+  #list: Country[] = []; // the server list's countries
+  #countries: Country[] = []; // the Locations shown: the relay first when one is set up, then #list
   #sel = 0;
   #proxy: ProxyHandle | null = null;
   #active: Country | null = null;
@@ -122,6 +129,9 @@ export class Tui {
   #pw = "";
   #pwError = "";
   #pwChecking = false;
+  #pwFor: "global" | "trust" | "untrust" = "global"; // what the password is for
+  #trustAsk = false; // the popup asking to trust foxhole's certificate (relay mode)
+  #caOk: boolean | undefined; // whether this computer trusts it; undefined: not checked yet
   #splitOpen = false; // the Split tunneling popup is open
   #splitSel = 0; // 0: "Everything else", then the rules, then "+ add a site"
   #splitStart = 0; // the first row shown, when the list scrolls
@@ -154,7 +164,13 @@ export class Tui {
   /** Resolves "logout" when the user logged out, so the caller can forget the token. */
   async run(): Promise<"logout" | undefined> {
     useSplit(() => this.#settings.split); // live: a change applies to the next connection
-    setInterval(() => this.#splitOpen && this.#render(), 1000).unref(); // its counts climb as sites load
+    // the Split popup's counts climb as sites load, and relay mode's on the data row
+    let seen = -1;
+    setInterval(() => {
+      const n = relayStats.relayed + relayStats.fronted;
+      if (this.#splitOpen || (this.#relayOn() && n !== seen && !this.#wizard)) (seen = n), this.#render();
+    }, 1000).unref();
+    onRelayNotice((msg) => ((this.#message = yellow(msg)), this.#render()));
     setInterval(() => this.#animate(), 100).unref();
     onLog(() => this.#logsOpen && this.#renderSoon());
     onProxyWarning((msg) => {
@@ -170,13 +186,13 @@ export class Tui {
     this.#message = dim("loading…");
     this.#render();
     try {
-      this.#countries = order(await fetchServerList());
-      this.#sel = Math.max(0, this.#countries.findIndex((c) => c.code === loadLastCountry()));
+      this.#setList(order(await fetchServerList()));
       this.#message = "";
     } catch (err) {
+      this.#setList([]);
       this.#message = existsSync("/sys/class/net/foxhole0")
         ? red("offline: a killed global session's routes are still on — quit and run  foxhole restore")
-        : red(`server list failed: ${(err as Error).message}`);
+        : red(`server list failed: ${(err as Error).message}`) + this.#relayHint();
     }
     this.#loading = false;
     // Connects at once to the last country used; never to whatever sorts first (a first run waits for a pick).
@@ -213,10 +229,11 @@ export class Tui {
       this.#net = n;
       this.#render();
     });
-    void publicIp(proxy).then((ip) => {
+    // relay mode: HTTP, as HTTPS in global mode would meet foxhole's own certificate, which Node doesn't trust
+    void publicIp(proxy, 3, country === RELAY_ROW).then((ip) => {
       if (seq !== this.#netSeq) return;
       this.#ip = ip;
-      this.#ipNote = country ? `VPN · ${flagged(country.code, countryName(country.code, country.name))}` : "your real IP";
+      this.#ipNote = country === RELAY_ROW ? "Google's · sites can still see yours" : country ? `VPN · ${flagged(country.code, countryName(country.code, country.name))}` : "your real IP";
       this.#render();
     });
   }
@@ -311,6 +328,11 @@ export class Tui {
           if (key.name === "return" || key.name === "escape") (this.#blocked = false), this.#render();
           return;
         }
+        if (this.#trustAsk) {
+          if (key.name === "return") void this.#trust(true);
+          if (key.name === "return" || key.name === "escape") (this.#trustAsk = false), this.#render();
+          return;
+        }
         if (this.#settingsOpen) return this.#settingsKey(s, key);
         if (this.#splitOpen) return this.#splitKey(s, key);
         if (key.name === "q") return void quit();
@@ -320,6 +342,7 @@ export class Tui {
           this.#settingsOpen = true;
           this.#settingsNote = "";
           this.#checkFirewall();
+          void caTrusted().then((ok) => ((this.#caOk = ok), this.#render()));
           return this.#render();
         }
         if (key.name === "t") {
@@ -345,6 +368,12 @@ export class Tui {
           case "d":
             void this.#disconnect();
             return;
+          case "r":
+            // the relay, from anywhere in the list
+            if (this.#countries[0] !== RELAY_ROW) break;
+            this.#sel = 0;
+            void this.#connect();
+            return;
           case "u":
             if (canUpdate()) return void quit("update");
             break;
@@ -366,7 +395,7 @@ export class Tui {
    */
   #mouse(b: number, x: number, y: number, press: (name: string) => void): void {
     if (b === 64 || b === 65) return press(b === 64 ? "up" : "down");
-    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#restoring || this.#wizard || this.#blocked) return;
+    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#restoring || this.#wizard || this.#blocked || this.#trustAsk) return;
     const h = this.#hit;
     const fx = x - h.left, fy = y - h.top;
     if (this.#settingsOpen) {
@@ -398,32 +427,43 @@ export class Tui {
     }
   }
 
-  async #connect(): Promise<void> {
-    const country = this.#countries[this.#sel];
+  async #connect(country = this.#countries[this.#sel]): Promise<void> {
     if (!country) return;
+    const relay = country === RELAY_ROW ? loadRelay(this.#settings) : null;
+    if (country === RELAY_ROW && !relay) return;
     this.#busy = true;
-    this.#message = dim(`connecting to ${countryName(country.code, country.name)}…`);
+    this.#message = dim(relay ? "connecting through your relay…" : `connecting to ${countryName(country.code, country.name)}…`);
     this.#render();
+    // between Firefox VPN and the relay: connections open now would go on the old way, so the proxy drops them
+    const switching = !!this.#active && !!relay !== !!this.#conn.relay;
     try {
       // Global on: the new server's IP is pinned first, or the proxy's dial to it would loop through the tunnel.
       const session = this.#global;
-      await this.#conn.selectServer(country.locked ? country : country.available ? country : null, session ? (s) => session.addServer(s) : undefined);
+      if (relay) {
+        await relayCheck({ relay, server: null }); // it answers, before anything moves to it
+        await this.#conn.selectRelay(relay, session ? (s) => session.addServer(s) : undefined);
+      } else {
+        await this.#conn.currentPass(); // warm the pass; surfaces auth/quota errors now, while the relay (if on) still works
+        await this.#conn.selectServer(country.locked ? country : country.available ? country : null, session ? (s) => session.addServer(s) : undefined);
+      }
       if (!this.#proxy) this.#proxy = await this.#startProxy();
-      await this.#conn.currentPass(); // warm the pass; surfaces auth/quota errors now
+      else if (switching) this.#proxy.reset();
       this.#active = country;
       if (this.#global) this.#globalCountry = country;
       saveLastCountry(country.code);
-      this.#message = green("connected");
-      this.#refreshUsage();
+      this.#message = relay ? purple("connected through your relay") : green("connected");
+      if (relay) void this.#askTrust();
+      else this.#refreshUsage();
     } catch (err) {
-      if (err instanceof GuardianError && err.status === 401) {
+      if (relay) this.#message = red((err as Error).message);
+      else if (err instanceof GuardianError && err.status === 401) {
         forgetToken(); // so the next start shows the token window
         this.#message = red("token rejected (expired) — quit and run foxhole again to get a new one");
       } else {
         this.#saysBlocked(err);
         // fetch's own message is just "fetch failed"; the network reason is in its cause
         const cause = (err as Error).cause as { code?: string; message?: string } | undefined;
-        this.#message = red(`connect failed: ${(err as Error).message}${cause ? ` (${cause.code ?? cause.message})` : ""}`);
+        this.#message = red(`connect failed: ${(err as Error).message}${cause ? ` (${cause.code ?? cause.message})` : ""}`) + this.#relayHint();
       }
       if (this.#proxy && !this.#active) {
         await this.#proxy.close();
@@ -472,6 +512,12 @@ export class Tui {
       this.#message = "";
       note = "No Touch ID: type your password instead."; // cancelled, or no sensor (lid closed)
     }
+    this.#askPassword("global", note);
+  }
+
+  /** Opens the password popup, for `what`. */
+  #askPassword(what: "global" | "trust" | "untrust", note = ""): void {
+    this.#pwFor = what;
     this.#pwMode = true;
     this.#pw = "";
     this.#pwError = note;
@@ -511,7 +557,8 @@ export class Tui {
       return;
     }
     this.#pwMode = false;
-    void this.#enableGlobal(pw);
+    if (this.#pwFor === "global") void this.#enableGlobal(pw);
+    else void this.#trust(this.#pwFor === "trust", sudoPriv(pw));
   }
 
   /** password: for sudo; null when none is asked for here (root, or Windows). */
@@ -558,10 +605,10 @@ export class Tui {
       this.#globalCountry = this.#active;
       this.#message = dim("verifying…");
       this.#render();
-      const ip = await session.verifyExitIp();
+      const ip = await session.verifyExitIp(this.#relayOn());
       this.#message = ip
-        ? green(`global ON · exit IP ${ip}`)
-        : yellow("global on, but internet check failed — DNS or VPN issue");
+        ? (this.#relayOn() ? purple : green)(`global ON · exit IP ${ip}`)
+        : yellow(`global on, but internet check failed — DNS or ${this.#relayOn() ? "relay" : "VPN"} issue`);
     } catch (err) {
       this.#message = red(`global failed: ${(err as Error).message}`);
       await session?.stop().catch(() => {});
@@ -647,6 +694,7 @@ export class Tui {
         const item = SETTINGS[this.#setSel].key;
         if (item === "share") return void this.#changeSetting({ share: !this.#settings.share });
         if (item === "relaySetup") return void ((this.#wizard = new RelayWizard(() => this.#render())), this.#render());
+        if (item === "relayCert") return void this.#trust(!this.#caOk);
         // typed in place: the username and relay id start from the current value, the rest from scratch
         this.#edit = { key: item, text: item === "username" ? this.#settings.username : item === "relayId" ? (this.#settings.relay?.deploymentId ?? "") : "" };
         this.#settingsNote = "";
@@ -662,7 +710,7 @@ export class Tui {
     if (done && done !== "close") {
       return void this.#changeSetting({ relay: done }).then(() => {
         // in Settings, or (opened from the blocked popup) the status line
-        if (this.#settings.relay) this.#settingsNote = this.#message = green("✓ Relay set up. foxhole uses it whenever vpn.mozilla.org is blocked.");
+        if (this.#settings.relay) this.#settingsNote = this.#message = purple("✓ Relay set up: Firefox VPN uses it where vpn.mozilla.org is blocked, and Relay, first in Locations, browses through it.");
         this.#render();
       });
     }
@@ -785,7 +833,12 @@ export class Tui {
     }
     this.#settings = next;
     this.#settingsNote = "";
-    if ("relay" in patch) useRelay(loadRelay(next)); // takes effect at once, no restart
+    if ("relay" in patch) {
+      useRelay(loadRelay(next)); // takes effect at once, no restart
+      this.#setList(this.#list);
+      // relay mode follows: through the new relay, or off without one
+      if (this.#active === RELAY_ROW) void (loadRelay(next) ? this.#connect(RELAY_ROW) : this.#disconnect());
+    }
     if ("share" in patch || "port" in patch) {
       this.#host = proxyHost(next);
       this.#port = next.port;
@@ -849,6 +902,7 @@ export class Tui {
       (s.relay ? green("on") : dim("off")) + dim("  ⏎ step by step"),
       relayVal(e?.key === "relayId" ? e.text : s.relay?.deploymentId ?? "", e?.key === "relayId", false),
       relayVal(e?.key === "relayKey" ? e.text : s.relay?.authKey ?? "", e?.key === "relayKey", true),
+      this.#caOk === undefined ? dim("…") : this.#caOk ? green("trusted") + dim("  ⏎ remove") : yellow("not trusted") + dim("  ⏎ trust"),
     ];
     const w = Math.max(...SETTINGS.map((it) => it.label.length));
     const rows = SETTINGS.map((it, i) => {
@@ -864,7 +918,7 @@ export class Tui {
       dim("Blocked vpn.mozilla.org (Iran)? Make your own free relay on"),
       dim("Google Apps Script: “VPN relay · set up” walks you through it."),
     ];
-    const relayOn = [green("Relay on — used only when vpn.mozilla.org can't be reached."), dim("Clear both fields to turn it off.")];
+    const relayOn = [green("Relay on: Firefox VPN uses it when vpn.mozilla.org is blocked,"), dim("and Relay, first in Locations, browses through it. Clear both to remove.")];
     const help = {
       share: s.share
         ? [
@@ -887,6 +941,11 @@ export class Tui {
       relayKey: e?.key === "relayKey"
         ? [dim("Type or paste the auth key · tab: generate a strong one"), dim("enter save · esc cancel")]
         : s.relay ? relayOn : relayGuide,
+      relayCert: [
+        dim("Relay mode opens sites' encryption on this computer, with"),
+        dim("certificates from foxhole's own authority, made here alone."),
+        `Terminal tools: ${cyan(process.platform === "win32" ? "foxhole env | iex" : 'eval "$(foxhole env)"')}`,
+      ],
     }[SETTINGS[this.#setSel].key];
     return box(
       ["", ...rows, "", ...help, this.#settingsNote, "", dim("↑↓ select · enter change · esc close")],
@@ -912,7 +971,7 @@ export class Tui {
     const at = this.#foxAt;
     // resized: a render is coming, which places it anew
     if (!at || !screenOn || at.cols !== (process.stdout.columns || 80) || at.rows !== (process.stdout.rows || 24)) return;
-    const lines = fox(this.#mood(), Date.now());
+    const lines = fox(this.#mood(), Date.now(), false, this.#relayOn());
     const out = lines.map((l, i) => (l === this.#foxDrawn[i] ? "" : `\x1b[${at.y + i + 1};${at.x + 1}H${l}`)).join("");
     this.#foxDrawn = lines;
     if (out) process.stdout.write("\x1b[0m" + out);
@@ -921,21 +980,28 @@ export class Tui {
   #render(): void {
     if (!screenOn) return; // a late redraw (timer, log line) must not paint over the normal screen
     const u = this.#conn.usage;
-    const data = !u
+    // relay mode in purple where Firefox VPN is green
+    const relayOn = this.#relayOn();
+    const ok = relayOn ? purple : green, on = relayOn ? litPurple : lit;
+    const data = relayOn
+      ? `${bold(String(relayStats.relayed))} relayed ${dim(`· ${relayStats.fronted} straight to Google · ~20k a day`)}`
+      : !u
       ? dim("unknown")
       : u.unlimited
         ? green("unlimited")
         : `${bold(gb(u.remaining).replace(" GB", ""))} of ${gb(u.max)} left` + (u.reset ? dim(` · resets ${shortDate(u.reset)}`) : ""); // as Firefox shows it
     const gc = this.#globalCountry;
+    const place = (c: Country) => (c === RELAY_ROW ? "Relay" : flagged(c.code, countryName(c.code, c.name)));
     const state = this.#global
-      ? `${lit(" GLOBAL TUN ON ")} ${green(flagged(gc!.code, countryName(gc!.code, gc!.name)))}`
+      ? `${on(" GLOBAL TUN ON ")} ${ok(place(gc!))}`
       : this.#active
-        ? green(`● connected ${flagged(this.#active.code, countryName(this.#active.code, this.#active.name))}`)
+        ? ok(`● connected ${place(this.#active)}`)
         : dim("○ disconnected");
     const sp = this.#settings.split;
     const split = splitSummary(sp);
     const route = this.#global
-      ? green(sp.default === "vpn" ? "all system traffic → VPN" : "system traffic → direct") + (split ? dim(` · ${split}`) : "")
+      // the relay carries the web; what isn't goes direct
+      ? ok(sp.default === "direct" ? "system traffic → direct" : relayOn ? "web → relay · the rest direct" : "all system traffic → VPN") + (split ? dim(` · ${split}`) : "")
       : this.#active
         ? `${cyan(this.#proxyAddr())}  ${dim([split ? "" : "SOCKS5 or HTTP", this.#host === "0.0.0.0" ? "shared on this network" : "", split ?? ""].filter(Boolean).join(" · "))}`
         : dim("—");
@@ -971,6 +1037,10 @@ export class Tui {
     const body = slice.map((i) => {
       const c = this.#countries[i];
       const here = i === this.#sel;
+      if (c === RELAY_ROW) {
+        const name = emoji("🟣 ") + "Relay · via Google";
+        return [`${here ? cyan("❯") : " "} ${this.#active === c ? purple("●") : dim("○")}`, "", purple("relay"), here ? bold(purple(name)) : purple(name)];
+      }
       const mark = !c.available ? red("×") : this.#active?.code === c.code ? green("●") : dim("○");
       return [
         `${here ? cyan("❯") : " "} ${mark}`,
@@ -982,23 +1052,23 @@ export class Tui {
     if (!body.length) body.push(["   ", "", "", dim("loading…")]);
     const range = this.#countries.length > room
       ? `${start + 1}–${start + slice.length} of ${this.#countries.length}`
-      : this.#countries.length ? `${this.#countries.length} countries` : ""; // none yet: the list says loading…
+      : this.#list.length ? `${this.#list.length} countries` : ""; // none yet: the list says loading…
 
     const title = bold(cyan(emoji("🦊 ") + "foxhole-vpn"));
     const key = (k: string, rest: string) => `[${under(k)}${rest}]`;
     // Lit while on, each part on its own: the underline's reset would end an outer style
-    const globalBtn = this.#global ? ["[", under("G"), "lobal TUN]"].map(lit).join("") : dim(key("G", "lobal TUN"));
+    const globalBtn = this.#global ? ["[", under("G"), "lobal TUN]"].map(on).join("") : dim(key("G", "lobal TUN"));
     // On the connected country, D disconnects (lit like a switch that's on); elsewhere Enter connects
     const connectBtn = this.#active && this.#countries[this.#sel]?.code === this.#active.code
-      ? ["[", under("D"), "isconnect]"].map(lit).join("")
-      : bold(cyan("[⏎ Connect]"));
+      ? ["[", under("D"), "isconnect]"].map(on).join("")
+      : bold((this.#countries[this.#sel] === RELAY_ROW ? purple : cyan)("[⏎ Connect]"));
     // Lit while any site is split off, like a switch that's on
     const splitBtn = splitOn(sp) ? ["[Split ", under("T"), "unnel]"].map(lit).join("") : dim(`[Split ${under("T")}unnel]`);
     const buttons = [connectBtn, globalBtn, splitBtn, dim(key("S", "ettings")), dim(key("L", "ogs")), dim(key("Q", "uit"))].join("  ");
     const table = (minWidth: number) => grid(["", "Code", "Tier", "Country"], body, { caption: bold("Locations"), captionRight: dim(range), minWidth });
     // Under a popup, its shape alone: the backdrop's colors go, which would leave half of each two-color cell
     const covered = this.#restoring || this.#pwMode || this.#settingsOpen || this.#splitOpen || this.#logsOpen;
-    const foxLines = foxOn ? fox(this.#mood(), Date.now(), covered) : [];
+    const foxLines = foxOn ? fox(this.#mood(), Date.now(), covered, relayOn) : [];
     let panels: string[];
     let foxX: number, foxY: number; // where the fox is in the frame
     let tableX = 0, tableY: number, tableW: number; // and the table's first country
@@ -1048,6 +1118,8 @@ export class Tui {
           ? this.#wizard.render(cols, frame.length - 2)
           : this.#blocked
           ? this.#blockedPopup()
+          : this.#trustAsk
+          ? this.#trustPopup()
           : this.#settingsOpen
           ? this.#settingsPopup()
           : this.#splitOpen
@@ -1138,6 +1210,76 @@ export class Tui {
     this.#render();
   }
 
+  /** The Locations: the relay first when one is set up, then the countries. The selection stays on its row. */
+  #setList(list: Country[]): void {
+    const at = this.#countries[this.#sel]?.code ?? loadLastCountry();
+    this.#list = list;
+    this.#countries = [...(loadRelay(this.#settings) ? [RELAY_ROW] : []), ...list];
+    this.#sel = Math.max(0, this.#countries.findIndex((c) => c.code === at));
+  }
+
+  /** Connected through the relay (relaymode.ts), not Firefox VPN. */
+  #relayOn(): boolean {
+    return this.#active === RELAY_ROW && !!this.#conn.relay;
+  }
+
+  /** After a failure Firefox VPN can't get past: where a relay is set up, how to browse through it instead. */
+  #relayHint(): string {
+    return this.#countries[0] === RELAY_ROW && !this.#relayOn() ? dim(" · R: browse through your relay") : "";
+  }
+
+  /** After connecting to the relay: asks to trust foxhole's certificate, if this computer doesn't yet (sites won't open). */
+  async #askTrust(): Promise<void> {
+    this.#caOk = await caTrusted();
+    this.#trustAsk = !this.#caOk && this.#relayOn();
+    this.#render();
+  }
+
+  /** Trusts foxhole's certificate (`add`), or stops: macOS and Windows ask in a window of their own, Linux needs root. */
+  async #trust(add: boolean, priv?: Priv): Promise<void> {
+    if (this.#busy) return;
+    if (process.platform === "linux" && !priv) {
+      if (!(await isPrivileged())) return this.#askPassword(add ? "trust" : "untrust");
+      priv = await adminPriv(true);
+    }
+    this.#busy = true;
+    this.#message = dim(process.platform === "darwin" ? "macOS asks for your password…" : process.platform === "win32" ? "Windows asks you to confirm: choose Yes…" : add ? "trusting the certificate…" : "removing the certificate…");
+    this.#render();
+    try {
+      await setCaTrust(add, priv);
+      this.#caOk = await caTrusted();
+      this.#message = !add ? dim("certificate removed") : this.#caOk ? purple("✓ Certificate trusted. Restart your browser, then sites open through the relay.") : yellow("certificate added, but not trusted yet");
+    } catch (err) {
+      this.#message = red(`certificate ${add ? "not trusted" : "not removed"}: ${(err as Error).message}`);
+    } finally {
+      this.#busy = false;
+      if (this.#settingsOpen) this.#settingsNote = this.#message;
+      this.#render();
+    }
+  }
+
+  #trustPopup(): string[] {
+    const how = process.platform === "darwin" ? "macOS asks for your password once," : process.platform === "win32" ? "Windows asks you to confirm once," : "It takes your sudo password once,";
+    return box(
+      [
+        "",
+        bold(purple("Trust foxhole's certificate to browse")),
+        "",
+        "The relay can only fetch pages, so foxhole opens",
+        "each site's encryption on this computer to carry",
+        "it, with certificates from its own authority: made",
+        "on this computer, and never sent anywhere.",
+        "",
+        how,
+        "then restart your browser.",
+        "",
+        `${bold(purple("[⏎ Trust it]"))}   ${dim("[esc Not now]")}`,
+        "",
+      ],
+      { title: bold(purple(emoji("🔐 ") + "One more step")) },
+    );
+  }
+
   /** The popup shown while quitting restores global mode's routes and DNS. */
   /** Shows the blocked popup when err says vpn.mozilla.org is blocked here (with no relay set); whether it did. */
   #saysBlocked(err: unknown): boolean {
@@ -1192,9 +1334,9 @@ export class Tui {
     return box(
       [
         "",
-        "Global mode routes all of this computer's",
-        "traffic through the VPN, which needs",
-        "administrator rights.",
+        ...(this.#pwFor === "global"
+          ? ["Global mode routes all of this computer's", "traffic through the VPN, which needs", "administrator rights."]
+          : [`${this.#pwFor === "trust" ? "Trusting" : "Removing"} foxhole's certificate for`, "the system and its browsers needs", "administrator rights."]),
         "",
         `Enter your ${bold("login password")} (used by sudo):`,
         "",

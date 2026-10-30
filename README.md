@@ -35,6 +35,8 @@ use the [desktop app](#desktop-app), which needs no Node.js at all.
   inside the tunnel (no DNS leaks) and IPv6/QUIC leak protection
 - 🖥️ **Interactive terminal UI (TUI)**: pick a country, toggle global routing, view live logs
 - 📊 **Remaining data / monthly usage** and a `doctor` command for diagnostics
+- 🟣 **[Relay mode](#relay-mode-browsing-through-your-relay)**: browse through your own Google Apps
+  Script relay when Firefox VPN can't connect at all
 - 🐧🍎🪟 Works on **Linux, macOS and Windows**
 
 ## How it works
@@ -423,6 +425,65 @@ By hand:
 The desktop app reads the same settings. Keep the auth key secret, and note
 Apps Script's free quota (about 20,000 URL-fetch calls a day) — far more than
 foxhole's occasional control calls need.
+
+### Relay mode: browsing through your relay
+
+When even Firefox VPN's servers are out of reach, or you'd just rather, the same
+relay can carry your browsing. With a relay set up, **Relay** is the first row
+in Locations (in the terminal UI, `R` connects to it). Pick any country to go
+back to Firefox VPN: the switch takes one click, and connections already open
+reconnect the new way. While the relay is on, foxhole turns **purple** (the
+terminal UI, the desktop app and its tray icon), so you always know which one
+you're on. The proxy and whole-system mode work as they do with Firefox VPN.
+
+- **No choice of country, and it doesn't hide you.** The script fetches each
+  page from Google's servers, so sites see one of Google's addresses connect
+  (the `ip` line shows it). But Google adds your own IP in a header
+  (`X-Forwarded-For`) that any site can read: the relay gets you past the
+  filter, it doesn't make you anonymous.
+- **Sites that check for bots refuse it** (Cloudflare's "Just a moment…",
+  Reddit, ChatGPT, npmjs.com's website): Google's fetches can't look like a
+  browser. Use Firefox VPN for those.
+- **Keep the script up to date.** Older relay code fails on many sites
+  ("Malformed HTML content"); foxhole says so when it happens. Run
+  **Settings → VPN relay → Set up step by step** again to update it.
+- **YouTube plays at full speed:** YouTube, its pictures, Google's fonts and
+  scripts are sent straight to Google, the way the script itself is reached,
+  and videos come straight from YouTube's caches (blocked by name, not by
+  address), so they use none of the script's quota. YouTube isn't in
+  Restricted Mode either, which Iran's DNS forces through `www.google.com`'s
+  address.
+- **Only the web goes through it** (ports 80, 443, 8080 and 8443). Other ports
+  (SSH, mail, databases) go direct, from your own address.
+
+The script can only fetch pages; it can't carry an encrypted connection. So
+foxhole opens each site's HTTPS on your computer, with a certificate for that
+site from its own certificate authority. The authority is made on your computer
+(`~/.config/foxhole-vpn/relay-ca.pem`), and its key never leaves it. Browsers
+accept it once you trust it. foxhole asks after your first connect, or use
+**Settings → VPN relay · certificate** (also to remove it):
+
+- **macOS**: your login keychain; macOS asks for your password.
+- **Windows**: your user's root store; Windows asks you to confirm.
+- **Linux**: the system store (curl, git, apt, Python, Go), Firefox (through its
+  policies, snap too) and Chrome, Chromium, Brave and Edge 132 or later
+  (through theirs). foxhole asks for your password for sudo.
+
+Restart your browser afterwards. Command-line tools mostly keep their own list,
+so point them at it, and at the proxy, in the terminal you work in:
+
+```sh
+eval "$(foxhole env)"     # bash, zsh: npm, yarn, pip, git, curl, cargo, aws, deno…
+foxhole env | iex         # PowerShell
+```
+
+In the desktop app, use **Settings → Relay certificate → Copy terminal setup**.
+
+What a relay can't do: it's slower than Firefox VPN (each request is a call to
+the script), and Apps Script's quota allows about 20,000 requests a day (the
+count is on screen). It can't carry WebSockets or video calls. A response tops
+out near 50 MB. Apps that pin their own certificates (some banking apps) refuse
+foxhole's; the status line says so when one does.
 
 ## Limits
 

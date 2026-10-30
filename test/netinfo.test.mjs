@@ -1,6 +1,6 @@
 // Wi-Fi name parsing for each OS's tool output, and the network row. No network.
 import assert from "node:assert";
-import { parseIwDev, parseSsid, parseNmcliWifi, unescapeIw, describeNetwork, firewallCommands } from "../dist/netinfo.js";
+import { parseIwDev, parseSsid, parseNmcliWifi, unescapeIw, describeNetwork, firewallCommands, ipIn } from "../dist/netinfo.js";
 
 // Sharing the proxy: the command that opens its port in whichever firewall is on.
 assert.deepEqual(firewallCommands(true, null, 1080), ["sudo firewall-cmd --permanent --add-port=1080/tcp", "sudo firewall-cmd --reload"], "firewalld (Fedora)");
@@ -38,5 +38,10 @@ assert.equal(describeNetwork(null, "enp3s0"), "Ethernet (wired)", "Linux Etherne
 assert.equal(describeNetwork(null, "wlp2s0"), "Wi-Fi", "Linux Wi-Fi, no iw to name it");
 assert.equal(describeNetwork(null, "Wi-Fi"), "Wi-Fi", "Windows Wi-Fi, name needs location access");
 assert.equal(describeNetwork(null, undefined), null, "offline");
+
+// The exit IP: ipify answers with it alone; relay mode reads it from Cloudflare's trace
+assert.equal(ipIn("1.2.3.4\n", false), "1.2.3.4");
+assert.equal(ipIn("fl=1\nh=www.cloudflare.com\nip=34.116.28.199\nts=1\nloc=US\n", true), "34.116.28.199");
+assert.equal(ipIn("<html>blocked</html>", true), null, "not a trace");
 
 console.log("ok - Wi-Fi name parsers, network row");

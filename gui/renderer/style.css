@@ -33,6 +33,9 @@ body[data-phase="off"] { --a1: #8b5cff; --a2: #45b6ff; }
 body[data-phase="busy"] { --a1: #ffc247; --a2: #ff7a1a; --on-ink: #1d1200; }
 body[data-phase="on"] { --a1: #2ef2b0; --a2: #45b6ff; --on-ink: #03150f; }
 body[data-phase="global"] { --a1: #ff8a2a; --a2: #ff3d6e; }
+/* relay mode (the user's own Apps Script, not Firefox VPN): purple */
+body[data-relay][data-phase="on"] { --a1: #b76bff; --a2: #ff6bd6; --on-ink: #1a0326; }
+body[data-relay][data-phase="global"] { --a1: #d35cff; --a2: #7c5cff; }
 
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -415,12 +418,15 @@ input:focus { background: rgba(0, 0, 0, 0.34); box-shadow: inset 0 0 0 1px color
 /* a small one in a line of text */
 .flag-i { width: 1.2em; height: 1.2em; margin-right: 0.45em; vertical-align: -0.24em; border-radius: 50%; object-fit: cover;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.28), 0 2px 8px rgba(0, 0, 0, 0.55); }
+.flag.relay { color: #fff; background: linear-gradient(135deg, #d9a0ff, #9b4dff 55%, #ff5ad8); }
+.flag.relay .i { width: 20px; height: 20px; stroke-width: 2.2; }
 .flag.code { font-size: 12px; font-weight: 800; letter-spacing: 0.04em; color: var(--ink-2); background: linear-gradient(135deg, #2e2545, #171222); }
 .row .nm { font-size: 14px; font-weight: 640; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row .cd { margin-top: 1px; font-size: 11px; letter-spacing: 0.08em; color: var(--ink-3); }
 .tiers { display: flex; align-items: center; gap: 4px; }
 .tier { font-size: 10px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 8px; border-radius: 999px; }
 .tier.free { color: #79ffcf; background: rgba(46, 242, 176, 0.1); box-shadow: inset 0 0 0 1px rgba(46, 242, 176, 0.24); }
+.tier.relay { color: #e6c2ff; background: rgba(183, 107, 255, 0.12); box-shadow: inset 0 0 0 1px rgba(183, 107, 255, 0.3); }
 .tier.paid { padding: 4px 2px; color: var(--ink-3); text-decoration: line-through; text-decoration-thickness: 1.5px; }
 .tier.none { color: var(--ink-3); letter-spacing: 0.04em; text-transform: none; font-weight: 600; font-size: 11.5px; }
 .state-dot { width: 9px; height: 9px; border-radius: 50%; background: rgba(255, 255, 255, 0.12); justify-self: center; }
@@ -631,6 +637,15 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
   background: linear-gradient(135deg, var(--amber), var(--fox) 55%, var(--fox-2));
   box-shadow: 0 18px 44px -12px var(--fox), inset 0 1px 0 rgba(255, 255, 255, 0.45); animation: glowPulse 2.6s ease-in-out infinite; }
 .lock-orb .i { width: 28px; height: 28px; stroke-width: 2; }
+.lock-orb.relay { background: linear-gradient(135deg, #e6b3ff, #b76bff 55%, #ff6bd6); box-shadow: 0 18px 44px -12px #b76bff, inset 0 1px 0 rgba(255, 255, 255, 0.45); }
+.cert-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: 600; }
+#cert-state.ok { color: #79ffcf; }
+#cert-state.warn { color: var(--amber); }
+/* the relay's own buttons, and the data ring counting its requests */
+#trust-modal .btn.primary, #cert-group .btn.primary { background: linear-gradient(135deg, #b76bff, #ff6bd6); }
+#trust-modal .btn.primary:hover { box-shadow: 0 14px 38px -10px #b76bff, inset 0 1px 0 rgba(255, 255, 255, 0.35); }
+body[data-relay] #g-ring stop:first-child { stop-color: #b76bff; }
+body[data-relay] #g-ring stop:last-child { stop-color: #ff6bd6; }
 .shake { animation: shake 0.45s; }
 @keyframes shake { 20%, 60% { transform: translateX(-9px); } 40%, 80% { transform: translateX(9px); } }
 
