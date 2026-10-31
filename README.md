@@ -38,6 +38,8 @@ It updates itself and lives in the tray / menu bar.
 
 **Terminal app** (Node.js 18.18+):
 
+![foxhole in the terminal: connecting the proxy, then whole-system mode](docs/tui-demo.gif)
+
 ```sh
 npm install -g foxhole-vpn && foxhole
 ```
