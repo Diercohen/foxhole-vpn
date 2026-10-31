@@ -6,7 +6,7 @@ import { fetchServerList } from "./dist/serverlist.js";
 import { Connection, RELAY_CODE } from "./dist/connection.js";
 import { FirefoxAuth, StaticAuth } from "./dist/auth.js";
 import { GuardianError, GuardianBlocked, useRelay } from "./dist/guardian.js";
-import { loadRelay } from "./dist/httprelay.js";
+import { loadRelay, relayUrl } from "./dist/httprelay.js";
 import { STEPS, KEY_PLACEHOLDER, relayTemplate, highlightJs, deploymentId } from "./dist/relaysetup.js";
 import { network, publicIp, lanIp, firewallHint } from "./dist/netinfo.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor } from "./dist/settings.js";
@@ -18,7 +18,7 @@ import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUse
 import { VERSION } from "./dist/update.js";
 import { countryName, gb, shortDate } from "./dist/ui.js";
 import { order, loadLastCountry, saveLastCountry } from "./dist/tui.js";
-import { relayCheck, relayStats, onRelayNotice } from "./dist/relaymode.js";
+import { relayCheck, relayVerdict, relayStats, onRelayNotice, onRelaySplit } from "./dist/relaymode.js";
 import { caTrusted, setCaTrust, envLines } from "./dist/catrust.js";
 import { loadCa } from "./dist/mitm.js";
 
@@ -79,6 +79,7 @@ export class Controller extends EventEmitter {
     onLog(() => this.emit("log", logLines[logLines.length - 1]));
     onProxyWarning((msg) => this.#say("error", `proxy: ${msg}`));
     onRelayNotice((msg) => this.#say("warn", msg));
+    onRelaySplit((split) => this.#saveSplit(split)); // a bot-check page's "Open it directly"
     void caTrusted().then((ok) => ((this.#caOk = ok), this.#changed()));
     const list = this.reloadList(); // needs no login: ready once the sign-in is
     this.#refreshNet();
@@ -297,6 +298,8 @@ export class Controller extends EventEmitter {
       this.#connecting = null;
       this.#refreshNet();
     }
+    // Settings saved another relay while this ran (its fields save as they're typed): relay mode follows it now
+    if (relay && JSON.stringify(loadRelay(this.#settings)) !== JSON.stringify(relay)) this.#followRelay();
   }
 
   /** Counts err when it says vpn.mozilla.org is blocked here (with no relay set), for the window to say so; whether it did. */
@@ -466,10 +469,26 @@ export class Controller extends EventEmitter {
   /** The Apps Script relay for a blocked vpn.mozilla.org (httprelay.ts): both parts set it, both empty clear it. The ID may be the web app's URL. */
   setRelay(id, authKey) {
     const text = String(id ?? "").trim();
-    const key = String(authKey ?? "").trim();
+    // an empty key field keeps the saved key ("type to replace"): the window never has it
+    const key = String(authKey ?? "").trim() || (text ? (this.#settings.relay?.authKey ?? "") : "");
     if (Boolean(text) !== Boolean(key)) return void this.#note("settings", "error", "Enter both the deployment ID and the auth key, or clear both to turn the relay off.");
     if (text && !deploymentId(text)) return void this.#note("settings", "error", "That isn't a Deployment ID or web app URL: copy it again from Google.");
     return this.#changeSetting({ relay: text ? { deploymentId: deploymentId(text), authKey: key } : undefined });
+  }
+  /**
+   * Settings' Check (relaymode.ts relayVerdict) of the relay as its fields have it, saved or not: the deployment ID typed
+   * there, and the auth key typed there or else the saved one (the window never gets that, so its field shows empty).
+   */
+  async checkRelay(id, authKey) {
+    const saved = this.#settings.relay;
+    const text = String(id ?? "").trim();
+    const did = deploymentId(text);
+    const key = String(authKey ?? "").trim() || saved?.authKey;
+    if (!did) return { tone: "error", text: text ? "That isn't a Deployment ID or web app URL: copy it again from Google." : "Type the Deployment ID first." };
+    if (!key) return { tone: "error", text: "Type the auth key first." };
+    const v = await relayVerdict({ relay: { url: relayUrl(did), key }, server: null });
+    const unsaved = did !== saved?.deploymentId || key !== saved?.authKey;
+    return unsaved && v.tone !== "error" ? { ...v, text: `${v.text} Not saved yet.` } : v;
   }
   /** The setup wizard's content (relaysetup.ts): its steps, and the script as highlighted tokens with the key's placeholder. */
   relaySetup() {
@@ -488,8 +507,7 @@ export class Controller extends EventEmitter {
     this.#settingsNote = null;
     if ("relay" in patch) {
       useRelay(loadRelay(next)); // takes effect at once, no restart
-      // relay mode follows: through the new relay, or off without one
-      if (this.#active === RELAY_ROW) void (loadRelay(next) ? this.connect(RELAY_CODE) : this.disconnect());
+      this.#followRelay();
     }
     if ("share" in patch || "port" in patch) {
       this.#host = proxyHost(next);
@@ -602,6 +620,11 @@ export class Controller extends EventEmitter {
   /** The Locations: the relay first when one is set up, then the countries. */
   #rows() {
     return loadRelay(this.#settings) ? [RELAY_ROW, ...this.#countries] : this.#countries;
+  }
+
+  /** Relay mode follows the relay's settings: through the new relay, or off without one. */
+  #followRelay() {
+    if (this.#active === RELAY_ROW) void (loadRelay(this.#settings) ? this.connect(RELAY_CODE) : this.disconnect());
   }
 
   /** Connected through the relay (relaymode.ts), not Firefox VPN. */

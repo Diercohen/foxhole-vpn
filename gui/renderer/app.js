@@ -170,13 +170,14 @@ function renderList() {
   const q = $("#search").value.trim().toLowerCase();
   section("list", [S.countries, S.active, S.connecting, S.listError, q, S.auth.stage === "ready"], () => {
     const list = $("#list");
-    const shown = S.countries.filter((c) => !q || c.name.toLowerCase().includes(q) || c.code.toLowerCase() === q);
-    const relay = S.countries.find((c) => c.code === RELAY);
-    const count = S.countries.length - (relay ? 1 : 0);
+    // Relay first, set up or not (then dimmed: a click says what it is), a line between it and the countries
+    const relay = S.countries.find((c) => c.code === RELAY) ?? { code: RELAY, name: "Relay", locked: false, available: false, intro: true };
+    const count = S.countries.length - (relay.intro ? 0 : 1);
+    const shown = [relay, ...S.countries.filter((c) => c !== relay)].filter((c) => !q || c.name.toLowerCase().includes(q) || c.code.toLowerCase() === q);
     $("#loc-count").textContent = count ? `${count} countries` : "";
     if (S.listError) {
       // the relay still goes: it's for when Mozilla can't be reached
-      list.innerHTML = `${relay ? rowHtml(relay, 0, false) : ""}<div class="empty"><b>Couldn't load the locations</b>${esc(S.listError)}<br><button class="btn" data-act="reloadList">${icon("refresh")}Try again</button></div>`;
+      list.innerHTML = `${rowHtml(relay, 0, false)}<div class="empty"><b>Couldn't load the locations</b>${esc(S.listError)}<br><button class="btn" data-act="reloadList">${icon("refresh")}Try again</button></div>`;
       return;
     }
     if (!S.countries.length) {
@@ -189,21 +190,22 @@ function renderList() {
     }
     const rise = !listShown;
     listShown = true;
-    list.innerHTML = shown.map((c, i) => rowHtml(c, i, rise)).join("");
+    const sep = shown[0] === relay && shown.length > 1 ? `<div class="sep${rise ? " rise" : ""}" style="--d:2"></div>` : "";
+    list.innerHTML = shown.map((c, i) => rowHtml(c, i, rise) + (i === 0 ? sep : "")).join("");
   });
   reveal();
 }
 
-/** A location's row: a country, or the relay. */
+/** A location's row: a country, or the relay (`intro`: not set up, dimmed, and a click says what it is). */
 function rowHtml(c, i, rise) {
   const cls = [c.code === S.active && "active", c.code === S.connecting && "connecting", !c.available && !c.locked && "off", rise && "rise"].filter(Boolean).join(" ");
   const relay = c.code === RELAY;
   const tiers = relay ? '<span class="tier relay">relay</span>'
     : !c.available && !c.locked ? '<span class="tier none">no servers</span>'
     : c.locked ? '<span class="tier paid">paid</span><span class="tier free">free</span>' : '<span class="tier free">free</span>';
-  const title = c.code === S.active ? "Connected" : relay ? "Browse through your own relay" : `Connect to ${esc(c.name)}`;
-  return `<button class="row ${cls}" data-code="${esc(c.code)}" style="--i:${i}" title="${title}">
-    ${flag(c.code)}<span><div class="nm">${esc(c.name)}</div><div class="cd">${relay ? "via Google · your Apps Script" : esc(c.code)}</div></span>
+  const title = c.code === S.active ? "Connected" : c.intro ? "What's Relay? Set it up" : relay ? "Browse through your own relay" : `Connect to ${esc(c.name)}`;
+  return `<button class="row ${cls}" ${c.intro ? 'id="relay-intro"' : `data-code="${esc(c.code)}"`} style="--i:${i}" title="${title}">
+    ${flag(c.code)}<span><div class="nm">${esc(c.name)}</div><div class="cd">${c.intro ? "Not set up yet" : relay ? "via Google · your Apps Script" : esc(c.code)}</div></span>
     <span class="tiers">${tiers}</span><span class="state-dot"></span></button>`;
 }
 
@@ -312,9 +314,11 @@ function renderSettings() {
     const r = s.relay; // { deploymentId, set } or null
     if (document.activeElement !== $("#relay-id")) $("#relay-id").value = r?.deploymentId ?? "";
     $("#relay-key").placeholder = r?.set ? "•••••••• — type to replace" : "Auth key";
+    $("#relay-badge").className = r ? "tier on" : "tier off";
+    $("#relay-badge").textContent = r ? "enabled" : "disabled";
     $("#relay-state").innerHTML = r
-      ? "On: Firefox VPN goes through it when <code>vpn.mozilla.org</code> can't be reached, and <b>Relay</b> is first in Locations."
-      : "Off: Foxhole talks to Mozilla directly.";
+      ? "<strong>On:</strong> Firefox VPN goes through it when <code>vpn.mozilla.org</code> can't be reached, and <b>Relay</b> is first in Locations."
+      : "<strong>Off:</strong> Foxhole talks to Mozilla directly.";
     $("#cert-group").hidden = !r && !S.caOk;
     $("#cert-state").className = S.caOk ? "ok" : "warn";
     $("#cert-state").textContent = S.caOk ? "Trusted on this computer" : "Not trusted yet: sites won't open through the relay";
@@ -530,17 +534,24 @@ function drawWizard() {
   $("#wz-id")?.focus();
 }
 
+/** As relaysetup.ts: a Deployment ID (alone, or in the web app's URL), or null; and a key the setup would make. */
+const deploymentId = (text) => {
+  const id = (text.match(/\/macros\/s\/([\w-]+)/)?.[1] ?? text).trim();
+  return /^[\w-]{20,}$/.test(id) ? id : null;
+};
+const keyOk = (key) => /^[\w-]{16,}$/.test(key.trim());
+
 async function wizardNext() {
   const note = (text) => (($("#wz-note").textContent = text), replay($("#wz-note"), "shake"));
-  if (wz.step === 1 && !/^[\w-]{16,}$/.test(wz.key)) return note("The key needs at least 16 letters, digits, - or _. Press ↻ for a new one.");
+  if (wz.step === 1 && !keyOk(wz.key)) return note("The key needs at least 16 letters, digits, - or _. Press ↻ for a new one.");
   if (wz.shot < wz.setup.steps[wz.step].shots.length - 1) return void (wz.shot++, drawWizard());
   if (wz.step < wz.setup.steps.length - 1) return void (wz.step++, (wz.shot = 0), drawWizard());
-  // as relaysetup.ts deploymentId(): the ID alone, or inside the web app's URL
-  const id = (wz.id.match(/\/macros\/s\/([\w-]+)/)?.[1] ?? wz.id).trim();
-  if (!/^[\w-]{20,}$/.test(id)) return note(wz.id.trim() ? "That isn't a Deployment ID or web app URL: copy it again from Google." : "Paste the Deployment ID first.");
+  const id = deploymentId(wz.id);
+  if (!id) return note(wz.id.trim() ? "That isn't a Deployment ID or web app URL: copy it again from Google." : "Paste the Deployment ID first.");
   if (await act("setRelay", id, wz.key)) {
     closeWizard();
     flash($("#relay-wizard"), `${icon("check")}Relay set up`);
+    void checkRelay(id, wz.key); // whether it works, at once (the form's fields may not show them yet)
   } else note("Couldn't save it: see the note in Settings.");
 }
 
@@ -635,6 +646,7 @@ document.addEventListener("click", async (e) => {
       return;
     }
     case "relay-wizard": return openWizard();
+    case "relay-check": return checkRelay();
     case "wz-close": return closeWizard();
     case "wz-prev": return wizardPrev();
     case "wz-next": return wizardNext();
@@ -673,6 +685,11 @@ document.addEventListener("click", async (e) => {
     case "blocked-setup":
       $("#blocked-modal").classList.remove("on");
       return openWizard();
+    case "relay-intro": return $("#relay-modal").classList.add("on");
+    case "relay-later": return $("#relay-modal").classList.remove("on");
+    case "relay-setup":
+      $("#relay-modal").classList.remove("on");
+      return openWizard();
     case "up-restart":
       t.disabled = true;
       t.textContent = "Restarting…";
@@ -705,14 +722,56 @@ $("#login-form").addEventListener("submit", async (e) => {
   if (await act("setLogin", $("#username").value, $("#password").value)) flash(btn, `${icon("check")}Saved`);
 });
 
-$("#relay-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const btn = e.target.querySelector("button[type=submit]");
-  if (await act("setRelay", $("#relay-id").value, $("#relay-key").value)) {
-    flash(btn, `${icon("check")}Saved`);
-    $("#relay-key").value = ""; // the key isn't kept in the window
-  }
+// The relay's fields save themselves when typing stops, once there's a Deployment ID and a key (typed, or else the saved
+// one: the window never gets that); the ID field left empty turns the relay off.
+let relayTimer = null;
+let keySaved = false; // the key field still shows the key it saved, having had focus: emptied once it's left
+let checks = 0; // an answer is shown only from the latest check, and only if the fields weren't typed over since
+
+/** Saves the relay's fields, then checks them. */
+async function saveRelay() {
+  clearTimeout(relayTimer);
+  relayTimer = null;
+  const id = $("#relay-id").value;
+  const field = $("#relay-key");
+  const key = field.value;
+  if (!(await act("setRelay", id, key))) return;
+  if (document.activeElement === field) keySaved = field.value === key;
+  else if (field.value === key) field.value = ""; // the key isn't kept in the window
+  if (id.trim()) void checkRelay(id, key); // whether they're right
+}
+
+for (const f of ["#relay-id", "#relay-key"])
+  $(f).addEventListener("input", () => {
+    checks++;
+    $("#relay-check-state").textContent = "";
+    keySaved = false;
+    clearTimeout(relayTimer);
+    const ready = deploymentId($("#relay-id").value) && ($("#relay-key").value.trim() || S.settings.relay?.set);
+    relayTimer = ready ? setTimeout(saveRelay, 800) : null;
+  });
+$("#relay-id").addEventListener("blur", (e) => {
+  if (relayTimer) return void saveRelay(); // left before it saved: now
+  // left empty: the relay off (not when it's the window that's left, as to copy another ID)
+  if (!e.target.value.trim() && S.settings.relay && document.hasFocus()) void saveRelay();
 });
+$("#relay-key").addEventListener("blur", (e) => {
+  if (relayTimer) return void saveRelay(); // left before it saved: now
+  if (keySaved) e.target.value = "";
+  keySaved = false;
+});
+
+/** The relay's Check (relaymode.ts relayVerdict) of the ID and key in its fields, the answer beside the button. */
+async function checkRelay(id = $("#relay-id").value, key = $("#relay-key").value) {
+  const n = ++checks;
+  const out = $("#relay-check-state");
+  out.dataset.tone = "";
+  out.textContent = "Checking your relay…";
+  const v = await act("checkRelay", id, key).catch((err) => ({ tone: "error", text: err.message }));
+  if (n !== checks) return;
+  out.dataset.tone = v.tone;
+  out.textContent = v.text;
+}
 
 $("#pw-form").addEventListener("submit", (e) => {
   e.preventDefault();
@@ -730,6 +789,7 @@ document.addEventListener("keydown", (e) => {
     if ($("#wizard").classList.contains("on")) return closeWizard();
     if ($("#update-modal").classList.contains("on")) return $("#update-modal").classList.remove("on");
     if ($("#blocked-modal").classList.contains("on")) return $("#blocked-modal").classList.remove("on");
+    if ($("#relay-modal").classList.contains("on")) return $("#relay-modal").classList.remove("on");
     if ($("#manual-modal").classList.contains("on")) return $("#manual-modal").classList.remove("on");
     if (openSheet) return closeSheet();
     if (document.activeElement === $("#search")) {

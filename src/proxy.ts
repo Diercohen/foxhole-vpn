@@ -8,7 +8,7 @@ import { log } from "./log.js";
 import { route, splitOn, type Via } from "./split.js";
 import { nameOf, DOH_HOST } from "./dns.js";
 import { IP_HOST, TRACE_HOST } from "./netinfo.js";
-import { relayServe, fakeName, realIp, setDirectTo } from "./relaymode.js";
+import { relayServe, fakeName, realIp, setDirectTo, setDirectDial } from "./relaymode.js";
 
 // Throttled stderr: a browser opens many connections, so don't repeat the same
 // failure more than once every few seconds.
@@ -392,7 +392,7 @@ const WEB_PORTS = new Set([80, 443, 8080, 8443]);
 const LOCAL = /^(localhost|.+\.(localhost|local|lan|home\.arpa)|127\.[\d.]+|10\.[\d.]+|192\.168\.[\d.]+|172\.(1[6-9]|2\d|3[01])\.[\d.]+|169\.254\.[\d.]+|::1|f[cd][0-9a-f]{2}:.*|fe80:.*)$/i;
 
 /** A direct connection in relay mode. In global mode a site's real address comes through the relay (lookups here give made-up ones). */
-async function relayDirect(conn: Connection, target: Target, name: string): Promise<net.Socket | null> {
+async function relayDirect(conn: Pick<Connection, "relay" | "server">, target: Target, name: string): Promise<net.Socket | null> {
   let host = target.host;
   if (fakeName(host) || ((directFrom || pinDirect) && !net.isIP(host))) {
     const real = await realIp(conn, name);
@@ -410,6 +410,7 @@ async function pastTun(ip: string): Promise<{ localAddress?: string; family?: nu
   return directFrom ? { localAddress: directFrom, family: 4 } : {};
 }
 setDirectTo(pastTun); // relay mode's own direct connections (YouTube's videos) go the same way
+setDirectDial((conn, host, port) => relayDirect(conn, { host, port }, host)); // its check that a site opens directly
 
 /** Relay mode: a connection the client opened (after its reply), web traffic to the relay, the rest direct. `early`: bytes it already sent. */
 async function relayOpen(conn: Connection, socket: net.Socket, target: Target, early: Buffer): Promise<void> {

@@ -392,9 +392,14 @@ VPN-scoped access token while it relays, so don't use someone else's). The
 easy way: **Settings → VPN relay → Set up step by step**, in the terminal UI
 (press `S`) or the desktop app. It makes your secret key, puts it into the
 script for you to copy, shows each click with a screenshot, and saves the
-Deployment ID you paste (or the whole web app URL) at the end. When foxhole
-finds vpn.mozilla.org blocked (it won't connect while Google does), it says
-so in a popup with this setup a click or a key away.
+Deployment ID you paste (or the whole web app URL) at the end, then checks
+that it works. **Check**, in the desktop app (what its fields hold, saved or
+not) or the terminal UI (what's saved, or `FOXHOLE_RELAY_ID`/`FOXHOLE_RELAY_KEY`
+when set), does that again whenever you like. It asks your script to fetch Google's connectivity check, and says
+whether the Deployment ID and auth key are right and the script's code is
+current, or what to fix. When
+foxhole finds vpn.mozilla.org blocked (it won't connect while Google does), it
+says so in a popup with this setup a click or a key away.
 The terminal UI shows the screenshots as real pictures in kitty, Ghostty,
 iTerm2, WezTerm, foot, Konsole and Windows Terminal, and as colored blocks
 elsewhere; `FOXHOLE_IMAGES=kitty`, `iterm`, `sixel` or `blocks` picks the kind
@@ -429,8 +434,10 @@ foxhole's occasional control calls need.
 ### Relay mode: browsing through your relay
 
 When even Firefox VPN's servers are out of reach, or you'd just rather, the same
-relay can carry your browsing. With a relay set up, **Relay** is the first row
-in Locations (in the terminal UI, `R` connects to it). Pick any country to go
+relay can carry your browsing. **Relay** is the first row in Locations, set
+apart from the countries by a line. Until a relay is set up it's dimmed, and
+picking it says what it is and offers the setup. Once set up, it connects (in
+the terminal UI, `R` does from anywhere in the list). Pick any country to go
 back to Firefox VPN: the switch takes one click, and connections already open
 reconnect the new way. While the relay is on, foxhole turns **purple** (the
 terminal UI, the desktop app and its tray icon), so you always know which one
@@ -443,7 +450,10 @@ you're on. The proxy and whole-system mode work as they do with Firefox VPN.
   filter, it doesn't make you anonymous.
 - **Sites that check for bots refuse it** (Cloudflare's "Just a moment…",
   Reddit, ChatGPT, npmjs.com's website): Google's fetches can't look like a
-  browser. Use Firefox VPN for those.
+  browser, so the check would start over forever. foxhole shows its own page
+  instead, with **Open it directly**: if the site isn't blocked where you are,
+  it goes direct from then on (a Split tunneling rule) and your browser passes
+  the check itself. If it is blocked, use Firefox VPN for it.
 - **Keep the script up to date.** Older relay code fails on many sites
   ("Malformed HTML content"); foxhole says so when it happens. Run
   **Settings → VPN relay → Set up step by step** again to update it.
@@ -461,7 +471,8 @@ foxhole opens each site's HTTPS on your computer, with a certificate for that
 site from its own certificate authority. The authority is made on your computer
 (`~/.config/foxhole-vpn/relay-ca.pem`), and its key never leaves it. Browsers
 accept it once you trust it. foxhole asks after your first connect, or use
-**Settings → VPN relay · certificate** (also to remove it):
+**Settings → Relay certificate** (in the terminal UI, **VPN relay →
+Certificate**), also to remove it:
 
 - **macOS**: your login keychain; macOS asks for your password.
 - **Windows**: your user's root store; Windows asks you to confirm.

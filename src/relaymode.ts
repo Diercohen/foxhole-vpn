@@ -15,7 +15,7 @@ import type { Connection } from "./connection.js";
 import { parseEnvelope } from "./httprelay.js";
 import { siteContext } from "./mitm.js";
 import { DOH_HOST, question, answerAddrs } from "./dns.js";
-import { viaOf } from "./split.js";
+import { viaOf, currentSplit, type Split } from "./split.js";
 import { log } from "./log.js";
 
 /** The TLS name every connection to Google uses: what a censor sees. */
@@ -343,12 +343,33 @@ function readBody(req: http.IncomingMessage, max: number): Promise<Buffer> {
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
 
-/** Answers with a short page saying what went wrong (a browser shows it in place of the site). */
-function fail(res: http.ServerResponse, status: number, msg: string): void {
+/** Answers with a short page of foxhole's own (a browser shows it in place of the site). `body`: HTML. */
+function page(res: http.ServerResponse, status: number, title: string, body: string): void {
   if (res.headersSent) return void res.destroy();
-  const html = `<!doctype html><meta charset="utf-8"><title>Foxhole relay</title><body style="font:15px/1.5 system-ui,sans-serif;margin:3em auto;max-width:36em;padding:0 1em;color:#333"><h2>Foxhole relay couldn't load this</h2><p>${esc(msg)}</p>`;
+  const html = `<!doctype html><meta charset="utf-8"><title>Foxhole relay</title><body style="font:15px/1.5 system-ui,sans-serif;margin:3em auto;max-width:36em;padding:0 1em;color:#333"><h2>${title}</h2>${body}`;
   res.writeHead(status, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html), "cache-control": "no-store" });
   res.end(html);
+}
+
+/** Answers with a short page saying what went wrong. */
+function fail(res: http.ServerResponse, status: number, msg: string): void {
+  page(res, status, "Foxhole relay couldn't load this", `<p>${esc(msg)}</p>`);
+}
+
+const DIRECT = "/.foxhole/direct"; // the bot-check page's button, on the site's own address
+
+/** Cloudflare's bot check, which never passes through the relay: why, and the way round it (openDirect). */
+function botCheck(res: http.ServerResponse, url: URL): void {
+  const host = esc(url.hostname);
+  page(
+    res,
+    403,
+    `${host} checks for bots`,
+    `<p>The relay can't pass that check: Google fetches each page for you as a script, from a different address each time, so the check would start over forever.</p>` +
+      `<form method="post" action="${DIRECT}"><input type="hidden" name="u" value="${esc(url.pathname + url.search)}"><button style="font:inherit;color:#fff;background:#7c3aed;border:0;border-radius:8px;padding:.5em 1.2em;cursor:pointer">Open it directly</button></form>` +
+      `<p style="color:#666;font-size:13px">Through your own connection, not the relay. Foxhole tries it first; if ${host} opens, it's added to Split tunneling as Direct. Your internet provider can see that you visit it.</p>` +
+      `<p>Or use Firefox VPN for it: pick a country in Locations.</p>`,
+  );
 }
 
 /** example.co.uk → co.uk's site, roughly: the last two labels, or three when the second-to-last is a short one like co. Pure. */
@@ -403,6 +424,10 @@ async function viaRelay(c: Ctx, req: http.IncomingMessage, res: http.ServerRespo
     problem(err as Error, url.host);
     return fail(res, 502, relayProblem((err as Error).message) ?? (err as Error).message.replace(/^relay: (Exception: )?/, ""));
   }
+  // a bot check (Cloudflare's "Performing security verification") never passes here: the page would check and reload forever
+  if (req.headers["sec-fetch-mode"] === "navigate" && Object.entries(reply.h ?? {}).some(([k, v]) => k.toLowerCase() === "cf-mitigated" && /challenge/.test(String(v)))) {
+    return botCheck(res, url);
+  }
   let out = bodyOf(reply);
   const status = reply.s ?? 200;
   let encoding = "";
@@ -427,6 +452,50 @@ async function viaRelay(c: Ctx, req: http.IncomingMessage, res: http.ServerRespo
 /** What a direct connection to `ip` needs to get past global mode's tun (proxy.ts sets it), or null when it can't. */
 let directTo = async (_ip: string): Promise<{ localAddress?: string; family?: number } | null> => ({});
 export const setDirectTo = (fn: typeof directTo): void => void (directTo = fn);
+
+/** A direct connection to `host`, made as a site that Split tunneling sends direct gets one (proxy.ts sets it); null if none. */
+let directDial = async (_conn: Conn, _host: string, _port: number): Promise<net.Socket | null> => null;
+export const setDirectDial = (fn: typeof directDial): void => void (directDial = fn);
+
+let saveSplit = (_split: Split): void => {};
+/** Where the bot-check page's button saves a site as Direct: the TUI's and the app's Split tunneling. */
+export const onRelaySplit = (fn: (split: Split) => void): void => void (saveSplit = fn);
+
+/** Why `host` doesn't open from the user's own connection (the censor's reset or block page, no answer), or null when it does. */
+async function opensDirectly(conn: Conn, host: string): Promise<string | null> {
+  const s = await directDial(conn, host, 443);
+  if (!s) return "no connection";
+  return new Promise((resolve) => {
+    const t = tls.connect({ socket: s, servername: host }); // its own certificate: not a block page's
+    const done = (why: string | null) => (t.destroy(), resolve(why));
+    t.setTimeout(10_000, () => done("no answer"));
+    t.once("secureConnect", () => done(null));
+    t.once("error", (err) => done(err.message));
+  });
+}
+
+/**
+ * The bot-check page's button: when the site opens from the user's own connection, it goes direct from now on (a
+ * Split tunneling rule), so the browser does the check itself, and the browser is sent back to the page it was on.
+ */
+async function openDirect(c: Ctx, req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
+  const back = new URL(new URLSearchParams((await readBody(req, 8192)).toString()).get("u") ?? "/", url);
+  // only from that page: another site can't send one direct
+  if (req.headers["sec-fetch-site"] !== "same-origin" || back.origin !== url.origin) return fail(res, 403, "That button only works on foxhole's own page.");
+  const why = await opensDirectly(c.conn, url.hostname);
+  if (why) {
+    log(`relay: ${url.hostname} directly: ${why}`);
+    return fail(res, 502, `${url.hostname} doesn't open from your own connection either: it's likely blocked where you are. Use Firefox VPN for it: pick a country in Locations.`);
+  }
+  const site = siteOf(url.hostname.replace(/^www\./, "")); // its API and other names too, where the check's cookie goes
+  const split = currentSplit();
+  saveSplit({ ...split, rules: [...split.rules.filter((r) => r.match !== site), { match: site, via: "direct" }] });
+  if (viaOf(url.hostname) !== "direct") return fail(res, 500, `Couldn't add ${site} to Split tunneling. Add it there as Direct, then reload.`);
+  tell(`${site} goes direct now (Split tunneling): its bot check can't pass through the relay.`);
+  server.closeIdleConnections(); // the browser's open ones still lead to the relay
+  res.writeHead(303, { location: back.href, connection: "close", "content-length": 0 });
+  res.end();
+}
 
 /**
  * YouTube's videos come from its caches (googlevideo.com), which Google's front doesn't serve and the censor blocks by
@@ -519,6 +588,7 @@ async function onRequest(req: http.IncomingMessage, res: http.ServerResponse): P
   if (host.endsWith(".googlevideo.com")) return viaCache(c, req, res, url);
   if (fronted(host) || GOOGLE_DIRECT.has(host)) return viaFront(c, req, res, url);
   if (req.method === "OPTIONS") return preflight(req, res, host);
+  if (url.pathname === DIRECT && req.method === "POST") return openDirect(c, req, res, url);
   return viaRelay(c, req, res, url);
 }
 
@@ -532,7 +602,7 @@ server.on("clientError", (err: Error & { code?: string }, sock: net.Socket) => {
   if (/alert (unknown ca|bad certificate|certificate unknown)/i.test(err.message)) {
     const host = ctxOf.get(sock)?.host ?? "a site";
     log(`relay: an app refused Foxhole's certificate for ${host}`);
-    tell("Relay: an app refused Foxhole's certificate. Trust it once: Settings → VPN relay · certificate.");
+    tell("Relay: an app refused Foxhole's certificate. Trust it once: Settings → VPN relay → Certificate.");
   }
   sock.destroy();
 });
@@ -573,12 +643,33 @@ export function relayServe(conn: Conn, client: net.Socket, first: Buffer, to: { 
   server.emit("connection", sock);
 }
 
-/** Checks the relay answers, and what address the web sees through it (the IP check's host, over plain HTTP). */
-export async function relayCheck(conn: Conn): Promise<string> {
-  const r = await relayFetch(conn, { m: "GET", u: "http://api.ipify.org/", h: {}, r: false }, false).catch((err: Error) => {
+/** Checks the relay answers and fetches: Google's own connectivity check, so no other site's outage fails it. */
+export async function relayCheck(conn: Conn): Promise<void> {
+  const r = await relayFetch(conn, { m: "GET", u: "http://www.google.com/generate_204", h: {}, r: false }, false).catch((err: Error) => {
     throw new Error(relayProblem(err.message) ?? err.message.replace(/^relay: (Exception: )?/, "relay: "));
   });
-  const ip = bodyOf(r).toString().trim();
-  if (r.s !== 200 || !net.isIP(ip)) throw new Error(`relay: the test page answered HTTP ${r.s}`);
-  return ip;
+  if (r.s !== 204) throw new Error(`relay: the test page answered HTTP ${r.s}`);
+}
+
+/**
+ * Settings' check of the relay: it answers and fetches with this deployment and key (relayCheck), and its code is current.
+ * Only the script, past its key check, answers an address it can't fetch with Apps Script's error naming it ("<" and all),
+ * which an older Code.gs can't send back. Says only what it saw: no word on the code when that answer was something else.
+ */
+export async function relayVerdict(conn: Conn): Promise<{ tone: "ok" | "warn" | "error"; text: string }> {
+  const t = Date.now();
+  try {
+    const [, code] = await Promise.all([
+      relayCheck(conn).catch((err: Error) => Promise.reject(/^relay:/i.test(err.message) ? err : new Error(`Couldn't reach Google: ${err.message}`))),
+      relayFetch(conn, { m: "GET", u: "https://<foxhole>/", h: {}, r: false }, false).then(
+        () => "",
+        (err: Error) => (/Exception:.*HTML/.test(err.message) ? "old" : err.message.includes("<foxhole>") ? "current" : ""),
+      ),
+    ]);
+    if (code === "old") return { tone: "warn", text: "The deployment ID and auth key are right, but your Apps Script has older code that fails on many sites. Update it: Settings → VPN relay → Set up step by step." };
+    const current = code === "current" ? ", and the script is up to date" : "";
+    return { tone: "ok", text: `Relay works: the deployment ID and auth key are right${current} (answered in ${((Date.now() - t) / 1000).toFixed(1)} s).` };
+  } catch (err) {
+    return { tone: "error", text: (err as Error).message };
+  }
 }

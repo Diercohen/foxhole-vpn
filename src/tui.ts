@@ -14,12 +14,12 @@ import { logLines, onLog } from "./log.js";
 import { useSplit, splitOn, splitSummary, parseSite, hits, recentSites, type Split, type Via } from "./split.js";
 import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost, type Priv } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, restart, versionLines, UPDATE_COMMAND } from "./update.js";
-import { bold, dim, under, strike, green, red, yellow, cyan, lit, purple, litPurple, flag, EMOJI, emoji, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
+import { bold, dim, under, strike, green, red, yellow, cyan, lit, unlit, purple, litPurple, flag, EMOJI, emoji, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
 import { fox, FOX_W, FOX_H, type Mood } from "./fox.js";
 import { loadRelay } from "./httprelay.js";
 import { newAuthKey } from "./relaysetup.js";
-import { RelayWizard, GRAPHICS, CELL_QUERY, cellSize, pictureAt } from "./relaywizard.js";
-import { relayCheck, relayStats, onRelayNotice } from "./relaymode.js";
+import { RelayWizard, GRAPHICS, CELL_QUERY, cellSize, pictureAt, wrap } from "./relaywizard.js";
+import { relayCheck, relayVerdict, relayStats, onRelayNotice, onRelaySplit } from "./relaymode.js";
 import { caTrusted, setCaTrust } from "./catrust.js";
 
 const ESC = "\x1b[";
@@ -53,14 +53,19 @@ const SETTINGS = [
   { key: "port", label: "Proxy port" },
   { key: "username", label: "Username" },
   { key: "password", label: "Password" },
-  { key: "relaySetup", label: "VPN relay · set up" },
-  { key: "relayId", label: "VPN relay · deployment ID" },
-  { key: "relayKey", label: "VPN relay · auth key" },
-  { key: "relayCert", label: "VPN relay · certificate" },
+  { key: "relaySetup", label: "Set up" }, // these last ones in the VPN relay box
+  { key: "relayId", label: "Deployment ID" },
+  { key: "relayKey", label: "Auth key" },
+  { key: "relayCheck", label: "Check" },
+  { key: "relayCert", label: "Certificate" },
 ] as const;
+/** Where the relay's rows start: the last ones, in a purple box of their own. */
+const RELAY_AT = SETTINGS.findIndex((it) => it.key.startsWith("relay"));
 
 /** The Relay "location", first in the list once a relay is set up: the web through the user's own Apps Script (relaymode.ts). */
 const RELAY_ROW: Country = { code: RELAY_CODE, name: "Relay", locked: false, available: true, servers: [] };
+/** Its row before one is set up, dimmed: Enter says what it is (#relayIntro), with the setup a key away. */
+const RELAY_SETUP: Country = { code: "RELAY-SETUP", name: "Relay", locked: false, available: false, servers: [] };
 
 /** A country's name with its flag in front, where the TUI shows flags (EMOJI). */
 const flagged = (code: string, name: string) => (EMOJI ? `${flag(code)} ${name}` : name);
@@ -108,6 +113,7 @@ export class Tui {
   #wizard: RelayWizard | null = null; // the relay's setup, over Settings
   #blocked = false; // the popup saying vpn.mozilla.org is blocked here, with the relay's setup a key away
   #blockedTold = false; // said once already: a background check doesn't say it again, a connect does
+  #relayIntro = false; // the popup saying what Relay is (its row, before one is set up), with the setup a key away
   #setSel = 0;
   #edit: { key: "port" | "username" | "password" | "relayId" | "relayKey"; text: string } | null = null; // the setting being typed
   readonly #login = (address: string | undefined) => loginFor(this.#settings, address); // live: a change applies to the next client
@@ -116,7 +122,7 @@ export class Tui {
   #proxyStale = false; // the running proxy still has the old address (changed during global mode)
   #proxyAt = ""; // the address the running proxy was started on
   #list: Country[] = []; // the server list's countries
-  #countries: Country[] = []; // the Locations shown: the relay first when one is set up, then #list
+  #countries: Country[] = []; // the Locations shown: the relay first (RELAY_SETUP until one is set up), then #list
   #sel = 0;
   #proxy: ProxyHandle | null = null;
   #active: Country | null = null;
@@ -132,6 +138,7 @@ export class Tui {
   #pwFor: "global" | "trust" | "untrust" = "global"; // what the password is for
   #trustAsk = false; // the popup asking to trust foxhole's certificate (relay mode)
   #caOk: boolean | undefined; // whether this computer trusts it; undefined: not checked yet
+  #relayCheck: { tone: "ok" | "warn" | "error" | "busy"; text: string } | null = null; // Settings' last check of the relay
   #splitOpen = false; // the Split tunneling popup is open
   #splitSel = 0; // 0: "Everything else", then the rules, then "+ add a site"
   #splitStart = 0; // the first row shown, when the list scrolls
@@ -152,7 +159,7 @@ export class Tui {
   #ipNote = "";
   #netSeq = 0; // drops answers from an older check
   // where the last render put the clickable parts; rows are frame lines, x columns in the frame
-  #hit = { top: 0, left: 0, rowsTop: 0, rowsLeft: 0, start: 0, rows: 0, width: 0, buttonsY: -1, buttons: "", setTop: -1, setX: 0, setW: 0 };
+  #hit = { top: 0, left: 0, rowsTop: 0, rowsLeft: 0, start: 0, rows: 0, sep: -1, width: 0, buttonsY: -1, buttons: "", setTop: -1, setX: 0, setW: 0 };
   readonly #email = findAccount()?.email ?? null; // the Firefox account the token came from
 
   constructor(conn: Connection, host: string, port: number) {
@@ -171,6 +178,7 @@ export class Tui {
       if (this.#splitOpen || (this.#relayOn() && n !== seen && !this.#wizard)) (seen = n), this.#render();
     }, 1000).unref();
     onRelayNotice((msg) => ((this.#message = yellow(msg)), this.#render()));
+    onRelaySplit((split) => this.#saveSplit(split)); // a bot-check page's "Open it directly"
     setInterval(() => this.#animate(), 100).unref();
     onLog(() => this.#logsOpen && this.#renderSoon());
     onProxyWarning((msg) => {
@@ -323,9 +331,9 @@ export class Tui {
           return;
         }
         if (this.#wizard) return this.#wizardKey(s, key);
-        if (this.#blocked) {
+        if (this.#blocked || this.#relayIntro) {
           if (key.name === "return") this.#wizard = new RelayWizard(() => this.#render());
-          if (key.name === "return" || key.name === "escape") (this.#blocked = false), this.#render();
+          if (key.name === "return" || key.name === "escape") (this.#blocked = this.#relayIntro = false), this.#render();
           return;
         }
         if (this.#trustAsk) {
@@ -395,12 +403,12 @@ export class Tui {
    */
   #mouse(b: number, x: number, y: number, press: (name: string) => void): void {
     if (b === 64 || b === 65) return press(b === 64 ? "up" : "down");
-    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#restoring || this.#wizard || this.#blocked || this.#trustAsk) return;
+    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#restoring || this.#wizard || this.#blocked || this.#relayIntro || this.#trustAsk) return;
     const h = this.#hit;
     const fx = x - h.left, fy = y - h.top;
     if (this.#settingsOpen) {
-      const i = fy - h.setTop;
-      if (this.#edit || i < 0 || i >= SETTINGS.length || fx < h.setX || fx >= h.setX + h.setW) return;
+      const k = fy - h.setTop, i = k > RELAY_AT ? k - 1 : k; // the relay's box takes a line above its rows
+      if (this.#edit || k === RELAY_AT || i < 0 || i >= SETTINGS.length || fx < h.setX || fx >= h.setX + h.setW) return;
       this.#setSel = i;
       return press("return");
     }
@@ -412,10 +420,11 @@ export class Tui {
     }
     if (linkAt(x, y)) return openUrl(REPO_URL);
     const k = fy - h.rowsTop;
-    if (k >= 0 && k < h.rows && fx >= h.rowsLeft && fx < h.rowsLeft + h.width) {
+    if (k >= 0 && k < h.rows && k !== h.sep && fx >= h.rowsLeft && fx < h.rowsLeft + h.width) {
       if (this.#busy) return;
-      if (h.start + k === this.#sel) return press("return");
-      this.#sel = h.start + k;
+      const i = h.start + k - (h.sep >= 0 && k > h.sep ? 1 : 0); // the line under the relay takes a row
+      if (i === this.#sel) return press("return");
+      this.#sel = i;
       return this.#render();
     }
     if (fy === h.buttonsY) {
@@ -429,6 +438,7 @@ export class Tui {
 
   async #connect(country = this.#countries[this.#sel]): Promise<void> {
     if (!country) return;
+    if (country === RELAY_SETUP) return void ((this.#relayIntro = true), this.#render());
     const relay = country === RELAY_ROW ? loadRelay(this.#settings) : null;
     if (country === RELAY_ROW && !relay) return;
     this.#busy = true;
@@ -655,6 +665,7 @@ export class Tui {
         if (e.key === "port" && !validPort(Number(e.text))) this.#settingsNote = red("A port is a number from 1 to 65535.");
         else {
           this.#edit = null;
+          if (e.key === "relayId" || e.key === "relayKey") this.#relayCheck = null; // it was of the old ones
           return void this.#changeSetting(
             e.key === "port"
               ? { port: Number(e.text) }
@@ -695,11 +706,30 @@ export class Tui {
         if (item === "share") return void this.#changeSetting({ share: !this.#settings.share });
         if (item === "relaySetup") return void ((this.#wizard = new RelayWizard(() => this.#render())), this.#render());
         if (item === "relayCert") return void this.#trust(!this.#caOk);
+        if (item === "relayCheck") return void this.#checkRelay();
         // typed in place: the username and relay id start from the current value, the rest from scratch
         this.#edit = { key: item, text: item === "username" ? this.#settings.username : item === "relayId" ? (this.#settings.relay?.deploymentId ?? "") : "" };
         this.#settingsNote = "";
       }
     }
+    this.#render();
+  }
+
+  /** Settings' check of the relay (relayVerdict): its deployment ID and auth key, and its script's code. */
+  async #checkRelay(): Promise<void> {
+    if (this.#relayCheck?.tone === "busy") return;
+    const relay = loadRelay(this.#settings); // the environment's ID and key, when set, before Settings'
+    const env = ["FOXHOLE_RELAY_ID", "FOXHOLE_RELAY_KEY"].filter((k) => process.env[k]?.trim());
+    if (!relay) {
+      const has = this.#settings.relay;
+      const text = !has ? "No relay yet: “Set up” walks you through it." : !has.deploymentId ? "No deployment ID: type it in “Deployment ID”." : "No auth key: type it in “Auth key”.";
+      return void ((this.#relayCheck = { tone: "error", text }), this.#render());
+    }
+    this.#relayCheck = { tone: "busy", text: "" };
+    this.#render();
+    const v = (this.#relayCheck = await relayVerdict({ relay, server: null }));
+    if (env.length) v.text += ` Checked with ${env.join(" and ")} from your environment, which foxhole uses over Settings.`;
+    this.#message = v.tone === "ok" ? purple("✓ Relay works") : v.tone === "warn" ? yellow("Relay works, but its script is old") : red(v.text); // in full in Settings
     this.#render();
   }
 
@@ -709,9 +739,12 @@ export class Tui {
     if (done) this.#wizard = null;
     if (done && done !== "close") {
       return void this.#changeSetting({ relay: done }).then(() => {
-        // in Settings, or (opened from the blocked popup) the status line
-        if (this.#settings.relay) this.#settingsNote = this.#message = purple("✓ Relay set up: Firefox VPN uses it where vpn.mozilla.org is blocked, and Relay, first in Locations, browses through it.");
-        this.#render();
+        if (!this.#settings.relay) return this.#render();
+        // whether it works, at once: Settings, on the check's row (from the blocked popup too)
+        this.#message = purple("✓ Relay set up");
+        this.#settingsOpen = true;
+        this.#setSel = SETTINGS.findIndex((it) => it.key === "relayCheck");
+        void this.#checkRelay();
       });
     }
     this.#render();
@@ -884,6 +917,7 @@ export class Tui {
   #settingsPopup(): string[] {
     const s = this.#settings;
     const e = this.#edit;
+    const rc = this.#relayCheck;
     const cursor = cyan("▏");
     // long values (the 57-char deployment id, the key) would widen the box: scroll the tail while typing, middle-truncate at rest
     const relayVal = (full: string, editing: boolean, masked: boolean) =>
@@ -902,12 +936,13 @@ export class Tui {
       (s.relay ? green("on") : dim("off")) + dim("  ⏎ step by step"),
       relayVal(e?.key === "relayId" ? e.text : s.relay?.deploymentId ?? "", e?.key === "relayId", false),
       relayVal(e?.key === "relayKey" ? e.text : s.relay?.authKey ?? "", e?.key === "relayKey", true),
+      !rc ? dim("⏎ check") : rc.tone === "busy" ? dim("checking…") : { ok: purple("✓ works"), warn: yellow("old script"), error: red("✗ not working") }[rc.tone] + dim("  ⏎ again"),
       this.#caOk === undefined ? dim("…") : this.#caOk ? green("trusted") + dim("  ⏎ remove") : yellow("not trusted") + dim("  ⏎ trust"),
     ];
     const w = Math.max(...SETTINGS.map((it) => it.label.length));
     const rows = SETTINGS.map((it, i) => {
       const here = i === this.#setSel;
-      const label = it.label.padEnd(w);
+      const label = it.label.padEnd(i < RELAY_AT ? w : w - 2); // in the relay's box too, the values line up
       return `${here ? cyan("❯") : " "} ${here ? bold(label) : label}   ${values[i]}`;
     });
     const loginHelp = (what: string) =>
@@ -916,7 +951,7 @@ export class Tui {
         : [dim("Asked from other devices when sharing is on; apps on"), dim("this computer don't need it. Optional: empty means no login.")];
     const relayGuide = [
       dim("Blocked vpn.mozilla.org (Iran)? Make your own free relay on"),
-      dim("Google Apps Script: “VPN relay · set up” walks you through it."),
+      dim("Google Apps Script: “Set up” above walks you through it."),
     ];
     const relayOn = [green("Relay on: Firefox VPN uses it when vpn.mozilla.org is blocked,"), dim("and Relay, first in Locations, browses through it. Clear both to remove.")];
     const help = {
@@ -941,6 +976,10 @@ export class Tui {
       relayKey: e?.key === "relayKey"
         ? [dim("Type or paste the auth key · tab: generate a strong one"), dim("enter save · esc cancel")]
         : s.relay ? relayOn : relayGuide,
+      relayCheck:
+        rc && rc.tone !== "busy"
+          ? wrap(rc.tone === "ok" ? `✓ ${rc.text}` : rc.text, 62).map(rc.tone === "ok" ? purple : rc.tone === "warn" ? yellow : red)
+          : [dim("Asks your Apps Script to fetch, as relay mode does: checks the"), dim("deployment ID, the auth key, and that the script is up to date.")],
       relayCert: [
         dim("Relay mode opens sites' encryption on this computer, with"),
         dim("certificates from foxhole's own authority, made here alone."),
@@ -948,7 +987,8 @@ export class Tui {
       ],
     }[SETTINGS[this.#setSel].key];
     return box(
-      ["", ...rows, "", ...help, this.#settingsNote, "", dim("↑↓ select · enter change · esc close")],
+      // the relay's rows in purple, its own part of foxhole (as in the desktop app), with whether it's on; 62: the popup's 66 less this box's sides
+      ["", ...rows.slice(0, RELAY_AT), ...box(rows.slice(RELAY_AT), { width: 62, color: purple, title: `${bold(purple("VPN relay"))} ${s.relay ? lit(" ENABLED ") : unlit(" DISABLED ")}` }), "", ...help, this.#settingsNote, "", dim("↑↓ select · enter change · esc close")],
       { title: bold(cyan("⚙ Settings")), width: 66 },
     );
   }
@@ -1032,11 +1072,15 @@ export class Tui {
     const room = Math.max(3, wide
       ? rows - foot - (tips ? 3 : 0) - 6 // beside the details: the window's height
       : rows - (tips ? 21 : 18) - version.length - (foxOn ? FOX_H + 1 : 0));
-    const { start, slice } = window(this.#sel, this.#countries.length, room);
+    const { start, slice } = window(this.#sel, this.#countries.length, room - 1); // a line goes under the relay
     const label = (c: Country) => flagged(c.code, countryName(c.code, c.name));
-    const body = slice.map((i) => {
+    const body: (string[] | null)[] = slice.map((i) => {
       const c = this.#countries[i];
       const here = i === this.#sel;
+      if (c === RELAY_SETUP) {
+        const name = emoji("🟣 ") + "Relay · not set up yet";
+        return [`${here ? cyan("❯") : " "} ${dim("○")}`, "", dim("relay"), here ? purple(name) : dim(name)];
+      }
       if (c === RELAY_ROW) {
         const name = emoji("🟣 ") + "Relay · via Google";
         return [`${here ? cyan("❯") : " "} ${this.#active === c ? purple("●") : dim("○")}`, "", purple("relay"), here ? bold(purple(name)) : purple(name)];
@@ -1049,7 +1093,9 @@ export class Tui {
         here ? bold(cyan(label(c))) : label(c),
       ];
     });
-    if (!body.length) body.push(["   ", "", "", dim("loading…")]);
+    if (!this.#list.length) body.push(["   ", "", "", dim("loading…")]);
+    const sep = start === 0 && body.length > 1 ? 1 : -1; // a line between the relay and the countries (grid's null)
+    if (sep > 0) body.splice(sep, 0, null);
     const range = this.#countries.length > room
       ? `${start + 1}–${start + slice.length} of ${this.#countries.length}`
       : this.#list.length ? `${this.#list.length} countries` : ""; // none yet: the list says loading…
@@ -1059,9 +1105,10 @@ export class Tui {
     // Lit while on, each part on its own: the underline's reset would end an outer style
     const globalBtn = this.#global ? ["[", under("G"), "lobal TUN]"].map(on).join("") : dim(key("G", "lobal TUN"));
     // On the connected country, D disconnects (lit like a switch that's on); elsewhere Enter connects
-    const connectBtn = this.#active && this.#countries[this.#sel]?.code === this.#active.code
+    const sel = this.#countries[this.#sel];
+    const connectBtn = this.#active && sel?.code === this.#active.code
       ? ["[", under("D"), "isconnect]"].map(on).join("")
-      : bold((this.#countries[this.#sel] === RELAY_ROW ? purple : cyan)("[⏎ Connect]"));
+      : sel === RELAY_SETUP ? bold(purple("[⏎ What's Relay?]")) : bold((sel === RELAY_ROW ? purple : cyan)("[⏎ Connect]"));
     // Lit while any site is split off, like a switch that's on
     const splitBtn = splitOn(sp) ? ["[Split ", under("T"), "unnel]"].map(lit).join("") : dim(`[Split ${under("T")}unnel]`);
     const buttons = [connectBtn, globalBtn, splitBtn, dim(key("S", "ettings")), dim(key("L", "ogs")), dim(key("Q", "uit"))].join("  ");
@@ -1118,6 +1165,8 @@ export class Tui {
           ? this.#wizard.render(cols, frame.length - 2)
           : this.#blocked
           ? this.#blockedPopup()
+          : this.#relayIntro
+          ? this.#relayPopup()
           : this.#trustAsk
           ? this.#trustPopup()
           : this.#settingsOpen
@@ -1143,8 +1192,8 @@ export class Tui {
     this.#hit = {
       top, left, buttonsY, setW,
       rowsTop: tableY, rowsLeft: tableX, width: tableW,
-      start,
-      rows: slice.length,
+      start, sep,
+      rows: slice.length + (sep > 0 ? 1 : 0),
       buttons: frame[buttonsY].replace(/\x1b\[[0-9;]*m/g, ""),
       setTop: Math.floor((frame.length - (popup?.length ?? 0) - 2) / 2) + 3,
       setX: Math.floor((width - setW - 2) / 2) + 1,
@@ -1210,12 +1259,13 @@ export class Tui {
     this.#render();
   }
 
-  /** The Locations: the relay first when one is set up, then the countries. The selection stays on its row. */
+  /** The Locations: the relay first (dimmed until one is set up), then the countries. The selection stays on its row. */
   #setList(list: Country[]): void {
     const at = this.#countries[this.#sel]?.code ?? loadLastCountry();
     this.#list = list;
-    this.#countries = [...(loadRelay(this.#settings) ? [RELAY_ROW] : []), ...list];
-    this.#sel = Math.max(0, this.#countries.findIndex((c) => c.code === at));
+    this.#countries = [loadRelay(this.#settings) ? RELAY_ROW : RELAY_SETUP, ...list];
+    const i = this.#countries.findIndex((c) => c.code === at);
+    this.#sel = i >= 0 ? i : this.#countries[0] === RELAY_SETUP && list.length ? 1 : 0; // else the first to connect to
   }
 
   /** Connected through the relay (relaymode.ts), not Firefox VPN. */
@@ -1286,6 +1336,24 @@ export class Tui {
     if (!(err instanceof GuardianBlocked)) return false;
     this.#blocked = this.#blockedTold = true;
     return true;
+  }
+
+  /** What Relay is, from its row before one is set up, with the setup a key away. */
+  #relayPopup(): string[] {
+    return box(
+      [
+        "",
+        bold(purple("Your own way through")),
+        "",
+        ...wrap("A free script on your own Google account fetches the web for you. Your internet provider sees only a visit to Google, so Relay gets through where Firefox VPN is blocked (e.g. Iran), and lets foxhole reach Firefox VPN there too.", 57),
+        "",
+        ...wrap("It carries web pages only, and sites can still see your IP. Setting it up takes a few minutes, and foxhole shows you each click.", 57),
+        "",
+        `${bold(purple("[⏎ Set up step by step]"))}   ${dim("[esc Not now]")}`,
+        "",
+      ],
+      { title: bold(purple(emoji("🟣 ") + "Relay")) },
+    );
   }
 
   #blockedPopup(): string[] {

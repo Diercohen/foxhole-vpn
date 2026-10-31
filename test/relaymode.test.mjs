@@ -20,7 +20,8 @@ import { X509Certificate } from "node:crypto";
 const { startProxy } = await import("../dist/proxy.js");
 const { caFiles, loadCa } = await import("../dist/mitm.js");
 loadCa(); // made (and trusted) before relay mode starts, as the app does
-const { relayCheck, onRelayNotice, fakeName, splitCookies, fronted, dnsAnswer, relayProblem } = await import("../dist/relaymode.js");
+const { relayCheck, relayVerdict, onRelayNotice, onRelaySplit, setDirectDial, fakeName, splitCookies, fronted, dnsAnswer, relayProblem } = await import("../dist/relaymode.js");
+const { useSplit } = await import("../dist/split.js");
 const { answerAddrs } = await import("../dist/dns.js");
 
 setTimeout(() => {
@@ -44,7 +45,8 @@ const origin = http.createServer((req, res) => {
     }
     if (req.url === "/big") return res.end("x".repeat(100_000));
     if (req.url === "/redirect") return res.writeHead(302, { location: "/hello" }).end();
-    if (req.url === "/ip") return res.end("203.0.113.7");
+    if (req.url === "/generate_204") return res.writeHead(204).end();
+    if (req.url.startsWith("/challenge")) return res.writeHead(403, { "cf-mitigated": "challenge", "content-type": "text/html" }).end("Just a moment...");
     if (req.url === "/dns-query") return res.end(dnsAnswer(Buffer.from(body, "latin1"), body.length, ["127.0.0.1"], 60)); // every name is the mock front
     res.writeHead(404).end("nope");
   });
@@ -67,13 +69,13 @@ function urlFetch(item) {
         resolve(gz.length < raw.length ? { s: res.statusCode, h, b: gz.toString("base64"), gz: 1 } : { s: res.statusCode, h, b: raw.toString("base64") });
       });
     });
-    if (u.hostname === "api.ipify.org") req.path = "/ip";
     req.end(item.b ? Buffer.from(item.b, "base64") : undefined);
   });
 }
 
 // Google's front: the script (Host script.google.com) and fronted sites (any other Host)
 const calls = [];
+let script = "current"; // "old": Code.gs from before it escaped "<", so Apps Script's error page instead of its answer
 const dir = mkdtempSync(path.join(os.tmpdir(), "foxhole-front-"));
 execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", path.join(dir, "k.pem"), "-out", path.join(dir, "c.pem"), "-days", "1", "-subj", "/CN=www.google.com"], { stdio: "ignore" });
 const wrap = (obj) => {
@@ -91,6 +93,13 @@ const front = tls.createServer({ key: readFileSync(path.join(dir, "k.pem")), cer
       const p = JSON.parse(body);
       calls.push(p);
       if (p.k !== KEY) return res.end(wrap({ e: "unauthorized" }));
+      // UrlFetchApp's error for an address it can't fetch, which names it ("<" and all)
+      if (p.u?.includes("<"))
+        return res.end(
+          script === "old"
+            ? '<div style="font-family:monospace">Exception: Malformed HTML content: {&quot;e&quot;:&quot;Exception: Invalid argument: https://&lt;foxhole&gt;/&quot;}</div>'
+            : wrap({ e: script === "current" ? `Exception: Invalid argument: ${p.u}` : "Exception: something else" }),
+        );
       const out = p.q ? { q: await Promise.all(p.q.map(urlFetch)) } : await urlFetch(p);
       res.setHeader("content-type", "text/html");
       res.end(wrap(out));
@@ -167,6 +176,32 @@ assert.equal(post.body, "POST application/x-www-form-urlencoded a=b", "a POST wi
 
 const cookies = await viaHttpProxy("GET", "http://origin.example/cookies");
 assert.deepEqual(cookies.headers["set-cookie"], ["a=1; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/", "b=2; Path=/"], "joined Set-Cookie split back, the date's comma kept");
+
+// ── A bot check (Cloudflare's), which never passes through the relay: a page saying so, whose button sends the site direct
+const checked = await viaHttpProxy("GET", "http://www.checked.example/challenge?x=1", undefined, { "sec-fetch-mode": "navigate" });
+assert.equal(checked.status, 403);
+assert.match(checked.body, /checks for bots[\s\S]*name="u" value="\/challenge\?x=1"[\s\S]*Open it directly[\s\S]*Firefox VPN/, "a page saying why and what to do, not one that reloads forever");
+assert.equal((await viaHttpProxy("GET", "http://www.checked.example/challenge")).body, "Just a moment...", "...but a script's request gets the site's answer");
+{
+  let split = { default: "vpn", rules: [] };
+  useSplit(() => split);
+  onRelaySplit((s) => (split = s));
+  const press = (site = "same-origin") =>
+    viaHttpProxy("POST", "http://www.checked.example/.foxhole/direct", "u=%2Fchallenge%3Fx%3D1", { "content-type": "application/x-www-form-urlencoded", "sec-fetch-site": site });
+  setDirectDial(async () => null); // blocked where the user is
+  const blocked = await press();
+  assert.equal(blocked.status, 502);
+  assert.match(blocked.body, /blocked where you are[\s\S]*Firefox VPN/, "blocked directly too: Firefox VPN, then");
+  assert.equal(split.rules.length, 0, "...and no rule");
+  setDirectDial(async () => net.connect(frontPort, "127.0.0.1")); // a TLS server (this test takes any certificate)
+  assert.equal((await press("cross-site")).status, 403, "another site's page can't press it");
+  const opened = await press();
+  assert.equal(opened.status, 303, "it opens directly...");
+  assert.equal(opened.headers.location, "http://www.checked.example/challenge?x=1", "...so back to the page");
+  assert.deepEqual(split.rules, [{ match: "checked.example", via: "direct" }], "the site goes direct from now on, its other names too");
+  assert.ok(notices.some((m) => /checked\.example goes direct/.test(m)), "and the app says so");
+  useSplit(() => ({ default: "vpn", rules: [] }));
+}
 
 const redirect = await viaHttpProxy("GET", "http://origin.example/redirect");
 assert.equal(redirect.status, 302, "the browser follows redirects itself");
@@ -275,8 +310,20 @@ assert.match(calls[0].u, /dns-query$/);
 }
 
 // ── The relay check, and a wrong key: the error page and the notice
-assert.equal(await relayCheck(conn), "203.0.113.7", "the address the web sees through the relay");
+await relayCheck(conn); // it answers, and fetches
+const works = await relayVerdict(conn); // Settings' check
+assert.equal(works.tone, "ok", works.text);
+assert.match(works.text, /deployment ID and auth key are right, and the script is up to date/);
+script = "old";
+assert.match((await relayVerdict(conn)).text, /right, but your Apps Script has older code/, "an older Code.gs: update it");
+script = "other";
+const unsure = await relayVerdict(conn);
+assert.ok(unsure.tone === "ok" && !/up to date/.test(unsure.text), "an answer that doesn't show the code's age: no word on it");
+script = "current";
+const away = await relayVerdict({ relay: conn.relay, server: { hostname: "127.0.0.1", ip: "127.0.0.1", port: 1 } });
+assert.match(away.text, /^Couldn't reach Google: /, "Google out of reach: not the keys' fault");
 conn.relay = { ...conn.relay, key: "wrong-key-0123456789abcdef" };
+assert.deepEqual(await relayVerdict(conn), { tone: "error", text: relayProblem("relay: unauthorized") }, "a wrong key: which one to fix");
 const bad = await viaHttpProxy("POST", "http://origin.example/echo", "x");
 assert.equal(bad.status, 502);
 assert.match(bad.body, /AUTH_KEY/, "the page says what to fix");

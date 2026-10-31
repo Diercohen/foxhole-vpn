@@ -15,6 +15,7 @@ export const yellow = wrap("33");
 export const cyan = wrap("36");
 export const magenta = wrap("35");
 export const lit = wrap("1;7;32"); // bold green, reversed: a switch that's on
+export const unlit = wrap("48;5;237;38;5;245"); // gray on dark gray: one that's off
 // relay mode's colors, where Firefox VPN's are green
 export const purple = wrap("38;5;141");
 export const litPurple = wrap("1;7;38;5;141");
@@ -147,22 +148,22 @@ export const pad = (s: string, n: number) => s + " ".repeat(Math.max(0, n - vw(s
 /** s, indented to sit centered in width columns. */
 export const centerIn = (s: string, width: number) => " ".repeat(Math.max(0, Math.floor((width - vw(s)) / 2))) + s;
 
-/** Rounded box around lines; title and right sit in the top border. */
-export function box(lines: string[], { title = "", right = "", width = 0 } = {}): string[] {
+/** Rounded box around lines; title and right sit in the top border. The border is dim, or in `color`. */
+export function box(lines: string[], { title = "", right = "", width = 0, color = dim } = {}): string[] {
   const inner = Math.max(width, ...lines.map(vw), vw(title) + vw(right) + 6);
-  const left = title ? dim("─ ") + title + " " : "";
-  const tail = right ? " " + right + dim(" ─") : "";
+  const left = title ? color("─ ") + title + " " : "";
+  const tail = right ? " " + right + color(" ─") : "";
   const fill = inner + 2 - vw(left) - vw(tail);
   return [
-    dim("╭") + left + dim("─".repeat(fill)) + tail + dim("╮"),
-    ...lines.map((l) => dim("│") + " " + pad(l, inner) + " " + dim("│")),
-    dim("╰" + "─".repeat(inner + 2) + "╯"),
+    color("╭") + left + color("─".repeat(fill)) + tail + color("╮"),
+    ...lines.map((l) => color("│") + " " + pad(l, inner) + " " + color("│")),
+    color("╰" + "─".repeat(inner + 2) + "╯"),
   ];
 }
 
 /** Rounded table with a caption row on top; the last column absorbs extra width. */
-export function grid(titles: string[], rows: string[][], { caption = "", captionRight = "", minWidth = 0 } = {}): string[] {
-  const w = titles.map((t, i) => Math.max(vw(t), ...rows.map((r) => vw(r[i]))));
+export function grid(titles: string[], rows: (string[] | null)[], { caption = "", captionRight = "", minWidth = 0 } = {}): string[] {
+  const w = titles.map((t, i) => Math.max(vw(t), ...rows.map((r) => (r ? vw(r[i]) : 0))));
   const total = () => w.reduce((a, n) => a + n + 3, 1);
   w[w.length - 1] += Math.max(0, vw(caption) + vw(captionRight) + 5 - total(), minWidth - total());
   const rule = (l: string, m: string, r: string) => dim(l + w.map((n) => "─".repeat(n + 2)).join(m) + r);
@@ -173,7 +174,7 @@ export function grid(titles: string[], rows: string[][], { caption = "", caption
     rule("├", "┬", "┤"),
     row(titles.map(bold)),
     rule("├", "┼", "┤"),
-    ...rows.map(row),
+    ...rows.map((r) => (r ? row(r) : rule("├", "┼", "┤"))), // null: a line between groups of rows
     rule("╰", "┴", "╯"),
   ];
 }

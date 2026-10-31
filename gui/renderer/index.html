@@ -197,23 +197,26 @@
       </div>
       <div class="hint">Asked from other devices when sharing is on; apps on this computer don't need it. Empty means no login.</div>
     </form>
-    <form class="group" id="relay-form">
-      <div class="label"><svg class="i"><use href="#i-shield"/></svg>VPN relay</div>
-      <div class="hint">Where <code>vpn.mozilla.org</code> is blocked (e.g. Iran), your own free Google Apps Script reaches it for Foxhole. Once it's set up, <b>Relay</b>, first in Locations, can also carry your browsing when nothing else gets through.</div>
-      <button class="btn primary wizard-btn" type="button" id="relay-wizard"><svg class="i"><use href="#i-spark"/></svg>Set up step by step</button>
-      <input id="relay-id" placeholder="Apps Script deployment ID" autocomplete="off" spellcheck="false">
-      <div class="input-row">
+    <div class="relay-zone">
+      <form class="group" id="relay-form">
+        <div class="label"><svg class="i"><use href="#i-shield"/></svg>VPN relay<span class="tier" id="relay-badge"></span></div>
+        <div class="hint">Where <code>vpn.mozilla.org</code> is blocked (e.g. Iran), your own free Google Apps Script reaches it for Foxhole. Once it's set up, <b>Relay</b>, first in Locations, can also carry your browsing when nothing else gets through.</div>
+        <div class="hint" id="relay-state"></div>
+        <input id="relay-id" placeholder="Apps Script deployment ID" autocomplete="off" spellcheck="false">
         <div class="pw-wrap"><input id="relay-key" type="password" placeholder="Auth key" autocomplete="off"><button class="mini" type="button" id="relay-reveal" title="Show"><svg class="i"><use href="#i-eye"/></svg></button></div>
-        <button class="btn" type="submit">Save</button>
+        <div class="cert-line">
+          <button class="btn primary wizard-btn" type="button" id="relay-wizard"><svg class="i"><use href="#i-spark"/></svg>Set up step by step</button>
+          <button class="btn" type="button" id="relay-check"><svg class="i"><use href="#i-plug"/></svg>Check</button>
+        </div>
+        <div class="note" id="relay-check-state"></div>
+      </form>
+      <div class="group" id="cert-group">
+        <div class="label"><svg class="i"><use href="#i-lock"/></svg>Relay certificate</div>
+        <div class="hint">The relay can only fetch web pages, so Foxhole opens each site's encryption on this computer, with certificates from its own authority: made here, and never sent anywhere. Browsers and apps trust it once.</div>
+        <div class="cert-line"><span id="cert-state"></span><button class="btn" type="button" id="cert-btn"></button></div>
+        <div class="hint">Terminal tools (npm, pip, git, curl…) keep their own list: paste this into a terminal and they trust it too, and use the proxy.</div>
+        <button class="btn" type="button" data-act="copyEnv" data-copied><svg class="i"><use href="#i-copy"/></svg>Copy terminal setup</button>
       </div>
-      <div class="hint" id="relay-state"></div>
-    </form>
-    <div class="group" id="cert-group">
-      <div class="label"><svg class="i"><use href="#i-lock"/></svg>Relay certificate</div>
-      <div class="hint">The relay can only fetch web pages, so Foxhole opens each site's encryption on this computer, with certificates from its own authority: made here, and never sent anywhere. Browsers and apps trust it once.</div>
-      <div class="cert-line"><span id="cert-state"></span><button class="btn" type="button" id="cert-btn"></button></div>
-      <div class="hint">Terminal tools (npm, pip, git, curl…) keep their own list: paste this into a terminal and they trust it too, and use the proxy.</div>
-      <button class="btn" type="button" data-act="copyEnv" data-copied><svg class="i"><use href="#i-copy"/></svg>Copy terminal setup</button>
     </div>
     <div class="note" id="settings-note"></div>
     <div class="group">
@@ -262,6 +265,20 @@
     <div class="actions">
       <button class="btn" type="button" id="blocked-later">Not now</button>
       <button class="btn primary" type="button" id="blocked-setup"><svg class="i"><use href="#i-spark"/></svg>Set up a relay</button>
+    </div>
+  </div>
+</div>
+
+<!-- Relay in Locations, not set up yet: what it is, and its setup -->
+<div class="modal backdrop" id="relay-modal">
+  <div class="box glass">
+    <div class="lock-orb relay"><svg class="i"><use href="#i-relay"/></svg></div>
+    <h2>Relay: your own way through</h2>
+    <p>A free script on your own Google account fetches the web for you. Your internet provider sees only a visit to Google, so Relay gets through where Firefox VPN is blocked (e.g. Iran), and lets Foxhole reach Firefox VPN there too.</p>
+    <p>It carries web pages only, and sites can still see your IP. Setting it up takes a few minutes, and Foxhole shows you each click.</p>
+    <div class="actions">
+      <button class="btn" type="button" id="relay-later">Not now</button>
+      <button class="btn primary" type="button" id="relay-setup"><svg class="i"><use href="#i-spark"/></svg>Set up step by step</button>
     </div>
   </div>
 </div>
