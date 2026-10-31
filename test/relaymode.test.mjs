@@ -20,7 +20,7 @@ import { X509Certificate } from "node:crypto";
 const { startProxy } = await import("../dist/proxy.js");
 const { caFiles, loadCa } = await import("../dist/mitm.js");
 loadCa(); // made (and trusted) before relay mode starts, as the app does
-const { relayCheck, relayVerdict, onRelayNotice, onRelaySplit, setDirectDial, fakeName, splitCookies, fronted, dnsAnswer, relayProblem } = await import("../dist/relaymode.js");
+const { relayCheck, relayVerdict, onRelayNotice, onRelaySplit, setDirectDial, fakeName, splitCookies, fronted, untranslated, dnsAnswer, relayProblem } = await import("../dist/relaymode.js");
 const { useSplit } = await import("../dist/split.js");
 const { answerAddrs } = await import("../dist/dns.js");
 
@@ -199,6 +199,7 @@ assert.equal(post.body, "POST application/x-www-form-urlencoded a=b", "a POST wi
 const cookies = await viaHttpProxy("GET", "http://origin.example/cookies");
 assert.deepEqual(cookies.headers["set-cookie"], ["a=1; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/", "b=2; Path=/"], "joined Set-Cookie split back, the date's comma kept");
 
+
 // ── A bot check (Cloudflare's), which never passes through the relay: a page saying so, whose button sends the site direct
 const checked = await viaHttpProxy("GET", "http://www.checked.example/challenge?x=1", undefined, { "sec-fetch-mode": "navigate" });
 assert.equal(checked.status, 403);
@@ -360,7 +361,12 @@ assert.deepEqual(JSON.parse(withOurs), { policies: { DisableTelemetry: true, Cer
 assert.deepEqual(JSON.parse(firefoxPolicies(withOurs, "/x/ca.pem", false)), JSON.parse(theirs), "...and taken out again");
 assert.equal(firefoxPolicies(firefoxPolicies(null, "/x/ca.pem", true), "/x/ca.pem", false), null, "ours alone: no file left");
 assert.deepEqual(splitCookies("a=1; Expires=Wed, 21 Oct 2037 07:28:00 GMT, b=2"), ["a=1; Expires=Wed, 21 Oct 2037 07:28:00 GMT", "b=2"]);
-assert.ok(fronted("i.ytimg.com") && fronted("www.youtube.com"));
+assert.ok(fronted("i.ytimg.com") && fronted("www.youtube.com") && fronted("meet.google.com") && fronted("docs.google.com") && fronted("www.recaptcha.net") && !fronted("mail.google.com"));
+assert.ok(!fronted("gemini.google.com") && !fronted("www.googleapis.com"), "Google's sites that refuse Iran stay on the script");
+assert.equal(untranslated('<head><meta http-equiv="X-Translated-To" content="en"><script type="text/javascript" src="https://www.gstatic.com/_/translate_http/m=corsproxy"></script><script>ytcfg.set({})</script></head><body><script id="google-translate-element-script">\n initProtoFlow();\n</script></body>'), "<head><script>ytcfg.set({})</script></head><body></body>", "Translate's scripts out, the page's kept");
+const shell = `ytcfg.set({"LOGGED_IN":false});try {const initialData = [];initialData.push({path: '\\/guide', params: JSON.parse('\\x7b\\x7d'), data: '\\x7b\\x22a\\x22:1\\x7d'});ytcfg.set({'YTMUSIC_INITIAL_DATA': initialData});} catch (e) {}`;
+assert.equal(untranslated(shell, "PREF=1; SAPISID=abc"), `ytcfg.set({"LOGGED_IN":true,"SESSION_INDEX":"0"});try {const initialData = [];ytcfg.set({'YTMUSIC_INITIAL_DATA': initialData});} catch (e) {}`, "signed in again with YouTube's cookie, its signed-out home left out");
+assert.equal(untranslated('ytcfg.set({"LOGGED_IN":false})', "PREF=1"), 'ytcfg.set({"LOGGED_IN":false})');
 assert.ok(!fronted("music.youtube.com") && !fronted("rr1---sn-x.googlevideo.com") && !fronted("evilyoutube.com"));
 assert.match(relayProblem("relay: Exception: Service invoked too many times for one day: urlfetch."), /quota/);
 assert.match(relayProblem("relay: Exception: محتوای HTML معیوب: {"), /older code/, "the old Code.gs, in the owner's language");

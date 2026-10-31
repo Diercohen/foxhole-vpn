@@ -27,9 +27,15 @@ export const FRONT = "www.google.com";
 export const FRONT_AT = "www.gstatic.com";
 const SCRIPT = "script.google.com";
 
-// Google's sites that its front ends serve and a censor blocks by name: fronted (MasterHttpRelayVPN's list, and gstatic.com)
+// Google's sites that its front ends serve and a censor blocks by name: fronted (MasterHttpRelayVPN's list, and gstatic.com).
+// Then those that turn the script away (its forced User-Agent; its shared servers taken for bots), and busy ones that
+// answer the same either way, to spare the script's quota. Never all of google.com: much of Google answers an Iranian
+// address with 403 (Gemini, Cloud, Firebase, its developer sites, www.googleapis.com) and works only through the script.
 const FRONTED = ["youtube.com", "youtu.be", "youtube-nocookie.com", "ytimg.com", "ggpht.com", "gvt1.com", "gvt2.com", "gstatic.com", "fonts.googleapis.com",
-  "doubleclick.net", "googlesyndication.com", "googleadservices.com", "google-analytics.com", "googletagmanager.com", "googletagservices.com", "script.google.com"];
+  "doubleclick.net", "googlesyndication.com", "googleadservices.com", "google-analytics.com", "googletagmanager.com", "googletagservices.com", "script.google.com",
+  "meet.google.com", "calendar.google.com", "docs.google.com", "drive.google.com", "accounts.google.com", "myaccount.google.com", "scholar.google.com", "news.google.com", "support.google.com", "translate.google.com", "translate.googleapis.com",
+  "youtubekids.com", "recaptcha.net",
+  "ajax.googleapis.com", "yt3.googleusercontent.com", "play-lh.googleusercontent.com", "lh3.googleusercontent.com"];
 const under = (host: string, d: string) => host === d || host.endsWith(`.${d}`);
 /**
  * Fronted, but not YouTube Music (it's not offered everywhere). YouTube's API is too: the video links it hands out
@@ -575,6 +581,52 @@ function viaFront(c: Ctx, req: http.IncomingMessage, res: http.ServerResponse, u
   req.pipe(up);
 }
 
+// YouTube Music's page is refused to an Iranian address (fronted) and to the script's forced User-Agent alike, so it comes
+// through Google Translate's site proxy, which fetches it from Google's own address with the browser's. Translate's own
+// scripts are taken out (one would send the app's requests through the proxy, which only GETs). The app's API and its
+// files go through the script, which answers them; its audio too (the links are tied to the address that asked).
+// Translate drops cookies, so the page comes signed out: with YouTube's sign-in cookie it's marked signed in again (the
+// app signs its API calls itself, from that cookie), and its signed-out home and sidebar are left out, so it asks for
+// yours. ponytail: experimental; take the audio part out if songs never play
+const TRANSLATED = "music-youtube-com.translate.goog";
+const TRANSLATE_ADDED = /<script[^>]*translate_http[^>]*><\/script>|<script id="google-translate-element-script">[\s\S]*?<\/script>|<meta http-equiv="X-Translated-To"[^>]*>/g;
+export const untranslated = (html: string, cookie = ""): string => {
+  const out = html.replace(TRANSLATE_ADDED, "");
+  if (!/(^|;\s*)SAPISID=/.test(cookie)) return out;
+  return out.replace('"LOGGED_IN":false', '"LOGGED_IN":true,"SESSION_INDEX":"0"').replace(/initialData\.push\(\{path: '[^']*', params: JSON\.parse\('[^']*'\), data: '[^']*'\}\);/g, "");
+};
+
+function viaTranslate(c: Ctx, req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
+  relayStats.fronted++;
+  const q = new URLSearchParams(url.search);
+  q.set("_x_tr_sl", "auto"), q.set("_x_tr_tl", "en"), q.set("_x_tr_hl", "en");
+  const up = https.request(
+    {
+      host: frontAt(c.conn),
+      port: frontPort(c.conn),
+      servername: FRONT,
+      path: `${url.pathname}?${q}`,
+      headers: { ...headersOf(req.rawHeaders, (k) => DROP_REQ.has(k) || k === "cookie"), host: TRANSLATED, "accept-encoding": "identity" },
+      agent: frontAgent,
+      timeout: 60_000,
+    },
+    (r) => {
+      const chunks: Buffer[] = [];
+      r.on("data", (d: Buffer) => chunks.push(d));
+      r.on("error", () => res.destroy());
+      r.on("end", () => {
+        if (r.statusCode !== 200) return fail(res, 502, `Google Translate answered HTTP ${r.statusCode} for YouTube Music's page.`);
+        const body = Buffer.from(untranslated(Buffer.concat(chunks).toString("utf8"), req.headers.cookie));
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-length": body.length });
+        res.end(body);
+      });
+    },
+  );
+  up.on("timeout", () => up.destroy(new Error("no answer in 60 s")));
+  up.on("error", (err) => fail(res, 502, `Couldn't reach YouTube Music's page through Google Translate: ${err.message}`));
+  up.end();
+}
+
 async function onRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const c = ctxOf.get(req.socket);
   if (!c) return fail(res, 500, "lost track of this connection");
@@ -596,7 +648,9 @@ async function onRequest(req: http.IncomingMessage, res: http.ServerResponse): P
       return fail(res, 502, (err as Error).message);
     }
   }
-  if (host.endsWith(".googlevideo.com")) return viaCache(c, req, res, url);
+  const music = host === "music.youtube.com" || req.headers.origin === "https://music.youtube.com";
+  if (host.endsWith(".googlevideo.com")) return music ? viaRelay(c, req, res, url) : viaCache(c, req, res, url);
+  if (host === "music.youtube.com" && req.method === "GET" && req.headers["sec-fetch-dest"] === "document") return viaTranslate(c, req, res, url);
   if (fronted(host) || GOOGLE_DIRECT.has(host)) return viaFront(c, req, res, url);
   if (req.method === "OPTIONS") return preflight(req, res, host);
   if (url.pathname === DIRECT && req.method === "POST") return openDirect(c, req, res, url);

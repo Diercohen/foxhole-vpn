@@ -469,6 +469,15 @@ you're on. The proxy and whole-system mode work as they do with Firefox VPN.
   address), so they use none of the script's quota. YouTube isn't in
   Restricted Mode either, which Iran's DNS forces through `www.google.com`'s
   address.
+- **Google's sites that refuse the script go straight to Google too:** Meet,
+  Calendar, Docs, Drive, your Google Account, sign-in (and "Sign in with Google"
+  on other sites), Scholar, News, Help, Translate, YouTube Kids and reCAPTCHA.
+  They see your own address, so some show in your country's language when you're
+  signed out. Gemini, Cloud, Firebase and Google's developer sites refuse
+  addresses in sanctioned countries like Iran, so they stay on the script.
+  YouTube Music refuses Iran's addresses and the script's browser alike, so its
+  page comes through Google Translate's site proxy (experimental: songs may not
+  play).
 - **Only the web goes through it** (ports 80, 443, 8080 and 8443). Other ports
   (SSH, mail, databases) go direct, from your own address.
 
