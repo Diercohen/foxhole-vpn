@@ -454,8 +454,14 @@ you're on. The proxy and whole-system mode work as they do with Firefox VPN.
   instead, with **Open it directly**: if the site isn't blocked where you are,
   it goes direct from then on (a Split tunneling rule) and your browser passes
   the check itself. If it is blocked, use Firefox VPN for it.
+- **No AVIF, JPEG XL or HEIC pictures:** Apps Script fails on them. Sites are
+  offered WebP and JPEG instead, which they nearly always have; a picture only
+  in one of those formats doesn't load, and the site shows its fallback if it
+  has one.
 - **Keep the script up to date.** Older relay code fails on many sites
-  ("Malformed HTML content"); foxhole says so when it happens. Run
+  ("Malformed HTML content"); foxhole says so when it happens. Code from before
+  November 2026 also mixes up a page's other files when one fails, so foxhole
+  asks for those again, which is slower. Run
   **Settings → VPN relay → Set up step by step** again to update it.
 - **YouTube plays at full speed:** YouTube, its pictures, Google's fonts and
   scripts are sent straight to Google, the way the script itself is reached,

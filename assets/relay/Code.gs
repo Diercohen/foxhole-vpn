@@ -144,13 +144,17 @@ function _doBatch(items) {
     }
   }
 
+  // Each item's own response, by its index: one that failed in the fallback
+  // above has an error and no response, so counting responses in order would
+  // hand every later item the answer of the one before it.
+  var respOf = {};
+  for (var j = 0; j < fetchIndex.length; j++) respOf[fetchIndex[j]] = responses[j];
   var results = [];
-  var rIdx = 0;
   for (var i = 0; i < items.length; i++) {
     if (Object.prototype.hasOwnProperty.call(errorMap, i)) {
       results.push({ e: errorMap[i] });
     } else {
-      var resp = responses[rIdx++];
+      var resp = respOf[i];
       if (!resp) {
         results.push({ e: "fetch failed" });
       } else {

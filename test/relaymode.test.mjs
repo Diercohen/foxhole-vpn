@@ -55,6 +55,8 @@ const originPort = await listen(origin);
 
 // UrlFetchApp, as Code.gs uses it: every URL goes to the origin, its host in the Host header
 function urlFetch(item) {
+  // what it throws on an image type it doesn't know (AVIF and the like)
+  if (item.u.endsWith("/unknown-image")) return Promise.resolve({ e: `Exception: Unexpected error: ${item.u}` });
   return new Promise((resolve) => {
     const u = new URL(item.u);
     const headers = { ...item.h, host: u.host };
@@ -101,6 +103,9 @@ const front = tls.createServer({ key: readFileSync(path.join(dir, "k.pem")), cer
             : wrap({ e: script === "current" ? `Exception: Invalid argument: ${p.u}` : "Exception: something else" }),
         );
       const out = p.q ? { q: await Promise.all(p.q.map(urlFetch)) } : await urlFetch(p);
+      // Code.gs before 2026-10-31: past a request that failed, each gets the answer of the one before it
+      const f = script === "shifting" ? (out.q?.findIndex((r) => r.e) ?? -1) : -1;
+      if (f >= 0) out.q = [...out.q.slice(0, f + 1), { e: "fetch failed" }, ...out.q.slice(f + 1)].slice(0, out.q.length);
       res.setHeader("content-type", "text/html");
       res.end(wrap(out));
     });
@@ -170,6 +175,23 @@ assert.equal(calls[0].q[0].r, false, "redirects come back to the browser");
 const big = await viaHttpProxy("GET", "http://origin.example/big");
 assert.equal(big.body.length, 100_000, "Code.gs's gzip undone");
 assert.equal(big.headers["content-length"], "100000");
+
+calls.length = 0;
+await viaHttpProxy("GET", "http://origin.example/hello", undefined, { accept: "image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8" });
+assert.equal(calls[0].h.accept, "image/webp,image/svg+xml,image/*,*/*;q=0.8", "no image types Apps Script throws on asked for");
+calls.length = 0;
+const avif = await viaHttpProxy("GET", "http://origin.example/thumb.avif");
+assert.ok(avif.status === 502 && calls.length === 0, "nor files of them: the site falls back at once");
+
+// a request Apps Script fails on doesn't cost the others in its batch their own answers, with Code.gs before 2026-10-31 too
+for (const mode of ["current", "shifting"]) {
+  script = mode;
+  const [x, y, z] = await Promise.all(["/hello", "/unknown-image", "/echo"].map((p) => viaHttpProxy("GET", `http://origin.example${p}`)));
+  assert.match(x.body, /^hello from/, mode);
+  assert.equal(y.status, 502, mode);
+  assert.equal(z.body, "GET undefined ", `${mode}: its own answer, not the one before it`);
+}
+script = "current";
 
 const post = await viaHttpProxy("POST", "http://origin.example/echo", "a=b", { "content-type": "application/x-www-form-urlencoded" });
 assert.equal(post.body, "POST application/x-www-form-urlencoded a=b", "a POST with its body and type");

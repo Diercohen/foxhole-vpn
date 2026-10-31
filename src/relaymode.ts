@@ -183,7 +183,11 @@ function flush(conn: Conn): void {
   if (!batch.length) return;
   const one = batch.length === 1;
   call(conn, one ? batch[0].item : { q: batch.map((b) => b.item) }, true).then(
-    (env) => batch.forEach((b, i) => b.done((one ? env : env.q?.[i]) ?? new Error("relay: no answer for this request"))),
+    (env) => {
+      // Code.gs before 2026-10-31 gives each request after one that failed the answer before it ("fetch failed" shows it): those go again, alone
+      const shifted = env.q?.some((r) => r?.e === "fetch failed") ? env.q.findIndex((r) => r?.e) : batch.length;
+      batch.forEach((b, i) => (i > shifted ? call(conn, b.item, true).then(b.done, b.done) : b.done((one ? env : env.q?.[i]) ?? new Error("relay: no answer for this request"))));
+    },
     (err: Error) => batch.forEach((b) => b.done(err)),
   );
 }
@@ -403,10 +407,15 @@ function preflight(req: http.IncomingMessage, res: http.ServerResponse, host: st
 }
 
 const RELAYED = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]);
+// The image types Apps Script fetches: it throws "Unexpected error" on any other (AVIF, JPEG XL, APNG, HEIC), whatever the bytes
+const KNOWN_IMAGE = /^\s*image\/(webp|png|jpeg|gif|svg\+xml|\*)\s*(;|$)/i;
 
 async function viaRelay(c: Ctx, req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
   const method = req.method ?? "GET";
   if (!RELAYED.has(method)) return fail(res, 501, `The relay can't send ${method} requests.`);
+  // a file of a type it doesn't fetch would only fail, and send the rest of its batch one by one; sites that offer one have a fallback
+  // ponytail: one a server labels as something else would have come through; send those alone if that turns up
+  if (/\.(avif|jxl|hei[cf])$/i.test(url.pathname)) return fail(res, 502, "The relay can't fetch AVIF, JPEG XL or HEIC pictures: Apps Script fails on them.");
   const body = await readBody(req, 40 << 20); // a 50 MB call, once in base64
   const item: Item = {
     m: method === "HEAD" ? "GET" : method, // UrlFetchApp can't send HEAD
@@ -415,6 +424,8 @@ async function viaRelay(c: Ctx, req: http.IncomingMessage, res: http.ServerRespo
     r: false,
     ...(body.length ? { b: body.toString("base64"), ...(req.headers["content-type"] ? { ct: req.headers["content-type"] } : {}) } : {}),
   };
+  // sites are offered only the image types it fetches, so image CDNs send WebP or JPEG
+  if (item.h.accept) item.h.accept = item.h.accept.split(",").filter((t) => !/^\s*image\//i.test(t) || KNOWN_IMAGE.test(t)).join(",") || "*/*";
   let reply: Reply;
   try {
     // ponytail: one script call per response, so ~50 MB at most (UrlFetchApp's cap); Range-chunked GETs if big downloads matter
