@@ -476,8 +476,8 @@ you're on. The proxy and whole-system mode work as they do with Firefox VPN.
   signed out. Gemini, Cloud, Firebase and Google's developer sites refuse
   addresses in sanctioned countries like Iran, so they stay on the script.
   YouTube Music refuses Iran's addresses and the script's browser alike, so its
-  page comes through Google Translate's site proxy (experimental: songs may not
-  play).
+  page comes through Google Translate's site proxy, signed in, and its songs
+  play.
 - **Only the web goes through it** (ports 80, 443, 8080 and 8443). Other ports
   (SSH, mail, databases) go direct, from your own address.
 

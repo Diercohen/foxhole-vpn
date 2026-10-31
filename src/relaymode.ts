@@ -587,7 +587,8 @@ function viaFront(c: Ctx, req: http.IncomingMessage, res: http.ServerResponse, u
 // files go through the script, which answers them; its audio too (the links are tied to the address that asked).
 // Translate drops cookies, so the page comes signed out: with YouTube's sign-in cookie it's marked signed in again (the
 // app signs its API calls itself, from that cookie), and its signed-out home and sidebar are left out, so it asks for
-// yours. ponytail: experimental; take the audio part out if songs never play
+// yours. Its session check (/verify_session, every 2 minutes) would see the signed-out page's missing identity next to
+// the sign-in cookie and ask for a reload ("Changed Google Account"), so foxhole answers it: stop checking.
 const TRANSLATED = "music-youtube-com.translate.goog";
 const TRANSLATE_ADDED = /<script[^>]*translate_http[^>]*><\/script>|<script id="google-translate-element-script">[\s\S]*?<\/script>|<meta http-equiv="X-Translated-To"[^>]*>/g;
 export const untranslated = (html: string, cookie = ""): string => {
@@ -651,6 +652,10 @@ async function onRequest(req: http.IncomingMessage, res: http.ServerResponse): P
   const music = host === "music.youtube.com" || req.headers.origin === "https://music.youtube.com";
   if (host.endsWith(".googlevideo.com")) return music ? viaRelay(c, req, res, url) : viaCache(c, req, res, url);
   if (host === "music.youtube.com" && req.method === "GET" && req.headers["sec-fetch-dest"] === "document") return viaTranslate(c, req, res, url);
+  if (host === "music.youtube.com" && url.pathname === "/verify_session") {
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    return void res.end(`)]}'\n{"stopPoll":true}`);
+  }
   if (fronted(host) || GOOGLE_DIRECT.has(host)) return viaFront(c, req, res, url);
   if (req.method === "OPTIONS") return preflight(req, res, host);
   if (url.pathname === DIRECT && req.method === "POST") return openDirect(c, req, res, url);
