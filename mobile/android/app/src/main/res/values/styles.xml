@@ -1,0 +1,6 @@
+<resources>
+    <!-- dark from the first frame: the window's own background -->
+    <style name="AppTheme" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+    </style>
+</resources>

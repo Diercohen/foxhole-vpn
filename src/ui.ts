@@ -63,16 +63,27 @@ export function gb(bytes: bigint): string {
   return `${n.toFixed(1).replace(/\.0$/, "")} GB`;
 }
 
-/** A short date like "Nov 1". */
+/** A short date like "Nov 1" (not by Intl: Android's Node has none). */
 export function shortDate(d: Date): string {
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${"Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ")[d.getMonth()]} ${d.getDate()}`;
 }
 
 // ── Layout, after windscout's TUI: rounded boxes and tables, centered frames ──
 
+// Combining marks, \p{M}: Node for Android has no Unicode data, so there it's the common ones (and a regex literal
+// with \p{M} wouldn't even load, the core with it)
+const MARK = (() => {
+  try {
+    return new RegExp(String.raw`\p{M}`, "u").source;
+  } catch {
+    return String.raw`[̀-ͯ᪰-᫿᷀-᷿⃐-⃿︠-︯]`;
+  }
+})();
+const ZERO_WIDTH = new RegExp(String.raw`\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\|` + MARK, "gu");
+const COLUMN = new RegExp(String.raw`\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\|[\u{1F1E6}-\u{1F1FF}]{2}|${MARK}|.`, "gsu");
+
 // visible width: ANSI codes and combining marks take no space; flags and emoji take 2 columns
-export const vw = (s: string) =>
-  [...s.replace(/\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\|\p{M}/gu, "").replace(/[\u{1F1E6}-\u{1F1FF}]{2}|[\u{1F300}-\u{1FAFF}]/gu, "xx")].length;
+export const vw = (s: string) => [...s.replace(ZERO_WIDTH, "").replace(/[\u{1F1E6}-\u{1F1FF}]{2}|[\u{1F300}-\u{1FAFF}]/gu, "xx")].length;
 
 /** s cut to n visible columns with a trailing …, keeping its colors. */
 export function fit(s: string, n: number): string {
@@ -102,7 +113,7 @@ export function sliceCols(s: string, from: number, to = Infinity): string {
   let sgr = ""; // colors set before `from`, replayed at the start of the slice
   let w = 0;
   let started = false;
-  for (const [t] of s.matchAll(/\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\|[\u{1F1E6}-\u{1F1FF}]{2}|\p{M}|./gsu)) {
+  for (const [t] of s.matchAll(COLUMN)) {
     if (t.startsWith("\x1b")) {
       if (started) out += t;
       else sgr = t === "\x1b[0m" ? "" : sgr + t;

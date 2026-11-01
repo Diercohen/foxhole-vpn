@@ -1,0 +1,6 @@
+<!-- the fox of the app's icon (gui/renderer/index.html #fox), in one color for the status bar -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="64" android:viewportHeight="64">
+    <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd"
+        android:pathData="M32,57 L12.5,39 L8,21 L10.5,5 L24.5,16.5 L32,15 L39.5,16.5 L53.5,5 L56,21 L51.5,39 Z M20.4,28.4 L27.2,31.2 L21.6,32.6 Z M43.6,28.4 L36.8,31.2 L42.4,32.6 Z M28.4,51 L35.6,51 L32,56.6 Z" />
+</vector>

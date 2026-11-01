@@ -65,12 +65,23 @@ export class Controller extends EventEmitter {
   #receiver = null;
   #keep = null; // ends the wait for another account (switchAccount)
   #updates; // updater.js: a new version of the app
+  /**
+   * On Android (mobile/node/main.mjs), what the phone does in place of the desktop's ways; null elsewhere:
+   * openSignIn() its own Mozilla sign-in, which saves the session where findAccount() reads it; sessionStamp(),
+   * which changes with each sign-in; globalSession() Android's VPN, with GlobalSession's methods; network();
+   * caTrusted() and setCaTrust(add), relay mode's certificate in Android's store (setCaTrust says what's left to do).
+   */
+  #android;
 
-  constructor({ copy, updates }) {
+  constructor({ copy, updates, android = null }) {
     super();
     this.#copy = copy;
     this.#updates = updates;
+    this.#android = android;
   }
+
+  #network = () => (this.#android?.network ?? network)();
+  #caTrusted = () => (this.#android?.caTrusted ?? caTrusted)();
 
   /** global: turn whole-system mode on once connected (the restart into an update, when it was on). */
   async start({ global = false } = {}) {
@@ -80,13 +91,13 @@ export class Controller extends EventEmitter {
     onProxyWarning((msg) => this.#say("error", `proxy: ${msg}`));
     onRelayNotice((msg) => this.#say("warn", msg));
     onRelaySplit((split) => this.#saveSplit(split)); // a bot-check page's "Open it directly"
-    void caTrusted().then((ok) => ((this.#caOk = ok), this.#changed()));
+    void this.#caTrusted().then((ok) => ((this.#caOk = ok), this.#changed()));
     const list = this.reloadList(); // needs no login: ready once the sign-in is
     this.#refreshNet();
     // A network switch changes the public IP too; the LAN address catches switches the name can't show.
     let lan = lanIp();
     setInterval(() => {
-      void network().then((n) => {
+      void this.#network().then((n) => {
         const was = lan;
         lan = lanIp();
         if (this.#net !== undefined && (n !== this.#net || lan !== was)) this.#refreshNet();
@@ -138,12 +149,15 @@ export class Controller extends EventEmitter {
         await this.#until(() => !findAccount()?.blocked); // allowed without a restart: carry on
         continue;
       }
-      if (account?.signedIn) return this.#captureToken(errors.join("\n"));
+      if (account?.signedIn && !this.#android) return this.#captureToken(errors.join("\n"));
       // Signed out: the sign-in is all it takes, as the token then comes from that login.
-      openBrowser(SYNC);
+      if (!this.#android) openBrowser(SYNC);
       this.#auth = { stage: "signin", error: errors.join("\n") };
       this.#changed();
-      await this.#until(() => findAccount()?.signedIn);
+      // Android: the app's own sign-in, or a while (the network may be back) to try the one there is again
+      const stamp = this.#android?.sessionStamp();
+      const since = Date.now();
+      await this.#until(() => (this.#android ? this.#android.sessionStamp() !== stamp || (account?.signedIn && Date.now() - since > 20_000) : findAccount()?.signedIn));
     }
   }
 
@@ -170,9 +184,10 @@ export class Controller extends EventEmitter {
     });
   }
 
-  /** Opens Firefox's sign-in again. */
+  /** Opens Firefox's sign-in again (Android: the app's own). */
   openFirefox() {
-    openBrowser(SYNC);
+    if (this.#android) this.#android.openSignIn();
+    else openBrowser(SYNC);
   }
 
   /** Copies the Browser Console snippet again. */
@@ -186,13 +201,15 @@ export class Controller extends EventEmitter {
     await this.disconnect();
     forgetToken();
     const was = findAccount();
-    openBrowser(SYNC);
+    const stamp = this.#android?.sessionStamp();
+    this.openFirefox();
     this.#auth = { stage: "switch", email: was?.signedIn ? was.email : null };
     this.#changed();
     await new Promise((resolve) => {
       this.#keep = resolve;
       void this.#until(() => {
         if (this.#auth.stage !== "switch") return true; // keepAccount() ended the wait
+        if (this.#android) return this.#android.sessionStamp() !== stamp; // signed in again there, even as the same account
         const a = findAccount();
         return a?.signedIn && a.email !== this.#auth.email;
       }).then(resolve);
@@ -222,11 +239,12 @@ export class Controller extends EventEmitter {
   #refreshNet() {
     const seq = ++this.#netSeq;
     const country = this.#global ? this.#globalCountry : this.#active;
-    // Proxy mode: ask through the proxy. Global mode tunnels the direct check already.
-    const proxy = this.#global ? undefined : this.via();
+    // Proxy mode: ask through the proxy. Global mode tunnels the direct check already (not on Android: the app's own
+    // connections stay out of its VPN, or the proxy's would loop through it)
+    const proxy = this.#global && !this.#android ? undefined : this.via();
     this.#ip = undefined;
     this.#changed();
-    void network().then((n) => {
+    void this.#network().then((n) => {
       if (seq !== this.#netSeq) return;
       this.#net = n;
       this.#changed();
@@ -339,7 +357,7 @@ export class Controller extends EventEmitter {
     }
     // Already root: nothing to ask. Windows has no sudo either: its own admin prompt (UAC) comes up
     // as whole-system mode starts, unless Foxhole runs as Administrator.
-    if (process.platform === "win32" || (await isPrivileged())) return this.#enableGlobal(null);
+    if (this.#android || process.platform === "win32" || (await isPrivileged())) return this.#enableGlobal(null);
     let note = null;
     if (sudoUsesTouchId()) {
       // sudo takes the fingerprint here, so a typed password would go unused
@@ -381,27 +399,33 @@ export class Controller extends EventEmitter {
     const server = this.#conn.server;
     if (!server || !this.#proxy) return;
     this.#busy = true;
-    this.#say("info", "preparing tun2socks…");
     let session = null;
     try {
-      // a download goes through the VPN, its progress in the status line
-      this.#tun2socksPath ??= await ensureTun2socks({ proxy: this.via(), say: (msg) => this.#say("info", msg) });
-      this.#say("info", process.platform === "win32" ? "going global… if Windows asks, allow PowerShell (Foxhole's network helper)" : "going global…");
-      session = new GlobalSession({
-        priv: password === null ? await adminPriv(true) : sudoPriv(password),
-        server,
-        proxyHost: this.#host,
-        proxyPort: this.#proxy.port,
-        tun2socksPath: this.#tun2socksPath,
-        force: false,
-      });
+      if (this.#android) {
+        this.#say("info", "going global… if Android asks, allow Foxhole's VPN");
+        session = this.#android.globalSession({ server, proxyHost: this.#host, proxyPort: this.#proxy.port });
+      } else {
+        this.#say("info", "preparing tun2socks…");
+        // a download goes through the VPN, its progress in the status line
+        this.#tun2socksPath ??= await ensureTun2socks({ proxy: this.via(), say: (msg) => this.#say("info", msg) });
+        this.#say("info", process.platform === "win32" ? "going global… if Windows asks, allow PowerShell (Foxhole's network helper)" : "going global…");
+        session = new GlobalSession({
+          priv: password === null ? await adminPriv(true) : sudoPriv(password),
+          server,
+          proxyHost: this.#host,
+          proxyPort: this.#proxy.port,
+          tun2socksPath: this.#tun2socksPath,
+          force: false,
+        });
+      }
       session.onExit((code) => {
         // tun2socks died: tear down the routes so the system keeps working.
         this.#global = null;
         this.#globalCountry = null;
-        this.#say("error", `tun2socks stopped (${code}) — restoring networking…`);
+        const stopped = `${this.#android ? "Android's VPN" : "tun2socks"} stopped (${code})`;
+        this.#say("error", `${stopped} — restoring networking…`);
         void session?.stop().finally(() => {
-          this.#say("error", `tun2socks stopped (${code}) — global off`);
+          this.#say("error", `${stopped} — global off`);
           this.#refreshNet();
         });
       });
@@ -523,7 +547,7 @@ export class Controller extends EventEmitter {
   openSettings() {
     this.#settingsNote = null;
     this.#checkFirewall();
-    void caTrusted().then((ok) => ((this.#caOk = ok), this.#changed()));
+    void this.#caTrusted().then((ok) => ((this.#caOk = ok), this.#changed()));
     this.#changed();
   }
 
@@ -634,7 +658,7 @@ export class Controller extends EventEmitter {
 
   /** After connecting to the relay: asks to trust foxhole's certificate, if this computer doesn't yet (sites won't open). */
   async #askTrust() {
-    this.#caOk = await caTrusted();
+    this.#caOk = await this.#caTrusted();
     this.#trustAsk = !this.#caOk && this.#relayOn();
     this.#changed();
   }
@@ -664,9 +688,10 @@ export class Controller extends EventEmitter {
     this.#busy = true;
     this.#say("info", process.platform === "darwin" ? "macOS asks for your password…" : process.platform === "win32" ? "Windows asks you to confirm: choose Yes…" : add ? "trusting the certificate…" : "removing the certificate…");
     try {
-      await setCaTrust(add, priv);
-      this.#caOk = await caTrusted();
-      if (!add) this.#say("info", "certificate removed");
+      const todo = await (this.#android?.setCaTrust ?? setCaTrust)(add, priv); // Android: the rest is in its Settings
+      this.#caOk = await this.#caTrusted();
+      if (todo) this.#say("warn", todo);
+      else if (!add) this.#say("info", "certificate removed");
       else if (this.#caOk) this.#say("ok", "Certificate trusted. Restart your browser, then sites open through the relay.");
       else this.#say("warn", "certificate added, but not trusted yet");
     } catch (err) {

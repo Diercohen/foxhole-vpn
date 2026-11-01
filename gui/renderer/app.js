@@ -1,5 +1,7 @@
 // The window: draws the state the main process sends (controller.js state()) and asks it for actions.
 const fh = window.foxhole;
+const ANDROID = fh.platform === "android"; // the app on a phone (mobile/): Mozilla's sign-in is its own, its VPN Android's
+const DEVICE = ANDROID ? "phone" : "computer";
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 // The countries with a picture in flags/ (<code>.svg; pictures, as Windows draws no flag emoji); the rest show their code
@@ -115,16 +117,23 @@ function renderHeader() {
 // ── The orb and what's under it ────────────────────────────────────────────────────────────
 
 function renderHero(ph) {
-  const c = country(S.connecting ?? S.global ?? S.active ?? S.selected);
+  const c = country(S.connecting ?? S.global ?? S.active ?? S.paused?.code ?? S.selected);
   const where = c ? `${flagInline(c.code)}${esc(c.name)}` : ""; // HTML: the subtitle shows the flag
+  // a phone's Location card (style.css): its flag drawn again only when it changes
+  section("loc", [c], () => {
+    $("#loc-flag").innerHTML = c ? flag(c.code) : `<span class="ico">${icon("globe")}</span>`;
+    $("#c-loc .v").textContent = c?.name ?? "Pick a location";
+  });
   let title, sub, label;
   if (S.restoring) [title, sub, label] = ["Restoring…", "Putting your routes and DNS back", "Wait"];
   else if (ph === "busy") [title, sub, label] = [S.connecting ? "Connecting…" : "Working…", esc(S.message?.text ?? ""), "Wait"];
   // relay mode carries the web only: the rest goes direct, so it isn't "fully protected"
   else if (ph === "global" && S.relayOn) [title, sub, label] = ["Relay, system-wide", "The web through your relay · the rest direct", "Disconnect"];
   else if (ph === "on" && S.relayOn) [title, sub, label] = ["Relay on", "Through your Google script · apps set to use the proxy", "Disconnect"];
-  else if (ph === "global") [title, sub, label] = ["Fully protected", `${where} · all of this computer's traffic`, "Disconnect"];
+  else if (ph === "global") [title, sub, label] = ["Fully protected", `${where} · all of this ${DEVICE}'s traffic`, "Disconnect"];
   else if (ph === "on") [title, sub, label] = ["Connected", `${where} · apps set to use the proxy`, "Disconnect"];
+  // paused from Android's notification (mobile/node/main.mjs): the orb resumes, whole-system mode too
+  else if (S.paused) [title, sub, label] = ["Paused", `Tap to resume · ${where}${S.paused.global ? " · whole system" : ""}`, "Resume"];
   else [title, sub, label] = ["Not connected", c ? `Tap to connect · ${where}` : "Pick a location to connect", "Connect"];
   const t = $("#status-title");
   if (t.textContent !== title) {
@@ -151,7 +160,7 @@ function renderCards() {
     const skel = '<span class="skel"></span>';
     if (S.netChecking) fill("#c-net", skel, '<span class="skel short"></span>');
     else fill("#c-net", esc(S.net ?? "offline"), S.lanIp ? `LAN ${esc(S.lanIp)}` : "no local address", S.net ? "" : "warn");
-    $("#c-net use").setAttribute("href", S.net && !S.net.startsWith("Wi-Fi") ? "#i-plug" : "#i-wifi");
+    $("#c-net use").setAttribute("href", S.net?.startsWith("Mobile") ? "#i-phone" : S.net && !S.net.startsWith("Wi-Fi") ? "#i-plug" : "#i-wifi");
     if (S.ipChecking) fill("#c-ip", skel, '<span class="skel short"></span>');
     else fill("#c-ip", esc(S.ip ?? "unreachable"), esc(S.ip ? S.ipNote : "the IP check didn't answer"), S.ip ? "" : "warn");
     const p = S.proxy;
@@ -298,14 +307,14 @@ function renderSettings() {
     const share = $("#share");
     share.classList.toggle("on", s.share);
     share.setAttribute("aria-checked", String(s.share));
-    $("#share-hint").textContent = s.share ? "Other devices on this Wi-Fi can use the VPN through this computer." : "Only this computer can use the proxy.";
-    const addr = `${S.lanIp ?? "this computer's IP"}:${s.port}`;
+    $("#share-hint").textContent = s.share ? `Other devices on this Wi-Fi can use the VPN through this ${DEVICE}.` : `Only this ${DEVICE} can use the proxy.`;
+    const addr = `${S.lanIp ?? `this ${DEVICE}'s IP`}:${s.port}`;
     $("#share-box").innerHTML = s.share
-      ? `<div class="hint">Set your phone's Wi-Fi proxy to</div>
+      ? `<div class="hint">Set ${ANDROID ? "the other device's" : "your phone's"} Wi-Fi proxy to</div>
          <div class="addr"><span class="mono">${esc(addr)}</span><button class="mini" data-copy="${esc(addr)}" title="Copy">${icon("copy")}</button></div>
          ${s.username || s.password ? '<div class="hint">Devices sign in with the username and password below.</div>' : '<div class="warn-line">No password: anyone on this network can use it. Set one below.</div>'}
          ${S.fwHint ? `<div class="hint">If they can't connect, open the port in the firewall:</div>${S.fwHint.map((c) => `<div class="cmd"><span class="mono">${esc(c)}</span><button class="mini" data-copy="${esc(c)}" title="Copy">${icon("copy")}</button></div>`).join("")}` : ""}`
-      : '<div class="hint">Turn on to use the VPN from your phone, on the same Wi-Fi.</div>';
+      : `<div class="hint">Turn on to use the VPN from ${ANDROID ? "a computer or another phone" : "your phone"}, on the same Wi-Fi.</div>`;
     // typed values stay until saved; a change from elsewhere (a save) shows here
     if (document.activeElement !== $("#port")) $("#port").value = String(s.port);
     if (document.activeElement !== $("#username")) $("#username").value = s.username;
@@ -321,7 +330,7 @@ function renderSettings() {
       : "<strong>Off:</strong> Foxhole talks to Mozilla directly.";
     $("#cert-group").hidden = !r && !S.caOk;
     $("#cert-state").className = S.caOk ? "ok" : "warn";
-    $("#cert-state").textContent = S.caOk ? "Trusted on this computer" : "Not trusted yet: sites won't open through the relay";
+    $("#cert-state").textContent = S.caOk ? `Trusted on this ${DEVICE}` : "Not trusted yet: sites won't open through the relay";
     $("#cert-btn").textContent = S.caOk ? "Remove" : "Trust it";
     $("#cert-btn").classList.toggle("primary", !S.caOk);
   });
@@ -360,7 +369,9 @@ function renderTrust() {
   section("trust", [S.trustAsk], () => {
     $("#trust-modal").classList.toggle("on", S.trustAsk);
     const how = { darwin: "macOS asks for your password once", win32: "Windows asks you to confirm once: choose Yes" }[fh.platform] ?? "It takes your login password once";
-    $("#trust-how").textContent = `${how}, then restart your browser.`;
+    $("#trust-how").textContent = ANDROID
+      ? "Android has you install it yourself: Foxhole opens the screen for it and says what to tap there. Chrome trusts it then; most other apps don't."
+      : `${how}, then restart your browser.`;
   });
 }
 
@@ -385,7 +396,19 @@ function renderOnboard() {
     const err = a.error ? `<div class="err-box">${esc(a.error)}</div>` : "";
     const wait = (text) => `<div class="waiting"><span class="spin"></span>${text}</div>`;
     const mac = fh.platform === "darwin";
-    $("#onboard-box").innerHTML = {
+    // Android: Mozilla's sign-in page opens in the app itself (App.tsx), no Firefox needed
+    const android = {
+      checking: () => `${fox}<h2>Waking up the fox…</h2><p>Getting the VPN token from your Mozilla account.</p>${wait("One moment")}`,
+      signin: () => `${fox}<h2>Sign in to your Mozilla account</h2>
+        <p>Foxhole uses Firefox's free VPN, which comes with a <b>Mozilla account</b>: the one Firefox signs in with. Sign in with yours, or make one: it's free.</p>
+        ${err}
+        <div class="buttons"><button class="btn primary" data-act="openFirefox">${icon("user")}Sign in</button></div>
+        <p class="fine">You sign in on Mozilla's own page. Foxhole keeps the sign-in on this phone, to get the VPN's token with.</p>`,
+      switch: () => `${fox}<h2>Switch account</h2>
+        <p>Sign in with the other Mozilla account, and Foxhole carries on with it.</p>
+        <div class="buttons"><button class="btn primary" data-act="openFirefox">${icon("user")}Sign in</button>${a.email ? `<button class="btn" data-act="keepAccount">Keep ${esc(a.email)}</button>` : ""}</div>`,
+    };
+    $("#onboard-box").innerHTML = ((ANDROID && android[a.stage]) || {
       checking: () => `${fox}<h2>Waking up the fox…</h2><p>Getting the VPN token from your Firefox login.</p>${wait("One moment")}`,
       signin: () => `${fox}<h2>Sign in to Firefox</h2>
         <p>Foxhole uses Firefox's built-in VPN, so the <b>Firefox browser</b> must be signed in to your Mozilla account: inside the browser, not on a website.</p>
@@ -427,7 +450,7 @@ function renderOnboard() {
         <p>In Firefox's <b>Sync</b> settings click <b>Sign out</b>, then sign in with the other account. Foxhole carries on once it sees the new one.</p>
         <div class="buttons"><button class="btn primary" data-act="openFirefox">${icon("external")}Open Firefox's Sync settings</button>${a.email ? `<button class="btn" data-act="keepAccount">Keep ${esc(a.email)}</button>` : ""}</div>
         ${wait("Waiting for the other account…")}`,
-    }[a.stage]();
+    }[a.stage])();
   });
 }
 
@@ -435,8 +458,9 @@ function renderOnboard() {
 
 let openSheet = null;
 
+// .locations: a sheet on a phone (style.css), the side panel elsewhere
 function showSheet(name) {
-  for (const el of document.querySelectorAll(".sheet")) el.classList.toggle("on", el.id === `sheet-${name}`);
+  for (const el of document.querySelectorAll(".sheet, .locations")) el.classList.toggle("on", el.id === `sheet-${name}`);
   openSheet = name;
   $("#scrim").classList.add("on");
   if (name === "settings") act("openSettings");
@@ -445,7 +469,7 @@ function showSheet(name) {
 }
 
 function closeSheet() {
-  for (const el of document.querySelectorAll(".sheet")) el.classList.remove("on");
+  for (const el of document.querySelectorAll(".sheet, .locations")) el.classList.remove("on");
   openSheet = null;
   if (!S?.pw) $("#scrim").classList.remove("on");
 }
@@ -608,7 +632,10 @@ document.addEventListener("click", async (e) => {
     act("copy", t.dataset.copy);
     return flash(t, icon("check"));
   }
-  if (t.dataset.code) return act("connect", t.dataset.code);
+  if (t.dataset.code) {
+    closeSheet(); // a phone's Locations sheet: the orb behind it shows the connecting
+    return act("connect", t.dataset.code);
+  }
   if (t.dataset.mode) return (t.dataset.mode === "global") !== S.globalOn && act("toggleGlobal");
   if (t.dataset.via) return act("setSplitDefault", t.dataset.via);
   if (t.dataset.site) return act("addRule", t.dataset.site);
@@ -631,6 +658,7 @@ document.addEventListener("click", async (e) => {
       act("copy", S.proxy?.addr ?? "");
       return flash(t, icon("check"));
     case "c-split": return showSheet("split");
+    case "c-loc": return showSheet("locations");
     case "open-settings": case "account": return showSheet("settings");
     case "open-logs": return showSheet("logs");
     case "copy-logs": return (await act("copyLogs")) && flash(t, `${icon("check")}Copied`);
@@ -805,6 +833,7 @@ document.addEventListener("keydown", (e) => {
 
 // The soft light on the panels, and the orb tilting toward the pointer
 document.addEventListener("pointermove", (e) => {
+  if (e.pointerType === "touch") return; // a finger scrolling isn't a pointer to follow
   for (const el of document.querySelectorAll(".spot")) {
     const r = el.getBoundingClientRect();
     el.style.setProperty("--mx", `${e.clientX - r.left}px`);
@@ -852,6 +881,12 @@ window.addEventListener("focus", () => document.body.classList.remove("idle"));
     embers.append(e);
   }
   if (fh.platform === "darwin") document.body.classList.add("mac");
+  if (ANDROID) {
+    document.body.classList.add("android");
+    // the page's own words, written for a computer
+    const words = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    while (words.nextNode()) words.currentNode.nodeValue = words.currentNode.nodeValue.replace(/this computer/g, "this phone");
+  }
   $("#split-suggest .flag").outerHTML = flag("IR");
 }
 

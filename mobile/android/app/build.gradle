@@ -1,0 +1,74 @@
+apply plugin: "com.android.application"
+apply plugin: "org.jetbrains.kotlin.android"
+apply plugin: "com.facebook.react"
+
+react {
+    autolinkLibrariesWithApp()
+}
+
+// Foxhole's version (../../package.json): a.b.c, versionCode a*10000+b*100+c
+def version = new groovy.json.JsonSlurper().parse(file("../../../package.json")).version
+def (major, minor, patch) = version.tokenize(".")*.toInteger()
+// Node for Android and the tunnel, fetched by scripts/prepare.mjs
+def nativeDir = file("../../native")
+def abis = (findProperty("reactNativeArchitectures") ?: "arm64-v8a").split(",")*.trim()
+// the release key: FOXHOLE_KEYSTORE (a .jks file), FOXHOLE_KEYSTORE_PASSWORD, FOXHOLE_KEY_ALIAS; without it, the debug key
+def keystore = System.getenv("FOXHOLE_KEYSTORE")
+
+android {
+    ndkVersion rootProject.ext.ndkVersion
+    buildToolsVersion rootProject.ext.buildToolsVersion
+    compileSdk rootProject.ext.compileSdkVersion
+
+    namespace "io.github.diercohen.foxhole"
+    defaultConfig {
+        applicationId "io.github.diercohen.foxhole"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode major * 10000 + minor * 100 + patch
+        versionName version
+        externalNativeBuild { cmake { arguments "-DNODE_DIR=${nativeDir}/nodejs-mobile" } }
+    }
+    externalNativeBuild { cmake { path "src/main/cpp/CMakeLists.txt" } }
+    // an APK for each kind of processor: Node alone is 60 MB for each
+    splits {
+        abi {
+            enable true
+            reset()
+            include(*abis)
+            universalApk false
+        }
+    }
+    packaging { jniLibs { useLegacyPackaging true } } // compressed in the APK
+    signingConfigs {
+        debug {
+            storeFile file("debug.keystore")
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+        }
+        if (keystore) {
+            release {
+                storeFile file(keystore)
+                storePassword System.getenv("FOXHOLE_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("FOXHOLE_KEY_ALIAS")
+                keyPassword System.getenv("FOXHOLE_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
+        release {
+            signingConfig keystore ? signingConfigs.release : signingConfigs.debug
+            minifyEnabled false
+        }
+    }
+}
+
+dependencies {
+    implementation("com.facebook.react:react-android")
+    implementation("com.facebook.react:hermes-android")
+    implementation(files("${nativeDir}/hev-socks5-tunnel.aar"))
+}

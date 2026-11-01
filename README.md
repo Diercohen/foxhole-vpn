@@ -132,7 +132,15 @@ servers. Whole-system mode adds a TUN device (tun2socks) and routes everything i
 ```sh
 npm install && npm run build   # the CLI: node dist/cli.js
 cd gui && npm install && npm start   # the desktop app (Node 22.12+); npm run dist for installers
+cd mobile && npm install && npm run build   # the Android app (Node 22.13+, JDK 17, Android SDK + NDK 27.1)
 ```
+
+The Android app is the desktop app's window and core in React Native, on Node for
+Android ([nodejs-mobile](https://github.com/nodejs-mobile/nodejs-mobile)), with
+[hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel) for whole-system
+mode. Its APKs, one per ABI, land in `mobile/android/app/build/outputs/apk/release`,
+signed with the keystore at `FOXHOLE_KEYSTORE` (`FOXHOLE_KEYSTORE_PASSWORD`,
+`FOXHOLE_KEY_ALIAS`), or else the debug key.
 
 Release: push a tag (`git tag v0.9.1 && git push origin v0.9.1`); GitHub builds
 the apps into a draft release.

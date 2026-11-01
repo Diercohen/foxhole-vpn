@@ -1,0 +1,13 @@
+node_modules/
+build/
+.gradle/
+.cxx/
+.kotlin/
+local.properties
+*.iml
+.idea/
+*.keystore
+!debug.keystore
+# made by scripts/prepare.mjs
+android/app/src/main/assets/
+native/

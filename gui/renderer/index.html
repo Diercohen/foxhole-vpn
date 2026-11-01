@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"> <!-- the Android app (desktop windows ignore it) -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
 <title>Foxhole</title>
 <link rel="stylesheet" href="style.css">
@@ -118,6 +119,8 @@
     </div>
 
     <div class="cards">
+      <!-- a phone's: the Locations as a sheet, in place of a long list to scroll down to (style.css) -->
+      <button class="card link" id="c-loc"><span id="loc-flag"></span><div class="body"><div class="k">Location</div><div class="v"></div><div class="s">Tap to change</div></div><svg class="i chev"><use href="#i-chevron"/></svg></button>
       <div class="card" id="c-net"><span class="ico"><svg class="i"><use href="#i-wifi"/></svg></span><div class="body"><div class="k">Network</div><div class="v"></div><div class="s"></div></div></div>
       <div class="card" id="c-ip"><span class="ico"><svg class="i"><use href="#i-globe"/></svg></span><div class="body"><div class="k">Public IP</div><div class="v"></div><div class="s"></div></div></div>
       <div class="card" id="c-proxy"><span class="ico"><svg class="i"><use href="#i-plug"/></svg></span><div class="body"><div class="k">Proxy</div><div class="v"></div><div class="s"></div></div><button class="mini copy" id="copy-proxy" title="Copy the address" hidden><svg class="i"><use href="#i-copy"/></svg></button></div>
@@ -125,8 +128,8 @@
     </div>
   </section>
 
-  <aside class="locations glass spot rise" style="--d:2">
-    <div class="loc-head"><h2>Locations</h2><span id="loc-count"></span></div>
+  <aside class="locations glass spot rise" id="sheet-locations" style="--d:2">
+    <div class="loc-head"><h2>Locations</h2><span id="loc-count"></span><button class="icon-btn close" data-close title="Close"><svg class="i"><use href="#i-close"/></svg></button></div>
     <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="search" placeholder="Search countries" spellcheck="false" autocomplete="off"></label>
     <div class="list" id="list"></div>
     <div class="tip">
@@ -214,8 +217,8 @@
         <div class="label"><svg class="i"><use href="#i-lock"/></svg>Relay certificate</div>
         <div class="hint">The relay can only fetch web pages, so Foxhole opens each site's encryption on this computer, with certificates from its own authority: made here, and never sent anywhere. Browsers and apps trust it once.</div>
         <div class="cert-line"><span id="cert-state"></span><button class="btn" type="button" id="cert-btn"></button></div>
-        <div class="hint">Terminal tools (npm, pip, git, curl…) keep their own list: paste this into a terminal and they trust it too, and use the proxy.</div>
-        <button class="btn" type="button" data-act="copyEnv" data-copied><svg class="i"><use href="#i-copy"/></svg>Copy terminal setup</button>
+        <div class="hint desktop-only">Terminal tools (npm, pip, git, curl…) keep their own list: paste this into a terminal and they trust it too, and use the proxy.</div>
+        <button class="btn desktop-only" type="button" data-act="copyEnv" data-copied><svg class="i"><use href="#i-copy"/></svg>Copy terminal setup</button>
       </div>
     </div>
     <div class="note" id="settings-note"></div>
