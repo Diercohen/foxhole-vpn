@@ -14,8 +14,9 @@ import { log } from "./dist/log.js";
 
 net.setDefaultAutoSelectFamilyAttemptTimeout(3000); // as cli.ts: far VPN servers take 600-900 ms to answer
 
-// What the window may ask for, as gui/main.js (less the desktop's own: updates, relaunch)
+// What the window may ask for, as gui/main.js (less the desktop's own: relaunch, an update to install by hand)
 const ACTIONS = new Set([
+  "update", "restartToUpdate",
   "state", "power", "connect", "disconnect", "toggleGlobal",
   "setShare", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "setSplitDefault", "addRule", "toggleRule", "removeRule",
   "logs", "copy", "copyLogs", "openFirefox", "switchAccount", "keepAccount", "reloadList",
@@ -77,8 +78,14 @@ function globalSession({ proxyPort }) {
   return session;
 }
 
-// a new version on GitHub: the window links to its releases page (target null: no update in place)
-const updater = new Updater({ dir: join(homedir(), "update"), downloads: join(homedir(), "update"), target: null, via: () => controller.via(), changed: () => controller.emit("change") });
+// a new version on GitHub: the APK, downloaded here, checked and installed by the app (Phone.kt)
+const updater = new Updater({
+  dir: join(homedir(), "update"),
+  downloads: join(homedir(), "apk"),
+  target: { kind: "apk", check: (file, version) => ask("apkCheck", { path: file, version }), open: (file) => ask("apkInstall", { path: file }) },
+  via: () => controller.via(),
+  changed: () => controller.emit("change"),
+});
 const controller = new Controller({
   copy: (text) => void ask("copy", { text }).catch(() => {}),
   updates: updater,
@@ -162,6 +169,8 @@ function handle(msg) {
         .then(() => {
           const args = Array.isArray(msg.args) ? msg.args : [];
           if (msg.name === "state") return view();
+          if (msg.name === "update") return updater.update(); // resolves once it's ready (true) or the try failed
+          if (msg.name === "restartToUpdate") return void updater.install();
           // paused from the notification: the power button, or a country picked, resumes as its Resume does
           if (paused && (msg.name === "power" || msg.name === "connect")) return resume(args[0]);
           return controller[msg.name](...args);

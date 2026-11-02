@@ -99,12 +99,13 @@ function renderHeader() {
       : up.phase === "installing" ? "Installing…"
       : up.error && up.file ? "Install update"
       : up.error ? "Update failed · retry"
-      : up.ready ? "Restart to update"
+      : up.ready ? (ANDROID ? "Install update" : "Restart to update")
       : `Update to ${up.version}`;
     const page = '<span class="link" data-open="releases">download page</span>';
     $("#about-update").innerHTML = !up
       ? "Firefox's free VPN for your whole system. Unofficial, not affiliated with Mozilla."
       : !up.auto ? `Version ${esc(up.version)} is out. <span class="link" id="get-update">Download it</span>`
+      : up.ready && ANDROID ? `Version ${esc(up.version)} is downloaded. <span class="link" id="get-update">Install it</span>`
       : up.ready ? `Version ${esc(up.version)} is ready: restart Foxhole to switch to it. <span class="link" id="get-update">Restart now</span>`
       : up.phase === "downloading" ? `Downloading version ${esc(up.version)} · ${up.progress ?? 0}%…`
       : up.phase === "installing" ? `Installing version ${esc(up.version)}…`
@@ -719,6 +720,11 @@ document.addEventListener("click", async (e) => {
       $("#relay-modal").classList.remove("on");
       return openWizard();
     case "up-restart":
+      // a phone's installer asks first: the dialog goes, to come back if the user says no there
+      if (ANDROID) {
+        $("#update-modal").classList.remove("on");
+        return act("restartToUpdate");
+      }
       t.disabled = true;
       t.textContent = "Restarting…";
       return act("restartToUpdate");
@@ -883,6 +889,10 @@ window.addEventListener("focus", () => document.body.classList.remove("idle"));
   if (fh.platform === "darwin") document.body.classList.add("mac");
   if (ANDROID) {
     document.body.classList.add("android");
+    // Android's installer replaces the app (updater.js): it closes, the VPN with it
+    $("#update-modal h2").textContent = "The update is downloaded";
+    $("#update-modal p").textContent = "Android asks you to install it. Foxhole closes while it does, and the VPN with it: open Foxhole again after.";
+    $("#up-restart").textContent = "Install";
     // the page's own words, written for a computer
     const words = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     while (words.nextNode()) words.currentNode.nodeValue = words.currentNode.nodeValue.replace(/this computer/g, "this phone");

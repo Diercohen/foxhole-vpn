@@ -28,7 +28,7 @@ let cut = true; // the first download breaks off halfway
 const gh = https.createServer({ key: readFileSync(key), cert: readFileSync(cert) }, (req, res) => {
   const base = `https://127.0.0.1:${gh.address().port}`;
   if (req.url === "/releases/latest") return res.writeHead(302, { location: `${base}/releases/tag/v9.9.9` }).end();
-  if (req.url === "/releases/download/v9.9.9/app.dmg" || req.url === "/releases/download/v9.9.9/Foxhole-9.9.9.AppImage") return res.writeHead(302, { location: "/cdn/app.dmg" }).end(); // GitHub sends files from elsewhere
+  if (req.url === "/releases/download/v9.9.9/app.dmg" || req.url === "/releases/download/v9.9.9/Foxhole-9.9.9.AppImage" || req.url === "/releases/download/v9.9.9/android-foxhole-9.9.9.apk") return res.writeHead(302, { location: "/cdn/app.dmg" }).end(); // GitHub sends files from elsewhere
   if (req.url !== "/cdn/app.dmg") return res.writeHead(404).end();
   ranges.push(req.headers.range ?? null);
   const from = Number(/^bytes=(\d+)-$/.exec(req.headers.range ?? "")?.[1] ?? 0);
@@ -123,6 +123,26 @@ assert.equal(w.state().file, null);
 assert.equal(w.install({ relaunch: true }), false, "nothing to install");
 assert.equal(w.installByHand(), false);
 
+// Android's APK: the app checks it, then its installer gets it, again if the user said no; one that doesn't check out goes
+const checked = [];
+const opened = [];
+let bad = "the download isn't Foxhole";
+const apk = { kind: "apk", check: async (f, v) => { checked.push(v); if (bad) throw new Error(bad); }, open: async (f) => opened.push(f) };
+const a = new Updater({ dir: path.join(dir, "upd-apk"), downloads: path.join(dir, "apk"), target: apk, via: () => null, changed: () => {} });
+a.start();
+await a.check();
+assert.equal(await a.update(), false);
+assert.equal(a.state().error, bad);
+assert.equal(a.state().file, null, "one that doesn't check out goes");
+bad = null;
+assert.equal(await a.update(), true);
+assert.deepEqual(checked, ["9.9.9", "9.9.9"]);
+const apkFile = path.join(dir, "apk", "android-foxhole-9.9.9.apk");
+assert.equal(a.install(), true, "Android's installer takes it from here");
+assert.equal(a.install(), true, "and again, after a no there");
+assert.deepEqual(opened, [apkFile, apkFile]);
+assert.equal(a.state().ready, true, "still ready");
+
 gh.close();
 proxy.close();
-console.log("ok - updates: the latest version, a download resumed after a break, through the proxy too; the Update button's download, kept in Downloads, put in on the quit, offered by hand when it didn't take");
+console.log("ok - updates: the latest version, a download resumed after a break, through the proxy too; the Update button's download, kept in Downloads, put in on the quit, offered by hand when it didn't take; Android's APK, checked, to its installer");

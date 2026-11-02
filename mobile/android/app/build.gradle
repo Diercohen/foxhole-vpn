@@ -30,13 +30,13 @@ android {
         externalNativeBuild { cmake { arguments "-DNODE_DIR=${nativeDir}/nodejs-mobile" } }
     }
     externalNativeBuild { cmake { path "src/main/cpp/CMakeLists.txt" } }
-    // an APK for each kind of processor: Node alone is 60 MB for each
+    // an APK for each kind of processor (Node alone is 60 MB for each), and a universal one
     splits {
         abi {
             enable true
             reset()
             include(*abis)
-            universalApk false
+            universalApk true // and one with all of them: the release's
         }
     }
     packaging { jniLibs { useLegacyPackaging true } } // compressed in the APK

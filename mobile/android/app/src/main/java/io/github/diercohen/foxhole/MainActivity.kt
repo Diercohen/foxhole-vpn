@@ -15,6 +15,7 @@ class MainActivity : ReactActivity() {
   override fun onResume() {
     super.onResume()
     shown = this
+    Phone.resumed(this)
     Core.send("""{"t":"ui","on":true}""")
   }
 

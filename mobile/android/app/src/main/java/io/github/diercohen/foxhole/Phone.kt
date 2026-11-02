@@ -5,8 +5,11 @@ import android.content.ClipboardManager
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
@@ -14,6 +17,8 @@ import android.os.Looper
 import android.provider.MediaStore
 import android.provider.Settings
 import android.security.KeyChain
+import androidx.core.content.FileProvider
+import java.io.File
 import java.security.KeyStore
 import java.security.cert.CertificateFactory
 import org.json.JSONObject
@@ -43,6 +48,8 @@ object Phone {
         "caTrusted" -> Core.answer(id, caTrusted(args.getString("pem")))
         "caInstall" -> main.post { reply(id) { caInstall(ctx, args.getString("pem")) } }
         "caRemove" -> main.post { reply(id) { caRemove(ctx) } }
+        "apkCheck" -> Core.answer(id, apkCheck(ctx, args.getString("path"), args.getString("version")))
+        "apkInstall" -> main.post { reply(id) { apkInstall(ctx, File(args.getString("path"))) } }
         else -> Core.fail(id, "Android can't $cmd")
       }
     } catch (e: Exception) {
@@ -123,6 +130,47 @@ object Phone {
   private fun caRemove(ctx: Context): String {
     if (!open(ctx, Intent("com.android.settings.TRUSTED_CREDENTIALS_USER"))) open(ctx, Intent(Settings.ACTION_SECURITY_SETTINGS))
     return "In Settings, open Trusted credentials (search for it), then User: tap Foxhole Relay CA, then Remove."
+  }
+
+  // ── An update: the APK the core downloaded (gui/updater.js), to Android's installer ───────────────────────────
+
+  private var waitingApk: File? = null // for Android's leave to install apps: opened once it's given (resumed)
+
+  /** It's this app, the version expected, signed with this app's key: Android would refuse it otherwise, after asking. */
+  private fun apkCheck(ctx: Context, path: String, version: String): Any? {
+    @Suppress("DEPRECATION") val flags = PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES
+    val pm = ctx.packageManager
+    val apk = pm.getPackageArchiveInfo(path, flags) ?: error("the download isn't an Android app")
+    if (apk.packageName != ctx.packageName) error("the download isn't Foxhole")
+    if (apk.versionName != version) error("the download isn't version $version")
+    if (signers(apk) != signers(pm.getPackageInfo(ctx.packageName, flags))) {
+      error("it's signed with another key than this copy, so Android won't install it over this one: uninstall Foxhole first")
+    }
+    return null
+  }
+
+  @Suppress("DEPRECATION")
+  private fun signers(info: PackageInfo) = (info.signingInfo?.apkContentsSigners ?: info.signatures).orEmpty().map { it.toCharsString() }.toSet()
+
+  /** Android's installer, with the APK; first, once, Settings to let Foxhole install apps (back from there, resumed() opens it). */
+  private fun apkInstall(ctx: Context, apk: File): Any? {
+    if (!ctx.packageManager.canRequestPackageInstalls()) {
+      waitingApk = apk
+      if (!open(ctx, Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${ctx.packageName}")))) error("Settings didn't open")
+      return null
+    }
+    val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.updates", apk) // res/xml/updates.xml
+    val install = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    if (!open(ctx, install)) error("Android's installer didn't open")
+    return null
+  }
+
+  /** The app is on screen again (MainActivity): back from Settings with the leave to install, the update's installer. */
+  fun resumed(ctx: Context) {
+    val apk = waitingApk ?: return
+    if (!ctx.packageManager.canRequestPackageInstalls()) return
+    waitingApk = null
+    runCatching { apkInstall(ctx, apk) }
   }
 
   /** Opens a screen of Settings (or another app's); false if there's no such screen. */

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- where the core downloads an update (node/main.mjs: ~/apk, HOME being files/home) -->
+<paths>
+    <files-path name="apk" path="home/apk/" />
+</paths>

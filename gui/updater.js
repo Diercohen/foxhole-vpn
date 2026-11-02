@@ -3,7 +3,8 @@
 // - macOS: the .dmg for this architecture, unpacked and checked, then swapped in for the app on the restart or quit;
 // - Windows: the installer, run silently once the app has quit (and put its routes back) on "Restart now";
 // - Linux, an AppImage: the new AppImage, put over the old file on the restart or quit;
-// - Linux, the .deb: installed at once with pkexec dpkg (the system asks for the password).
+// - Linux, the .deb: installed at once with pkexec dpkg (the system asks for the password);
+// - Android (mobile/), the APK: checked by the app (this app, this version, its key), then given to Android's installer.
 // The file goes to the user's Downloads and stays there until the new version runs, to install by hand if it doesn't
 // go in by itself.
 // A copy that can't update itself (run from the disk image, a development copy, Linux on Arm) links to the download.
@@ -103,6 +104,7 @@ export const ASSET = {
   win: (v) => `Foxhole-${v}-setup.exe`, // x64: Windows on Arm runs it too
   appimage: (v) => `Foxhole-${v}.AppImage`, // x64
   deb: (v) => `foxhole-desktop_${v}_amd64.deb`,
+  apk: (v) => `android-foxhole-${v}.apk`, // every phone's (.github/workflows/release.yml)
 };
 
 /** The versions of this kind's file in `dir`: { version, name } for each complete one (not a .part). */
@@ -121,7 +123,8 @@ function downloaded(dir, kind) {
 export class Updater {
   #dir; // the app's own: the Mac's new app unpacked, the old one it replaced, and the marks of tries to install
   #downloads; // where the release file goes, and stays: to install by hand if it doesn't go in by itself
-  // how this copy updates itself: { kind: "mac", bundle } | { kind: "win", exe } | { kind: "appimage", file } | { kind: "deb" };
+  // how this copy updates itself: { kind: "mac", bundle } | { kind: "win", exe } | { kind: "appimage", file } | { kind: "deb" }
+  // | { kind: "apk", check(file, version), open(file) } (the phone's: promises);
   // null: it can't, and the window links to the download instead
   #target;
   #via; // () => the VPN's proxy when connected
@@ -260,6 +263,13 @@ export class Updater {
           throw new Error(err.code === 126 ? "it needs your password to install" : err.code === 127 ? "the system couldn't ask for your password" : err.message);
         });
         this.#ready = true;
+      } else if (t.kind === "apk") {
+        // one that isn't this app, this version, or signed with its key goes (Android would refuse it, after asking)
+        await t.check(file, v).catch((err) => {
+          rmSync(file, { force: true });
+          throw err;
+        });
+        this.#ready = file;
       } else {
         if (t.kind === "appimage") chmodSync(file, 0o755);
         this.#ready = file;
@@ -305,6 +315,11 @@ export class Updater {
   install({ relaunch = false, args = [] } = {}) {
     const t = this.#target;
     if (!this.#ready || this.#ready === true) return false; // nothing waiting, or a .deb that's in already
+    // Android's installer asks, then replaces this app (ending it); asked again if the user says no now
+    if (t.kind === "apk") {
+      t.open(this.#ready).catch((err) => log(`update: couldn't open Android's installer: ${err.message}`));
+      return true;
+    }
     if (t.kind === "win" && !relaunch) return false; // an installer cut off by a shutdown would leave half an app: it waits for "Restart now"
     const mark = join(this.#dir, `tried-${this.#version}`); // the new version's first start deletes it; the old one's says it didn't take
     try {
