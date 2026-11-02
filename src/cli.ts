@@ -17,6 +17,7 @@ import { restoreWindows, serveElevated, HELPER_CMD } from "./global-win32.js";
 import { Tui } from "./tui.js";
 import { envLines } from "./catrust.js";
 import { loadCa } from "./mitm.js";
+import { useFastlyFallback } from "./dns.js";
 import { checkUpdate, updateNotice, versionLines } from "./update.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenFile, tokenTtl, tokenProblem } from "./tokenserver.js";
 import { bold, dim, green, red, yellow, cyan, under, code, flag, countryName, gb, shortDate, box, vw, centerIn, copyText, openUrl } from "./ui.js";
@@ -24,6 +25,7 @@ import { bold, dim, green, red, yellow, cyan, under, code, flag, countryName, gb
 // Node gives each server address only 250 ms before moving on; far VPN servers
 // take 600-900 ms to answer, so every attempt failed with a blank AggregateError.
 net.setDefaultAutoSelectFamilyAttemptTimeout(3000);
+useFastlyFallback(); // where the network drops Fastly's addresses Mozilla's hosts get (dns.ts)
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);

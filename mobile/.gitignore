@@ -11,3 +11,9 @@ local.properties
 # made by scripts/prepare.mjs
 android/app/src/main/assets/
 native/
+ios/assets/
+# iOS: CocoaPods' (pod install), Xcode's own
+ios/Pods/
+ios/Foxhole.xcworkspace/
+xcuserdata/
+ios/.xcode.env.local

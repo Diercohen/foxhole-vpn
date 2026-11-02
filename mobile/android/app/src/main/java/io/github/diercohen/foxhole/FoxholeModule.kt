@@ -22,6 +22,8 @@ class FoxholeModule(context: ReactApplicationContext) : NativeFoxholeSpec(contex
 
   override fun webView(): String = WebView.getCurrentWebViewPackage()?.let { "${it.packageName} ${it.versionName}" } ?: ""
 
+  override fun page() = "file:///android_asset/www/renderer/index.html" // scripts/prepare.mjs puts it there
+
   override fun moveToBack() {
     reactApplicationContext.currentActivity?.moveTaskToBack(true)
   }

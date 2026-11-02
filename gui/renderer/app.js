@@ -1,7 +1,10 @@
 // The window: draws the state the main process sends (controller.js state()) and asks it for actions.
 const fh = window.foxhole;
-const ANDROID = fh.platform === "android"; // the app on a phone (mobile/): Mozilla's sign-in is its own, its VPN Android's
-const DEVICE = ANDROID ? "phone" : "computer";
+const PHONE = fh.platform === "android" || fh.platform === "ios"; // the app on a phone (mobile/): Mozilla's sign-in is its own
+const IOS = fh.platform === "ios"; // its VPN Android's; iOS has none (Apple's needs a paid developer account): proxy only
+// iOS 16 and older (or a version not found): no animations, transitions or 3D fox; they stop its WebKit painting (style.css)
+const STILL = IOS && !(+/OS (\d+)_/.exec(navigator.userAgent)?.[1] > 16);
+const DEVICE = PHONE ? "phone" : "computer";
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 // The countries with a picture in flags/ (<code>.svg; pictures, as Windows draws no flag emoji); the rest show their code
@@ -99,13 +102,13 @@ function renderHeader() {
       : up.phase === "installing" ? "Installing…"
       : up.error && up.file ? "Install update"
       : up.error ? "Update failed · retry"
-      : up.ready ? (ANDROID ? "Install update" : "Restart to update")
+      : up.ready ? (PHONE ? "Install update" : "Restart to update")
       : `Update to ${up.version}`;
     const page = '<span class="link" data-open="releases">download page</span>';
     $("#about-update").innerHTML = !up
       ? "Firefox's free VPN for your whole system. Unofficial, not affiliated with Mozilla."
       : !up.auto ? `Version ${esc(up.version)} is out. <span class="link" id="get-update">Download it</span>`
-      : up.ready && ANDROID ? `Version ${esc(up.version)} is downloaded. <span class="link" id="get-update">Install it</span>`
+      : up.ready && PHONE ? `Version ${esc(up.version)} is downloaded. <span class="link" id="get-update">Install it</span>`
       : up.ready ? `Version ${esc(up.version)} is ready: restart Foxhole to switch to it. <span class="link" id="get-update">Restart now</span>`
       : up.phase === "downloading" ? `Downloading version ${esc(up.version)} · ${up.progress ?? 0}%…`
       : up.phase === "installing" ? `Installing version ${esc(up.version)}…`
@@ -180,14 +183,14 @@ function renderList() {
   const q = $("#search").value.trim().toLowerCase();
   section("list", [S.countries, S.active, S.connecting, S.listError, q, S.auth.stage === "ready"], () => {
     const list = $("#list");
-    // Relay first, set up or not (then dimmed: a click says what it is), a line between it and the countries
-    const relay = S.countries.find((c) => c.code === RELAY) ?? { code: RELAY, name: "Relay", locked: false, available: false, intro: true };
-    const count = S.countries.length - (relay.intro ? 0 : 1);
-    const shown = [relay, ...S.countries.filter((c) => c !== relay)].filter((c) => !q || c.name.toLowerCase().includes(q) || c.code.toLowerCase() === q);
+    // Relay first, set up or not (then dimmed: a click says what it is), a line between it and the countries; none on a phone
+    const relay = PHONE ? null : S.countries.find((c) => c.code === RELAY) ?? { code: RELAY, name: "Relay", locked: false, available: false, intro: true };
+    const count = S.countries.length - (relay && !relay.intro ? 1 : 0);
+    const shown = [relay, ...S.countries.filter((c) => c !== relay)].filter((c) => c && (!q || c.name.toLowerCase().includes(q) || c.code.toLowerCase() === q));
     $("#loc-count").textContent = count ? `${count} countries` : "";
     if (S.listError) {
       // the relay still goes: it's for when Mozilla can't be reached
-      list.innerHTML = `${rowHtml(relay, 0, false)}<div class="empty"><b>Couldn't load the locations</b>${esc(S.listError)}<br><button class="btn" data-act="reloadList">${icon("refresh")}Try again</button></div>`;
+      list.innerHTML = `${relay ? rowHtml(relay, 0, false) : ""}<div class="empty"><b>Couldn't load the locations</b>${esc(S.listError)}<br><button class="btn" data-act="reloadList">${icon("refresh")}Try again</button></div>`;
       return;
     }
     if (!S.countries.length) {
@@ -200,7 +203,7 @@ function renderList() {
     }
     const rise = !listShown;
     listShown = true;
-    const sep = shown[0] === relay && shown.length > 1 ? `<div class="sep${rise ? " rise" : ""}" style="--d:2"></div>` : "";
+    const sep = relay && shown[0] === relay && shown.length > 1 ? `<div class="sep${rise ? " rise" : ""}" style="--d:2"></div>` : "";
     list.innerHTML = shown.map((c, i) => rowHtml(c, i, rise) + (i === 0 ? sep : "")).join("");
   });
   reveal();
@@ -311,11 +314,11 @@ function renderSettings() {
     $("#share-hint").textContent = s.share ? `Other devices on this Wi-Fi can use the VPN through this ${DEVICE}.` : `Only this ${DEVICE} can use the proxy.`;
     const addr = `${S.lanIp ?? `this ${DEVICE}'s IP`}:${s.port}`;
     $("#share-box").innerHTML = s.share
-      ? `<div class="hint">Set ${ANDROID ? "the other device's" : "your phone's"} Wi-Fi proxy to</div>
+      ? `<div class="hint">Set ${PHONE ? "the other device's" : "your phone's"} Wi-Fi proxy to</div>
          <div class="addr"><span class="mono">${esc(addr)}</span><button class="mini" data-copy="${esc(addr)}" title="Copy">${icon("copy")}</button></div>
          ${s.username || s.password ? '<div class="hint">Devices sign in with the username and password below.</div>' : '<div class="warn-line">No password: anyone on this network can use it. Set one below.</div>'}
          ${S.fwHint ? `<div class="hint">If they can't connect, open the port in the firewall:</div>${S.fwHint.map((c) => `<div class="cmd"><span class="mono">${esc(c)}</span><button class="mini" data-copy="${esc(c)}" title="Copy">${icon("copy")}</button></div>`).join("")}` : ""}`
-      : `<div class="hint">Turn on to use the VPN from ${ANDROID ? "a computer or another phone" : "your phone"}, on the same Wi-Fi.</div>`;
+      : `<div class="hint">Turn on to use the VPN from ${PHONE ? "a computer or another phone" : "your phone"}, on the same Wi-Fi.</div>`;
     // typed values stay until saved; a change from elsewhere (a save) shows here
     if (document.activeElement !== $("#port")) $("#port").value = String(s.port);
     if (document.activeElement !== $("#username")) $("#username").value = s.username;
@@ -370,9 +373,11 @@ function renderTrust() {
   section("trust", [S.trustAsk], () => {
     $("#trust-modal").classList.toggle("on", S.trustAsk);
     const how = { darwin: "macOS asks for your password once", win32: "Windows asks you to confirm once: choose Yes" }[fh.platform] ?? "It takes your login password once";
-    $("#trust-how").textContent = ANDROID
-      ? "Android has you install it yourself: Foxhole opens the screen for it and says what to tap there. Chrome trusts it then; most other apps don't."
-      : `${how}, then restart your browser.`;
+    $("#trust-how").textContent = IOS
+      ? "iOS has you install it yourself: Safari downloads it, and Foxhole says what to tap in Settings then. Safari and other apps trust it then."
+      : PHONE
+        ? "Android has you install it yourself: Foxhole opens the screen for it and says what to tap there. Chrome trusts it then; most other apps don't."
+        : `${how}, then restart your browser.`;
   });
 }
 
@@ -397,8 +402,8 @@ function renderOnboard() {
     const err = a.error ? `<div class="err-box">${esc(a.error)}</div>` : "";
     const wait = (text) => `<div class="waiting"><span class="spin"></span>${text}</div>`;
     const mac = fh.platform === "darwin";
-    // Android: Mozilla's sign-in page opens in the app itself (App.tsx), no Firefox needed
-    const android = {
+    // a phone: Mozilla's sign-in page opens in the app itself (App.tsx), no Firefox needed
+    const phone = {
       checking: () => `${fox}<h2>Waking up the fox…</h2><p>Getting the VPN token from your Mozilla account.</p>${wait("One moment")}`,
       signin: () => `${fox}<h2>Sign in to your Mozilla account</h2>
         <p>Foxhole uses Firefox's free VPN, which comes with a <b>Mozilla account</b>: the one Firefox signs in with. Sign in with yours, or make one: it's free.</p>
@@ -409,7 +414,7 @@ function renderOnboard() {
         <p>Sign in with the other Mozilla account, and Foxhole carries on with it.</p>
         <div class="buttons"><button class="btn primary" data-act="openFirefox">${icon("user")}Sign in</button>${a.email ? `<button class="btn" data-act="keepAccount">Keep ${esc(a.email)}</button>` : ""}</div>`,
     };
-    $("#onboard-box").innerHTML = ((ANDROID && android[a.stage]) || {
+    $("#onboard-box").innerHTML = ((PHONE && phone[a.stage]) || {
       checking: () => `${fox}<h2>Waking up the fox…</h2><p>Getting the VPN token from your Firefox login.</p>${wait("One moment")}`,
       signin: () => `${fox}<h2>Sign in to Firefox</h2>
         <p>Foxhole uses Firefox's built-in VPN, so the <b>Firefox browser</b> must be signed in to your Mozilla account: inside the browser, not on a website.</p>
@@ -649,10 +654,12 @@ document.addEventListener("click", async (e) => {
   }
   switch (t.id) {
     case "orb": {
-      const shock = document.createElement("i");
-      shock.className = "shock";
-      $("#orb-wrap").append(shock);
-      shock.addEventListener("animationend", () => shock.remove());
+      if (!STILL) { // its ripple (old iOS: no animations, style.css)
+        const shock = document.createElement("i");
+        shock.className = "shock";
+        $("#orb-wrap").append(shock);
+        shock.addEventListener("animationend", () => shock.remove());
+      }
       return act("power");
     }
     case "copy-proxy":
@@ -721,7 +728,7 @@ document.addEventListener("click", async (e) => {
       return openWizard();
     case "up-restart":
       // a phone's installer asks first: the dialog goes, to come back if the user says no there
-      if (ANDROID) {
+      if (PHONE) {
         $("#update-modal").classList.remove("on");
         return act("restartToUpdate");
       }
@@ -887,12 +894,14 @@ window.addEventListener("focus", () => document.body.classList.remove("idle"));
     embers.append(e);
   }
   if (fh.platform === "darwin") document.body.classList.add("mac");
-  if (ANDROID) {
-    document.body.classList.add("android");
+  if (PHONE) {
+    document.body.classList.add("phone", fh.platform); // .ios: no whole-system mode (style.css)
+    $("#blocked-later").textContent = "OK"; // the blocked dialog's only button there: no relay on a phone (controller.js NO_RELAY)
     // Android's installer replaces the app (updater.js): it closes, the VPN with it
     $("#update-modal h2").textContent = "The update is downloaded";
     $("#update-modal p").textContent = "Android asks you to install it. Foxhole closes while it does, and the VPN with it: open Foxhole again after.";
     $("#up-restart").textContent = "Install";
+    if (STILL) document.body.classList.add("still");
     // the page's own words, written for a computer
     const words = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     while (words.nextNode()) words.currentNode.nodeValue = words.currentNode.nodeValue.replace(/this computer/g, "this phone");

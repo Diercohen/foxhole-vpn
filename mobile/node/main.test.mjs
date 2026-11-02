@@ -1,8 +1,10 @@
 // node mobile/node/main.test.mjs (after `npm run build` at the top): the notification's Pause and Resume in main.mjs,
-// run as the app runs it (a socket on fd 3), the app's side played here, the Controller a stand-in (no account needed).
+// and its fetch() where there's no WebAssembly (iOS), run as the app runs it (a socket on fd 3; no JIT, as on iOS), the
+// app's side played here, the Controller a stand-in (no account needed).
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { copyFileSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +24,7 @@ export class Controller extends EventEmitter {
   constructor({ android }) { super(); this.#android = android; }
   async start() {}
   via() {}
+  reloadList(url, method) { return fetch(url, { method, body: method === "POST" ? "hi" : undefined }).then((r) => r.text()); }
   openSettings() {}
   #changed() { this.emit("change"); }
   async connect(code) {
@@ -58,7 +61,7 @@ export class Controller extends EventEmitter {
   }
 }`);
 
-const core = spawn(process.execPath, ["main.mjs", "3"], { cwd: dir, env: { ...process.env, HOME: dir }, stdio: ["ignore", "inherit", "inherit", "pipe"] });
+const core = spawn(process.execPath, ["--jitless", "main.mjs", "3"], { cwd: dir, env: { ...process.env, HOME: dir }, stdio: ["ignore", "inherit", "inherit", "pipe"] });
 const app = core.stdio[3];
 const out = (m) => app.write(`${JSON.stringify(m)}\n`);
 const notes = []; // what the notification said, in order: its title (" [Resume]" when paused), or "off"
@@ -84,6 +87,20 @@ const act = (name, ...args) => new Promise((resolve) => (replies.set(++seq, reso
 const settle = () => new Promise((r) => setTimeout(r, 500)); // the notification follows the state within 50 ms
 
 try {
+  // fetch() without WebAssembly: redirects as fetch() follows them (a POST's 302 to a GET, a 307 kept a POST)
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d)).on("end", () => {
+      if (req.url === "/302" || req.url === "/307") return res.writeHead(Number(req.url.slice(1)), { location: "/to" }).end();
+      res.end(`${req.method} ${req.url} ${body}`);
+    });
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const at = `http://127.0.0.1:${server.address().port}`;
+  assert.equal(await act("reloadList", `${at}/302`, "POST"), "GET /to ");
+  assert.equal(await act("reloadList", `${at}/307`, "POST"), "POST /to hi");
+  server.close();
+
   await act("connect", "DE");
   await act("toggleGlobal");
   await settle();
@@ -143,7 +160,7 @@ try {
   await act("disconnect");
   await settle();
   assert.equal(notes.at(-1), "off");
-  console.log("main.mjs: Pause and Resume ok");
+  console.log("main.mjs: fetch() without WebAssembly, Pause and Resume ok");
 } finally {
   core.kill();
   rmSync(dir, { recursive: true, force: true });

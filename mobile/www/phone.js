@@ -1,9 +1,10 @@
-// The desktop window's bridge (gui/preload.cjs) on Android: window.foxhole over React Native's WebView messages.
+// The desktop window's bridge (gui/preload.cjs) on a phone: window.foxhole over React Native's WebView messages.
 // Loaded before app.js (scripts/prepare.mjs puts it in index.html). App.tsx passes the core's lines in by foxholeIn().
 (() => {
-  // the room the system's bars take, from the first paint (App.tsx passes it in the URL, and later changes by script)
-  const bars = new URLSearchParams(location.hash.slice(1));
-  for (const k of ["top", "bottom"]) if (bars.has(k)) document.documentElement.style.setProperty(`--safe-${k}`, `${Number(bars.get(k))}px`);
+  // the room the system's bars take, from the first paint, and the phone's OS (App.tsx passes them in the URL; the room
+  // later changes by script)
+  const hash = new URLSearchParams(location.hash.slice(1));
+  for (const k of ["top", "bottom"]) if (hash.has(k)) document.documentElement.style.setProperty(`--safe-${k}`, `${Number(hash.get(k))}px`);
 
   const post = (m) => window.ReactNativeWebView.postMessage(JSON.stringify(m));
   const waiting = new Map(); // act id → [resolve, reject]
@@ -12,7 +13,7 @@
   let seq = 0;
 
   window.foxhole = {
-    platform: "android",
+    platform: hash.get("os") ?? "android", // "android" or "ios"
     act: (name, ...args) =>
       new Promise((resolve, reject) => {
         waiting.set(++seq, [resolve, reject]);

@@ -27,6 +27,8 @@ const flip = (v) => (v === "vpn" ? "direct" : "vpn");
 const label = (c) => countryName(c.code, c.name);
 /** The Relay "location", first in the list once a relay is set up: the web through the user's own Apps Script (relaymode.ts). */
 const RELAY_ROW = { code: RELAY_CODE, name: "Relay", locked: false, available: true, servers: [] };
+/** No relay on a phone (the user's call): it's never set up there, so it carries nothing and isn't offered. */
+const NO_RELAY = process.platform === "android" || process.platform === "ios";
 
 export class Controller extends EventEmitter {
   #copy; // puts text on the clipboard
@@ -85,7 +87,7 @@ export class Controller extends EventEmitter {
 
   /** global: turn whole-system mode on once connected (the restart into an update, when it was on). */
   async start({ global = false } = {}) {
-    useRelay(loadRelay(this.#settings)); // where vpn.mozilla.org is blocked, relay Guardian's control calls (httprelay.ts)
+    useRelay(this.#relay()); // where vpn.mozilla.org is blocked, relay Guardian's control calls (httprelay.ts)
     useSplit(() => this.#settings.split); // live: a change applies to the next connection
     onLog(() => this.emit("log", logLines[logLines.length - 1]));
     onProxyWarning((msg) => this.#say("error", `proxy: ${msg}`));
@@ -271,7 +273,7 @@ export class Controller extends EventEmitter {
   async connect(code = this.#selected) {
     const country = this.#rows().find((c) => c.code === code);
     if (!country || this.#busy || !this.#conn) return;
-    const relay = country === RELAY_ROW ? loadRelay(this.#settings) : null;
+    const relay = country === RELAY_ROW ? this.#relay() : null;
     this.#busy = true;
     this.#connecting = this.#selected = country.code;
     this.#say("info", relay ? "connecting through your relay…" : `connecting to ${label(country)}…`);
@@ -296,7 +298,8 @@ export class Controller extends EventEmitter {
       if (relay) void this.#askTrust();
       else this.#refreshUsage();
     } catch (err) {
-      if (relay) this.#say("error", err.message);
+      if (err.code === "EADDRINUSE") this.#say("error", `port ${this.#port} is in use by another app (a VPN or proxy?) — quit it, or pick another port in Settings`);
+      else if (relay) this.#say("error", err.message);
       else if (err instanceof GuardianError && err.status === 401) {
         forgetToken(); // so the next start asks for a new one
         this.#say("error", "token rejected (expired) — quit and open Foxhole again to get a new one");
@@ -317,7 +320,7 @@ export class Controller extends EventEmitter {
       this.#refreshNet();
     }
     // Settings saved another relay while this ran (its fields save as they're typed): relay mode follows it now
-    if (relay && JSON.stringify(loadRelay(this.#settings)) !== JSON.stringify(relay)) this.#followRelay();
+    if (relay && JSON.stringify(this.#relay()) !== JSON.stringify(relay)) this.#followRelay();
   }
 
   /** Counts err when it says vpn.mozilla.org is blocked here (with no relay set), for the window to say so; whether it did. */
@@ -530,7 +533,7 @@ export class Controller extends EventEmitter {
     this.#settings = next;
     this.#settingsNote = null;
     if ("relay" in patch) {
-      useRelay(loadRelay(next)); // takes effect at once, no restart
+      useRelay(this.#relay()); // takes effect at once, no restart
       this.#followRelay();
     }
     if ("share" in patch || "port" in patch) {
@@ -643,12 +646,17 @@ export class Controller extends EventEmitter {
 
   /** The Locations: the relay first when one is set up, then the countries. */
   #rows() {
-    return loadRelay(this.#settings) ? [RELAY_ROW, ...this.#countries] : this.#countries;
+    return this.#relay() ? [RELAY_ROW, ...this.#countries] : this.#countries;
   }
 
   /** Relay mode follows the relay's settings: through the new relay, or off without one. */
   #followRelay() {
-    if (this.#active === RELAY_ROW) void (loadRelay(this.#settings) ? this.connect(RELAY_CODE) : this.disconnect());
+    if (this.#active === RELAY_ROW) void (this.#relay() ? this.connect(RELAY_CODE) : this.disconnect());
+  }
+
+  /** The relay as set up in Settings, or null: none, or on a phone. */
+  #relay() {
+    return NO_RELAY ? null : loadRelay(this.#settings);
   }
 
   /** Connected through the relay (relaymode.ts), not Firefox VPN. */

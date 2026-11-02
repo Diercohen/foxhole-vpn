@@ -1,7 +1,7 @@
-// Foxhole on Android: the desktop app's window (gui/renderer) in a WebView over its core (node/main.mjs, run by the
-// native side in Node), and the Mozilla sign-in, which the desktop leaves to Firefox.
+// Foxhole on a phone (Android, iOS): the desktop app's window (gui/renderer) in a WebView over its core (node/main.mjs,
+// run by the native side in Node), and the Mozilla sign-in, which the desktop leaves to Firefox.
 import React, { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, BackHandler, Keyboard, Linking, Modal, PermissionsAndroid, Pressable, StatusBar, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, BackHandler, Keyboard, Linking, Modal, PermissionsAndroid, Platform, Pressable, StatusBar, StyleSheet, Text, View } from "react-native";
 import { SafeAreaProvider, initialWindowMetrics, useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import Core from "./specs/NativeFoxhole";
@@ -15,7 +15,8 @@ const LINKS: Record<string, string> = {
   relay: `${REPO}#where-vpnmozillaorg-is-blocked-eg-iran`,
   gas: "https://script.google.com/home",
 };
-const WINDOW = "file:///android_asset/www/renderer/index.html"; // scripts/prepare.mjs puts it there
+const WINDOW = Core.page(); // scripts/prepare.mjs puts it there
+const WWW = WINDOW.slice(0, WINDOW.lastIndexOf("/www/") + 5); // the window's files: what it may open and read
 const BG = "#07060c";
 
 // ── Signing in ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -122,7 +123,7 @@ function Main() {
           account.current = null; // signed in with it: the sign-in page is done
           setSignIn(false);
         }
-        if (m.s.active && !askedNotify.current) {
+        if (m.s.active && !askedNotify.current && Platform.OS === "android") {
           askedNotify.current = true; // the notification that keeps it running while connected
           void PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
         }
@@ -140,7 +141,7 @@ function Main() {
   }, []);
 
   // the system bars' room, for the page's layout (style.css): the window runs under them
-  const [page] = useState(() => `${WINDOW}#top=${insets.top}&bottom=${insets.bottom}`); // from the first paint (android.js)
+  const [page] = useState(() => `${WINDOW}#top=${insets.top}&bottom=${insets.bottom}&os=${Platform.OS}`); // from the first paint (phone.js)
   const insetsJs = `document.documentElement.style.setProperty("--safe-top", "${insets.top}px");
     document.documentElement.style.setProperty("--safe-bottom", "${keyboard ? 0 : insets.bottom}px");true;`;
   useEffect(() => web.current?.injectJavaScript(insetsJs), [insetsJs]);
@@ -174,11 +175,14 @@ function Main() {
         source={{ uri: page }}
         originWhitelist={["file://*"]}
         allowFileAccess
-        onShouldStartLoadWithRequest={(req) => req.url.startsWith("file:///android_asset/")}
+        onShouldStartLoadWithRequest={(req) => req.url.startsWith(WWW)}
+        allowingReadAccessToURL={WWW}
+        onContentProcessDidTerminate={() => web.current?.reload()} // iOS ends it in the background when short of memory
         onMessage={fromWindow}
         onLoadEnd={() => web.current?.injectJavaScript(insetsJs)}
         textZoom={100}
         overScrollMode="never"
+        bounces={false}
         setBuiltInZoomControls={false}
         webviewDebuggingEnabled={__DEV__}
         style={styles.web}

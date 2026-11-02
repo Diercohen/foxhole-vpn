@@ -1,12 +1,13 @@
 {
   "name": "foxhole-mobile",
   "private": true,
-  "description": "Foxhole for Android: the desktop app's window and core, in React Native",
+  "description": "Foxhole for Android and iOS: the desktop app's window and core, in React Native",
   "scripts": {
     "prepare-android": "node scripts/prepare.mjs",
     "start": "react-native start",
     "android": "node scripts/prepare.mjs && react-native run-android",
-    "build": "node scripts/prepare.mjs && cd android && ./gradlew assembleRelease"
+    "build": "node scripts/prepare.mjs && cd android && ./gradlew assembleRelease",
+    "build-ios": "node scripts/prepare.mjs ios && cd ios && pod install && xcodebuild -workspace Foxhole.xcworkspace -scheme Foxhole -configuration Release -destination generic/platform=iOS -derivedDataPath build -allowProvisioningUpdates DEVELOPMENT_TEAM=$FOXHOLE_TEAM MARKETING_VERSION=$(node -p \"require('../../package.json').version\") build"
   },
   "dependencies": {
     "react": "19.3.0",
@@ -32,6 +33,11 @@
     "jsSrcsDir": "specs",
     "android": {
       "javaPackageName": "io.github.diercohen.foxhole"
+    },
+    "ios": {
+      "modulesProvider": {
+        "Foxhole": "FoxholeModule"
+      }
     }
   },
   "engines": {

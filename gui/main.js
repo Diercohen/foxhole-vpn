@@ -11,12 +11,14 @@ import { createBadge } from "./badge.js";
 import { Updater } from "./updater.js";
 import { REPO_URL } from "./dist/ui.js";
 import { FULL_DISK_ACCESS } from "./dist/profile.js";
+import { useFastlyFallback } from "./dist/dns.js";
 
 // Two copies would fight over the proxy's port and the routes: a second one only brings up the first.
 if (!app.requestSingleInstanceLock()) process.exit(0);
 
 // As cli.ts: Node gives each server address only 250 ms; far VPN servers take 600-900 ms to answer.
 net.setDefaultAutoSelectFamilyAttemptTimeout(3000);
+useFastlyFallback(); // where the network drops Fastly's addresses Mozilla's hosts get (dns.ts)
 
 const LINKS = {
   repo: REPO_URL, releases: `${REPO_URL}/releases`, firefox: "https://www.mozilla.org/firefox/new/",

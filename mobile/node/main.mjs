@@ -1,7 +1,9 @@
-// Foxhole's core on Android: the desktop app's Controller (gui/controller.js) in the Node the app starts (Core.kt),
-// its window the same page in a WebView. One socket to the app carries lines of JSON both ways: the window's actions
-// and their answers, the state and the log out; and what only the phone does (its VPN, clipboard, sign-in page),
-// asked of the app.
+// Foxhole's core on a phone: the desktop app's Controller (gui/controller.js) in the Node the app starts (Core.kt on
+// Android, FoxholeModule.mm on iOS), its window the same page in a WebView. One socket to the app carries lines of JSON
+// both ways: the window's actions and their answers, the state and the log out; and what only the phone does (its VPN,
+// clipboard, sign-in page), asked of the app.
+import http from "node:http";
+import https from "node:https";
 import net from "node:net";
 import { mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -10,9 +12,42 @@ import { Controller } from "./controller.js";
 import { Updater } from "./updater.js";
 import { publicIp } from "./dist/netinfo.js";
 import { caPem, loadCa } from "./dist/mitm.js";
+import { useFastlyFallback } from "./dist/dns.js";
 import { log } from "./dist/log.js";
 
 net.setDefaultAutoSelectFamilyAttemptTimeout(3000); // as cli.ts: far VPN servers take 600-900 ms to answer
+useFastlyFallback(); // where the network drops Fastly's addresses Mozilla's hosts get (dns.ts)
+
+// iOS's Node runs V8 without JIT, so without WebAssembly, which Node 18's fetch() reads HTTP with (undici): there the
+// core's fetch() goes over node:http(s), as guardian.ts's directRequest() does, following redirects as fetch() does
+// (Apps Script answers the relay's POST with a 302)
+if (typeof WebAssembly === "undefined")
+  globalThis.fetch = function request(url, { method = "GET", headers, body, signal } = {}, hops = 0) {
+    const u = new URL(url);
+    return new Promise((resolve, reject) => {
+      const req = (u.protocol === "http:" ? http : https).request(u, { method, headers, signal }, (res) => {
+        const status = res.statusCode;
+        if (res.headers.location && [301, 302, 303, 307, 308].includes(status) && hops < 20) {
+          res.resume();
+          const get = (status === 303 && method !== "HEAD") || (status < 303 && method === "POST");
+          const to = new URL(res.headers.location, u);
+          const init = { method: get ? "GET" : method, headers: to.origin === u.origin ? headers : undefined, body: get ? undefined : body, signal };
+          return resolve(request(to, init, hops + 1));
+        }
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c)).on("error", reject).on("end", () => {
+          try {
+            const all = new Headers();
+            for (let i = 0; i < res.rawHeaders.length; i += 2) all.append(res.rawHeaders[i], res.rawHeaders[i + 1]);
+            resolve(new Response(chunks.length ? Buffer.concat(chunks) : null, { status, headers: all }));
+          } catch (err) {
+            reject(err); // a status or header Response refuses
+          }
+        });
+      });
+      req.on("error", reject).end(body);
+    });
+  };
 
 // What the window may ask for, as gui/main.js (less the desktop's own: relaunch, an update to install by hand)
 const ACTIONS = new Set([
@@ -78,24 +113,33 @@ function globalSession({ proxyPort }) {
   return session;
 }
 
-// a new version on GitHub: the APK, downloaded here, checked and installed by the app (Phone.kt)
-const updater = new Updater({
-  dir: join(homedir(), "update"),
-  downloads: join(homedir(), "apk"),
-  target: { kind: "apk", check: (file, version) => ask("apkCheck", { path: file, version }), open: (file) => ask("apkInstall", { path: file }) },
-  via: () => controller.via(),
-  changed: () => controller.emit("change"),
-});
+// iOS installs a certificate from Safari only: the app opens it there, served from here
+let caServed = null;
+const caUrl = () =>
+  (caServed ??= new Promise((resolve) => {
+    const server = http.createServer((_, res) => res.writeHead(200, { "content-type": "application/x-x509-ca-cert" }).end(loadCa().pem));
+    server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${server.address().port}/foxhole-relay-ca.crt`));
+  }));
+
+// a new version on GitHub: on Android the APK, downloaded here, checked and installed by the app (Phone.kt); on iOS the
+// window links to the releases page (target null: no update in place)
+const apk = process.platform === "android" && {
+  kind: "apk",
+  check: (file, version) => ask("apkCheck", { path: file, version }),
+  open: (file) => ask("apkInstall", { path: file }),
+};
+const updater = new Updater({ dir: join(homedir(), "update"), downloads: join(homedir(), "apk"), target: apk || null, via: () => controller.via(), changed: () => controller.emit("change") });
 const controller = new Controller({
   copy: (text) => void ask("copy", { text }).catch(() => {}),
   updates: updater,
-  android: {
+  android: { // the phone's part (iOS's too)
     openSignIn: () => send({ t: "signIn" }),
     sessionStamp,
     globalSession,
     network: () => ask("network").catch(() => null),
     caTrusted: () => (caPem() ? ask("caTrusted", { pem: caPem() }).catch(() => false) : Promise.resolve(false)),
-    setCaTrust: (add) => ask(add ? "caInstall" : "caRemove", { pem: add ? loadCa().pem : caPem() }),
+    setCaTrust: async (add) =>
+      ask(add ? "caInstall" : "caRemove", { pem: add ? loadCa().pem : caPem(), url: add && process.platform === "ios" ? await caUrl() : undefined }),
   },
 });
 
@@ -219,7 +263,11 @@ app.on("error", (err) => log(`app: ${err.message}`));
 
 // Node's own exit would end the whole app (and its VPN): a stray error is logged instead
 process.on("uncaughtException", (err) => log(`error: ${err.stack ?? err.message}`));
-process.on("unhandledRejection", (err) => log(`error: ${err?.stack ?? err}`));
+process.on("unhandledRejection", (err) => {
+  // but undici's own, on iOS: loaded for Response and Headers, its HTTP reader (unused there: fetch() above) can't be
+  if (err instanceof ReferenceError && err.message === "WebAssembly is not defined") return;
+  log(`error: ${err?.stack ?? err}`);
+});
 
 controller.start().catch((err) => log(`couldn't start: ${err.stack ?? err.message}`));
 updater.start();

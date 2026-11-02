@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"> <!-- the Android app (desktop windows ignore it) -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"> <!-- the phone apps (desktop windows ignore it); iOS zooms into a focused field otherwise -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
 <title>Foxhole</title>
 <link rel="stylesheet" href="style.css">
@@ -264,10 +264,10 @@
     <div class="lock-orb"><svg class="i"><use href="#i-shield"/></svg></div>
     <h2>Mozilla's VPN service is blocked here</h2>
     <p>It seems your government or internet provider blocks Firefox's VPN service (vpn.mozilla.org) in your country.</p>
-    <p>Set up a relay to get around it: a free script on your own Google account that reaches it for Foxhole. It takes a few minutes, and Foxhole shows you each click.</p>
+    <p class="relay-only">Set up a relay to get around it: a free script on your own Google account that reaches it for Foxhole. It takes a few minutes, and Foxhole shows you each click.</p>
     <div class="actions">
       <button class="btn" type="button" id="blocked-later">Not now</button>
-      <button class="btn primary" type="button" id="blocked-setup"><svg class="i"><use href="#i-spark"/></svg>Set up a relay</button>
+      <button class="btn primary relay-only" type="button" id="blocked-setup"><svg class="i"><use href="#i-spark"/></svg>Set up a relay</button>
     </div>
   </div>
 </div>

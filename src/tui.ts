@@ -465,7 +465,8 @@ export class Tui {
       if (relay) void this.#askTrust();
       else this.#refreshUsage();
     } catch (err) {
-      if (relay) this.#message = red((err as Error).message);
+      if ((err as NodeJS.ErrnoException).code === "EADDRINUSE") this.#message = red(`port ${this.#port} is in use by another app (a VPN or proxy?) — quit it, or pick another port in Settings`);
+      else if (relay) this.#message = red((err as Error).message);
       else if (err instanceof GuardianError && err.status === 401) {
         forgetToken(); // so the next start shows the token window
         this.#message = red("token rejected (expired) — quit and run foxhole again to get a new one");

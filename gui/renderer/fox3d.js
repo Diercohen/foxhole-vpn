@@ -1,7 +1,9 @@
 // The hero's fox: the app icon's low-poly fox head in 3D (WebGL), lit by the connection's colors (--a1, --a2) and
 // in a mood for each phase (body[data-phase]): asleep when off, searching while busy, awake and watching the pointer
 // when connected, its eyes glowing in a ring of stars in whole-system mode. Without WebGL the orb keeps its power icon.
+// Not on Android, nor on iOS 16 and older (.still, app.js), where WebGL in WebKit's GPU process stalls the page's painting for good about a second in.
 (() => {
+  if (document.body.classList.contains("still") || window.foxhole?.platform === "android") return;
   const canvas = document.querySelector("#fox3d");
   const wrap = canvas.closest(".orb-wrap");
   const gl = canvas.getContext("webgl", { antialias: true, premultipliedAlpha: true });

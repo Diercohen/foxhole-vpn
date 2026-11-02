@@ -1,4 +1,5 @@
 import dgram from "node:dgram";
+import dns from "node:dns";
 import net from "node:net";
 import tls from "node:tls";
 import { viaOf } from "./split.js";
@@ -13,6 +14,40 @@ import { caPem } from "./mitm.js";
 const SOCKS_V = 0x05;
 
 export const DOH_HOST = "cloudflare-dns.com";
+
+// ── Mozilla's addresses the local network drops ─────────────────────────────────────────────────────────────────
+// Iran's networks (seen on Shatel, 2026-11) drop connections to Fastly's 146.75.0.0/16, where their DNS puts Mozilla's
+// hosts: the VPN token (api.accounts.firefox.com) and the server list (firefox.settings.services.mozilla.com) time out.
+// Fastly serves the same hosts on its 151.101.0.0/16 anycast at the same last octet: those go after the answer's own,
+// for Node to try in turn.
+
+const MOZILLA = /(^|\.)(firefox\.com|mozilla\.(com|org|net))$/i;
+type LookupCb = (err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => void;
+
+/** `lookup`, with Fastly's 151.101 addresses after each 146.75 one it gives for Mozilla's hosts. */
+export function withFastlyFallback(lookup: typeof dns.lookup): typeof dns.lookup {
+  return ((host: string, options: dns.LookupOptions | number | LookupCb, cb?: LookupCb) => {
+    if (typeof options === "function") [cb, options] = [options, {}];
+    if (!MOZILLA.test(host)) return lookup(host, options as dns.LookupAllOptions, cb as never);
+    const opts: dns.LookupOptions = typeof options === "number" ? { family: options } : (options ?? {});
+    lookup(host, { ...opts, all: true }, (err, found) => {
+      if (err) return cb!(err, []);
+      const all = [...found];
+      for (const { address } of found) {
+        const last = /^146\.75\.\d+\.(\d+)$/.exec(address)?.[1];
+        if (last) all.push(...[1, 65, 129, 193].map((n) => ({ address: `151.101.${n}.${last}`, family: 4 })));
+      }
+      if (opts.all) cb!(null, all);
+      else cb!(null, all[0].address, all[0].family);
+    });
+  }) as typeof dns.lookup;
+}
+
+/** Puts withFastlyFallback() under every connection the process makes by name (fetch() too), each address tried in turn. */
+export function useFastlyFallback(): void {
+  net.setDefaultAutoSelectFamily(true); // off by default on Node 18 (the phones'): it would try the first address only
+  (dns as { lookup: typeof dns.lookup }).lookup = withFastlyFallback(dns.lookup);
+}
 
 /** Reads a (maybe compressed) name at `off`: [lowercase name, offset after it]. Throws if malformed. */
 function readName(m: Buffer, off: number): [string, number] {
