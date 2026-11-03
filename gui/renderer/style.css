@@ -577,6 +577,16 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .app-list .empty .btn { margin-top: 14px; }
 .picker .hint { padding: 0 4px; font-size: 12px; }
 @media (hover: none) { .app-row .go { opacity: 1; } } /* a finger: no hover to show where it goes */
+/* A short window (a phone on its side with the keyboard up): the list gets the room, not the count and the hint */
+@media (max-height: 480px) {
+  .modal .box.picker { height: calc(100dvh - 12px - var(--safe-top, 0px)); padding: 10px 12px 8px; gap: 6px; }
+  .picker header { align-items: center; }
+  .picker h2 { font-size: 17px; }
+  .picker header p, .picker #apps-hint:not([data-tone="error"]) { display: none; }
+  .picker header .icon-btn { width: 34px; height: 34px; }
+  .modal .picker input { height: 38px; }
+  .app-row { min-height: 42px; padding: 5px 10px; }
+}
 .rule .m.app .app-ico { margin-right: 8px; vertical-align: -4px; }
 .chip-btn:hover { background: rgba(255, 255, 255, 0.1); color: var(--ink); transform: translateY(-1px); }
 .suggest { display: flex; align-items: center; gap: 14px; margin-top: 14px; padding: 14px 16px; border-radius: 18px;
