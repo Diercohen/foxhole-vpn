@@ -4,7 +4,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fetchServerList } from "./serverlist.js";
 import { findAccount, openBrowser, FULL_DISK_ACCESS, type AccountState, type ProfileAccessError } from "./profile.js";
-import { FirefoxAuth, StaticAuth, type Authenticator } from "./auth.js";
+import { FirefoxAuth, StaticAuth, type Authenticator, type FxaError } from "./auth.js";
+import { FIREFOX, authFor, loadAccounts, saveAccounts, withFirefox } from "./accounts.js";
 import { Connection, findCountry } from "./connection.js";
 import { fetchEntitlement, useRelay } from "./guardian.js";
 import { loadRelay } from "./httprelay.js";
@@ -59,6 +60,9 @@ function noteTokenTtl(): void {
 function makeAuth(): Authenticator | null {
   const env = tokenEnv();
   if (env?.name === ENV_TOKEN) return new StaticAuth(env.value);
+  const a = loadAccounts();
+  if (a.current && a.current !== FIREFOX) return authFor(a, a.current);
+  if (!a.current) return null;
   const account = findAccount();
   if (account?.signedIn) return new FirefoxAuth(account);
   return env ? new StaticAuth(env.value) : null;
@@ -99,6 +103,24 @@ async function ensureAuth(): Promise<Authenticator> {
     const problem = await tokenProblem(env.value);
     if (!problem) return new StaticAuth(env.value);
     errors.push(`${ENV_TOKEN} ${problem}.`, "Unset it so the new token below is used next time.");
+  }
+  // The account in use (accounts.ts): one added in Foxhole's desktop app, or Firefox's sign-in (below), the
+  // terminal's own way in; none yet (a first start, or all signed out): Firefox's
+  const accounts = loadAccounts();
+  if (!accounts.current) saveAccounts(withFirefox(accounts));
+  else if (accounts.current !== FIREFOX) {
+    const auth = authFor(accounts, accounts.current)!;
+    const email = accounts.own.find((x) => x.uid === accounts.current)?.email;
+    try {
+      await auth.getAccessToken(AbortSignal.timeout(15_000));
+    } catch (err) {
+      if ((err as FxaError).errno !== 110) return auth; // Mozilla out of reach for now: the connect says so, and tries again
+      console.log(red(`The sign-in to ${email} has ended (signed out elsewhere, or expired): sign in again in Foxhole's desktop app.`));
+      console.log(dim("Using Firefox's sign-in meanwhile."));
+      saveAccounts(withFirefox(accounts));
+      return ensureAuth();
+    }
+    return auth;
   }
   // Signed in to Firefox: tokens come from its session and are renewed as they expire.
   const account = findAccount();
@@ -434,13 +456,8 @@ async function cmdTui() {
   const host = arg("host") ?? proxyHost(loadSettings());
   const port = Number(arg("port") ?? loadSettings().port);
   // ponytail: a Firefox login first, even for relay mode; a relay-only start (no Guardian auth) if users without one need it
-  if ((await new Tui(new Connection(await ensureAuth()), host, port).run()) !== "logout") return;
-  forgetToken();
-  openBrowser("about:preferences#sync");
-  console.log(green("\n✓ Logged out: the saved VPN token is deleted."));
-  console.log(`To switch accounts: in Firefox's ${bold("Sync")} settings click ${bold("Sign out")}, sign in with the other account,`);
-  console.log(`then run ${bold("foxhole")} again to get a new token.`);
-  if (tokenEnv()?.name === ENV_TOKEN) console.log(yellow(`Also unset ${ENV_TOKEN}: foxhole uses it before the saved token.`));
+  // "logout": the last account signed out in the TUI's Accounts popup (the next start uses Firefox's sign-in again)
+  if ((await new Tui(new Connection(await ensureAuth()), host, port).run()) === "logout") console.log(green("\n✓ Signed out."));
 }
 
 async function cmdGlobal() {
@@ -582,6 +599,8 @@ async function main() {
       await cmdDoctor();
       break;
     case "login":
+      // Firefox's sign-in, in use from now on (accounts added in the desktop app stay listed in the TUI)
+      saveAccounts(withFirefox(loadAccounts()));
       await cmdLogin();
       break;
     case "restore":

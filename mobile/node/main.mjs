@@ -5,9 +5,9 @@
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
-import { mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { Controller } from "./controller.js";
 import { Updater } from "./updater.js";
 import { publicIp } from "./dist/netinfo.js";
@@ -54,7 +54,8 @@ const ACTIONS = new Set([
   "update", "restartToUpdate",
   "state", "power", "connect", "disconnect", "toggleGlobal",
   "setShare", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "setSplitDefault", "addRule", "toggleRule", "removeRule",
-  "logs", "copy", "copyLogs", "openFirefox", "switchAccount", "keepAccount", "reloadList",
+  "logs", "copy", "copyLogs", "reloadList",
+  "addAccount", "useAccount", "removeAccount", "refreshAccounts", "dismissLow", "retrySignIn",
   "trustCa", "untrustCa", "dismissTrust",
 ]);
 
@@ -69,22 +70,6 @@ const ask = (cmd, args = {}) =>
     asked.set(++seq, { resolve, reject });
     send({ t: "ask", id: seq, cmd, args });
   });
-
-// The sign-in, where findAccount() looks for Firefox's: the app's sign-in page gives the session (App.tsx)
-const SESSION = join(homedir(), ".mozilla", "firefox", "foxhole.default", "signedInUser.json");
-const sessionStamp = () => {
-  try {
-    return statSync(SESSION).mtimeMs;
-  } catch {
-    return 0;
-  }
-};
-function saveSession({ email, sessionToken, uid, verified }) {
-  if (typeof sessionToken !== "string" || !/^[0-9a-f]{64}$/.test(sessionToken)) return log("sign-in: no session in the answer");
-  mkdirSync(dirname(SESSION), { recursive: true, mode: 0o700 });
-  writeFileSync(`${SESSION}.tmp`, JSON.stringify({ version: 1, accountData: { email, sessionToken, uid, verified: verified !== false } }), { mode: 0o600 });
-  renameSync(`${SESSION}.tmp`, SESSION);
-}
 
 let vpn = null; // whole-system mode's session while Android's VPN is up: told when Android stops it
 /** Android's VPN for whole-system mode, as GlobalSession: it sends all apps' connections to the proxy (but this app's own). */
@@ -133,8 +118,7 @@ const controller = new Controller({
   copy: (text) => void ask("copy", { text }).catch(() => {}),
   updates: updater,
   android: { // the phone's part (iOS's too)
-    openSignIn: () => send({ t: "signIn" }),
-    sessionStamp,
+    openSignIn: () => send({ t: "signIn" }), // its session comes back as "signedIn"
     globalSession,
     network: () => ask("network").catch(() => null),
     caTrusted: () => (caPem() ? ask("caTrusted", { pem: caPem() }).catch(() => false) : Promise.resolve(false)),
@@ -150,11 +134,49 @@ let timer = null;
 let kept = "";
 let paused = null; // paused from the notification: { code, global }, what its Resume connects to again
 
-/** The state, with the notification's pause in it (the window says so). */
+// The mode last picked in the window, Proxy only or Whole system: connecting goes back to it, after a restart too.
+// iOS has no whole-system mode.
+const MODE = join(homedir(), "mode");
+let wantGlobal = process.platform === "android" && (() => {
+  try {
+    return readFileSync(MODE, "utf8") === "global";
+  } catch {
+    return false;
+  }
+})();
+function saveMode(global) {
+  if (global === wantGlobal) return;
+  wantGlobal = global;
+  try {
+    writeFileSync(MODE, global ? "global" : "proxy");
+  } catch (err) {
+    log(`mode: ${err.message}`);
+  }
+}
+
+/** The power button or a country picked while off: connects in the mode last picked. */
+async function connect(code) {
+  await controller.connect(code);
+  const s = controller.state();
+  if (wantGlobal && s.active && !s.globalOn) await controller.toggleGlobal();
+}
+
+/** The window's Proxy only / Whole system: switched while on; while off, connects in the other one. Remembered either way. */
+async function setMode() {
+  if (controller.state().active) await controller.toggleGlobal();
+  else {
+    saveMode(!wantGlobal);
+    await connect();
+  }
+  const s = controller.state();
+  if (s.active) saveMode(s.globalOn); // what it is now: Android's VPN refused leaves the proxy
+}
+
+/** The state, with the notification's pause in it (the window says so), and the mode to show while off. */
 function view() {
   const s = controller.state();
   if (s.active) paused = null; // connected again: by Resume, or in the app
-  return { ...s, paused };
+  return { ...s, paused, wantGlobal };
 }
 
 function push() {
@@ -217,6 +239,8 @@ function handle(msg) {
           if (msg.name === "restartToUpdate") return void updater.install();
           // paused from the notification: the power button, or a country picked, resumes as its Resume does
           if (paused && (msg.name === "power" || msg.name === "connect")) return resume(args[0]);
+          if (msg.name === "toggleGlobal") return setMode();
+          if ((msg.name === "power" || msg.name === "connect") && !controller.state().active) return connect(args[0]);
           return controller[msg.name](...args);
         })
         .then((v) => send({ t: "reply", id: msg.id, v: v ?? null }), (err) => send({ t: "reply", id: msg.id, error: err.message }));
@@ -225,8 +249,8 @@ function handle(msg) {
       asked.delete(msg.id);
       return msg.error ? a?.reject(new Error(msg.error)) : a?.resolve(msg.v);
     }
-    case "signedIn":
-      return saveSession(msg.account ?? {});
+    case "signedIn": // the app's sign-in page's session (App.tsx): added to the accounts, and in use
+      return controller.signedIn(msg.account ?? {});
     case "vpnStopped": // Android took the VPN down: the user, or another VPN app
       return vpn?.exit("another VPN app, or Settings");
     // the notification's buttons (FoxholeService)
@@ -269,5 +293,5 @@ process.on("unhandledRejection", (err) => {
   log(`error: ${err?.stack ?? err}`);
 });
 
-controller.start().catch((err) => log(`couldn't start: ${err.stack ?? err.message}`));
+controller.start({ global: wantGlobal }).catch((err) => log(`couldn't start: ${err.stack ?? err.message}`));
 updater.start();

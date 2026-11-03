@@ -19,7 +19,7 @@ export const RELAY_CODE = "RELAY";
  * In relay mode (relaymode.ts) the "server" is Google's front, and no pass is needed.
  */
 export class Connection {
-  readonly #auth: Authenticator;
+  #auth: Authenticator;
   #pass: ProxyPass | null = null;
   #usage: Usage | null = null;
   #server: Server | null = null;
@@ -28,6 +28,18 @@ export class Connection {
 
   constructor(auth: Authenticator) {
     this.#auth = auth;
+  }
+
+  /**
+   * Another account from now on (accounts.ts): the next pass is its own, so the proxy goes on through it; its data
+   * left comes with that pass.
+   */
+  setAuth(auth: Authenticator): void {
+    if (auth === this.#auth) return;
+    this.#auth = auth;
+    this.#pass = null;
+    this.#usage = null;
+    this.#passPromise = null; // one being fetched is the old account's
   }
 
   get usage(): Usage | null {
@@ -75,24 +87,27 @@ export class Connection {
   async currentPass(signal?: AbortSignal): Promise<ProxyPass> {
     if (this.#pass && !shouldRotate(this.#pass)) return this.#pass;
     if (this.#passPromise) return this.#passPromise;
-    this.#passPromise = (async () => {
-      const token = await this.#auth.getAccessToken(signal);
+    const auth = this.#auth;
+    const fetching = (this.#passPromise = (async () => {
+      const token = await auth.getAccessToken(signal);
       const { pass, usage } = await fetchPass(token, signal);
+      if (this.#auth !== auth) return pass; // switched meanwhile: it's for this caller only
       this.#pass = pass;
       if (usage) this.#usage = usage;
       return pass;
-    })();
+    })());
     try {
-      return await this.#passPromise;
+      return await fetching;
     } finally {
-      this.#passPromise = null;
+      if (this.#passPromise === fetching) this.#passPromise = null;
     }
   }
 
   /** Refreshes just the usage figure (cheap). An answer without it keeps the last one. */
   async refreshUsage(signal?: AbortSignal): Promise<Usage | null> {
-    const token = await this.#auth.getAccessToken(signal);
-    this.#usage = (await fetchUsage(token, signal)) ?? this.#usage;
+    const auth = this.#auth;
+    const usage = await fetchUsage(await auth.getAccessToken(signal), signal);
+    if (this.#auth === auth) this.#usage = usage ?? this.#usage;
     return this.#usage;
   }
 }

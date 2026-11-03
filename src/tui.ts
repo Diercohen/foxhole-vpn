@@ -9,6 +9,8 @@ import { GuardianError, GuardianBlocked, useRelay } from "./guardian.js";
 import { network, publicIp, lanIp, firewallHint } from "./netinfo.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor, type Settings } from "./settings.js";
 import { forgetToken } from "./tokenserver.js";
+import { FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox, saveAccounts, signOut, withFirefox, without, type Accounts } from "./accounts.js";
+import { fetchUsage, type Usage } from "./guardian.js";
 import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { logLines, onLog } from "./log.js";
 import { useSplit, splitOn, splitSummary, parseSite, hits, recentSites, type Split, type Via } from "./split.js";
@@ -36,7 +38,6 @@ function leaveScreen(): void {
 }
 process.on("exit", leaveScreen);
 
-const LOGOUT_ASK = yellow("press O again to log out and switch accounts");
 const onOff = (v: boolean) => (v ? green("on") : dim("off"));
 const flip = (v: Via): Via => (v === "vpn" ? "direct" : "vpn");
 
@@ -160,7 +161,16 @@ export class Tui {
   #netSeq = 0; // drops answers from an older check
   // where the last render put the clickable parts; rows are frame lines, x columns in the frame
   #hit = { top: 0, left: 0, rowsTop: 0, rowsLeft: 0, start: 0, rows: 0, sep: -1, width: 0, buttonsY: -1, buttons: "", setTop: -1, setX: 0, setW: 0 };
-  readonly #email = findAccount()?.email ?? null; // the Firefox account the token came from
+  #accounts = loadAccounts(); // accounts.ts: the list, and the one in use (cli.ts signed in with it)
+  #acctOpen = false; // the Accounts popup is open
+  #acctSel = 0; // a row: the accounts, then "+ Add account"
+  #acctNote = "";
+  #removeAsk: string | null = null; // the account x was pressed on once: again signs it out
+  #others = new Map<string, { usage: Usage | null; error: string | null }>(); // data left of those not in use
+  #lowOpen = false; // the popup saying the account in use is low on data
+  #lowSeen = ""; // the account and month it was shown for
+  #quit: (action?: "update" | "logout") => Promise<void> = async () => {};
+  readonly #firefoxEmail = this.#accounts.firefox ? findAccount()?.email ?? null : peekFirefox(); // read at the start: cli.ts may just have
 
   constructor(conn: Connection, host: string, port: number) {
     this.#conn = conn;
@@ -248,7 +258,201 @@ export class Tui {
 
   /** Re-reads the data used, quietly: a failed check keeps what's shown. */
   #refreshUsage(): void {
-    this.#conn.refreshUsage().then(() => this.#render(), (err) => !this.#blockedTold && this.#saysBlocked(err) && this.#render());
+    this.#conn.refreshUsage().then(() => (this.#checkLow(), this.#render()), (err) => !this.#blockedTold && this.#saysBlocked(err) && this.#render());
+  }
+
+  // ── Accounts (accounts.ts) ───────────────────────────────────────────────────────────────
+
+  get #email(): string | null {
+    const a = this.#accounts;
+    return a.current === FIREFOX ? this.#firefoxEmail : (a.own.find((x) => x.uid === a.current)?.email ?? null);
+  }
+
+  #ids(): string[] {
+    return [...(this.#accounts.firefox ? [FIREFOX] : []), ...this.#accounts.own.map((x) => x.uid)];
+  }
+
+  #emailOf(id: string): string {
+    return id === FIREFOX ? (this.#firefoxEmail ?? "Firefox's account") : (this.#accounts.own.find((x) => x.uid === id)?.email ?? "");
+  }
+
+  #saveAccounts(next: Accounts): void {
+    this.#accounts = next;
+    try {
+      saveAccounts(next);
+    } catch (err) {
+      this.#acctNote = red(`couldn't save the accounts: ${(err as Error).message}`);
+    }
+  }
+
+  /** Uses another account from now on (the next start too): the proxy goes on through it. */
+  #use(id: string): void {
+    const auth = authFor(this.#accounts, id);
+    if (!auth) {
+      this.#acctNote = red(id === FIREFOX ? "Firefox isn't signed in (or can't be read): sign in to Firefox, then try again." : "That account isn't there anymore.");
+      return;
+    }
+    this.#saveAccounts({ ...this.#accounts, current: id });
+    this.#conn.setAuth(auth);
+    this.#lowOpen = false;
+    this.#acctNote = "";
+    this.#message = green(`using ${this.#emailOf(id)}`);
+    this.#refreshUsage();
+  }
+
+  /** Signs an account out of foxhole (Firefox's: foxhole stops reading it); the last one gone, cli.ts asks how to sign in. */
+  #remove(id: string): void {
+    const own = this.#accounts.own.find((x) => x.uid === id);
+    if (own) void signOut(own.sessionToken);
+    if (id === FIREFOX) forgetToken();
+    const was = this.#accounts.current;
+    this.#saveAccounts(without(this.#accounts, id));
+    this.#others.delete(id);
+    this.#acctSel = Math.min(this.#acctSel, this.#ids().length);
+    if (id !== was) return;
+    const next = this.#accounts.current;
+    if (!next || !authFor(this.#accounts, next)) return void this.#quit("logout");
+    this.#use(next);
+  }
+
+  /** The data left of the accounts not in use, as the popup opens. */
+  #refreshOthers(): void {
+    for (const id of this.#ids()) {
+      if (id === this.#accounts.current) continue;
+      const auth = authFor(this.#accounts, id);
+      if (!auth) {
+        this.#others.set(id, { usage: null, error: "signed out" });
+        continue;
+      }
+      void auth
+        .getAccessToken(AbortSignal.timeout(15_000))
+        .then((token) => fetchUsage(token, AbortSignal.timeout(15_000)))
+        .then(
+          (usage) => this.#others.set(id, { usage, error: null }),
+          (err) => this.#others.set(id, { usage: this.#others.get(id)?.usage ?? null, error: (err as { errno?: number }).errno === 110 ? "signed out" : "couldn't check" }),
+        )
+        .then(() => this.#render());
+    }
+  }
+
+  #openAccounts(): void {
+    this.#acctOpen = true;
+    this.#accounts = { ...loadAccounts(), current: this.#accounts.current }; // those added in the desktop app meanwhile, too
+    this.#acctNote = "";
+    this.#removeAsk = null;
+    this.#acctSel = Math.max(0, this.#ids().indexOf(this.#accounts.current ?? ""));
+    this.#refreshOthers();
+    this.#render();
+  }
+
+  /** The account in use has less than LOW_DATA left: a popup offers another (once a month per account, unless put away). */
+  #checkLow(): void {
+    const u = this.#conn.usage;
+    const id = this.#accounts.current;
+    if (!id || !u || u.unlimited || u.remaining >= LOW_DATA) return;
+    const month = u.reset?.toISOString() ?? "";
+    if (this.#accounts.lowSeen[id] === month || this.#lowSeen === `${id} ${month}`) return;
+    this.#lowSeen = `${id} ${month}`;
+    this.#lowOpen = true;
+  }
+
+  /** Keystrokes while the low-data popup is open: Enter, the accounts; Esc, later (not again this month). */
+  #lowKey(key: readline.Key): void {
+    if (key.name === "return") return void ((this.#lowOpen = false), this.#openAccounts());
+    if (key.name !== "escape") return;
+    this.#lowOpen = false;
+    const id = this.#accounts.current, u = this.#conn.usage;
+    if (id && u) this.#saveAccounts({ ...this.#accounts, lowSeen: { ...this.#accounts.lowSeen, [id]: u.reset?.toISOString() ?? "" } });
+    this.#render();
+  }
+
+  #lowPopup(): string[] {
+    const u = this.#conn.usage;
+    return box(
+      ["", `${bold(this.#email ?? "This account")} has ${yellow(u ? gb(u.remaining) : "little")} left this month.`, "Switch to another account, or add one, to carry on.", "", dim("enter accounts · esc later")],
+      { title: bold(yellow("Data is running low")), width: 62 },
+    );
+  }
+
+  /** Keystrokes while the Accounts popup is open. */
+  #acctKey(_s: string, key: readline.Key): void {
+    const ids = this.#ids();
+    if (key.name !== "x" && key.name !== "delete" && key.name !== "backspace") {
+      this.#removeAsk = null; // a sign-out asked for goes with any other key
+      this.#acctNote = "";
+    }
+    switch (key.name) {
+      case "escape":
+      case "a":
+      case "o":
+        this.#acctOpen = false;
+        break;
+      case "up":
+      case "k":
+        this.#acctSel = (this.#acctSel - 1 + ids.length + 1) % (ids.length + 1);
+        this.#removeAsk = null;
+        break;
+      case "down":
+      case "j":
+        this.#acctSel = (this.#acctSel + 1) % (ids.length + 1);
+        this.#removeAsk = null;
+        break;
+      case "return":
+        // the last row: Firefox's sign-in, the terminal's own way in; others are added in the desktop app
+        if (this.#acctSel === ids.length && !this.#accounts.firefox) {
+          if (!authFor(withFirefox(this.#accounts), FIREFOX)) return void ((this.#acctNote = red("Firefox isn't signed in (or can't be read): sign in to Firefox, then try again.")), this.#render());
+          const ff = findAccount()?.email?.toLowerCase();
+          const twin = this.#accounts.own.find((x) => !!ff && x.email.toLowerCase() === ff);
+          if (twin) return void ((this.#acctNote = yellow(`You're already signed in with ${twin.email}, so it isn't added again.`)), this.#render());
+          this.#saveAccounts(withFirefox(this.#accounts));
+          this.#use(FIREFOX);
+          this.#acctSel = 0;
+        } else if (this.#acctSel === ids.length) {
+          const url = `${REPO_URL}/releases/latest`;
+          this.#acctNote = [
+            ...wrap("Another account can't be added in the terminal: add it in Foxhole's desktop app, and it shows up here.", 60).map(yellow),
+            `\x1b]8;;${url}\x1b\\${cyan(url)}\x1b]8;;\x1b\\`,
+          ].join("\n");
+          return this.#render();
+        }
+        else if (ids[this.#acctSel] !== this.#accounts.current) this.#use(ids[this.#acctSel]);
+        break;
+      case "x":
+      case "delete":
+      case "backspace": {
+        const id = ids[this.#acctSel];
+        if (!id) break;
+        if (this.#removeAsk === id) {
+          this.#removeAsk = null;
+          this.#remove(id);
+        } else {
+          this.#removeAsk = id;
+          this.#acctNote = yellow(id === FIREFOX ? "press x again to stop using Firefox's sign-in (Firefox stays signed in)" : `press x again to sign out of ${this.#emailOf(id)}`);
+          return this.#render();
+        }
+      }
+    }
+    this.#render();
+  }
+
+  #accountsPopup(): string[] {
+    const ids = this.#ids();
+    const rows = ids.map((id, i) => {
+      const here = i === this.#acctSel;
+      const current = id === this.#accounts.current;
+      const o = this.#others.get(id);
+      const u = current ? this.#conn.usage : o?.usage;
+      const left = (current ? null : o?.error) ?? (!u ? "" : u.unlimited ? "unlimited" : `${gb(u.remaining)} left`);
+      const email = this.#emailOf(id);
+      const name = email.length > 30 ? email.slice(0, 29) + "…" : email;
+      return `${here ? cyan("❯") : " "} ${current ? green("●") : dim("○")} ${here ? bold(name.padEnd(30)) : name.padEnd(30)} ${dim([left, id === FIREFOX ? "Firefox" : ""].filter(Boolean).join(" · "))}`;
+    });
+    const ff = this.#firefoxEmail;
+    const add = `${this.#acctSel === ids.length ? cyan("❯") : " "} ${cyan("+")} ${this.#accounts.firefox ? "Add account" : `Use Firefox's sign-in${ff ? `, ${ff}` : ""}${process.platform === "darwin" ? dim(" (Full Disk Access)") : ""}`}`;
+    return box(
+      ["", dim("The VPN uses the one in use (●), from now on too."), "", ...rows, add, "", ...this.#acctNote.split("\n"), "", dim("↑↓ select · enter use / add · x sign out · esc close")],
+      { title: bold(cyan("Accounts")), width: 62 },
+    );
   }
 
   #loop(): Promise<"update" | "logout" | undefined> {
@@ -289,7 +493,7 @@ export class Tui {
       process.stdin.once("end", onSignal);
 
       let quitting = false;
-      const quit = async (action?: "update" | "logout") => {
+      const quit = (this.#quit = async (action?: "update" | "logout") => {
         // Once: a signal or the terminal's end can follow the first. The listeners stay, as without
         // any a late signal would kill the process midway through putting the routes back.
         if (quitting) return;
@@ -318,7 +522,7 @@ export class Tui {
           console.log(red(`\nNot updated (see above). To try again: ${UPDATE_COMMAND}`));
         }
         resolve(action);
-      };
+      });
 
       const onKey = (s: string, key: readline.Key) => {
         if (!key) return;
@@ -341,6 +545,8 @@ export class Tui {
           if (key.name === "return" || key.name === "escape") (this.#trustAsk = false), this.#render();
           return;
         }
+        if (this.#lowOpen) return this.#lowKey(key);
+        if (this.#acctOpen) return this.#acctKey(s, key);
         if (this.#settingsOpen) return this.#settingsKey(s, key);
         if (this.#splitOpen) return this.#splitKey(s, key);
         if (key.name === "q") return void quit();
@@ -385,11 +591,9 @@ export class Tui {
           case "u":
             if (canUpdate()) return void quit("update");
             break;
-          case "o":
-            // asks first: the token is gone after this, and getting a new one takes a few steps
-            if (this.#message === LOGOUT_ASK) return void quit("logout");
-            this.#message = LOGOUT_ASK;
-            break;
+          case "a":
+          case "o": // where logging out was
+            return this.#openAccounts();
         }
         this.#render();
       };
@@ -403,7 +607,7 @@ export class Tui {
    */
   #mouse(b: number, x: number, y: number, press: (name: string) => void): void {
     if (b === 64 || b === 65) return press(b === 64 ? "up" : "down");
-    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#restoring || this.#wizard || this.#blocked || this.#relayIntro || this.#trustAsk) return;
+    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#restoring || this.#wizard || this.#blocked || this.#relayIntro || this.#trustAsk || this.#acctOpen || this.#lowOpen) return;
     const h = this.#hit;
     const fx = x - h.left, fy = y - h.top;
     if (this.#settingsOpen) {
@@ -1049,7 +1253,7 @@ export class Tui {
     const status = this.#message;
     const net = this.#net === undefined ? dim("checking…") : this.#net ?? yellow("offline");
     const ip = this.#ip === undefined ? dim("checking…") : this.#ip === null ? yellow("unreachable") : `${bold(this.#ip)}  ${dim(this.#ipNote)}`;
-    const account = `${this.#email ?? dim("unknown")}  ${dim("O to log out")}`;
+    const account = `${this.#email ?? dim("unknown")}  ${dim("A accounts")}`;
     const cols = process.stdout.columns || 80, rows = process.stdout.rows || 24;
     const wide = cols >= SIDE_W;
     // A long value (e.g. a --verbose proxy error) would widen the box past the terminal, or its panel, and wrap.
@@ -1170,6 +1374,10 @@ export class Tui {
           ? this.#relayPopup()
           : this.#trustAsk
           ? this.#trustPopup()
+          : this.#lowOpen
+          ? this.#lowPopup()
+          : this.#acctOpen
+          ? this.#accountsPopup()
           : this.#settingsOpen
           ? this.#settingsPopup()
           : this.#splitOpen

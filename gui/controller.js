@@ -5,6 +5,8 @@ import { findAccount, openBrowser, macApp } from "./dist/profile.js";
 import { fetchServerList } from "./dist/serverlist.js";
 import { Connection, RELAY_CODE } from "./dist/connection.js";
 import { FirefoxAuth, StaticAuth } from "./dist/auth.js";
+import { FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox, saveAccounts, signOut, withFirefox, withOwn, without } from "./dist/accounts.js";
+import { fetchUsage } from "./dist/guardian.js";
 import { GuardianError, GuardianBlocked, useRelay } from "./dist/guardian.js";
 import { loadRelay, relayUrl } from "./dist/httprelay.js";
 import { STEPS, KEY_PLACEHOLDER, relayTemplate, highlightJs, deploymentId } from "./dist/relaysetup.js";
@@ -12,7 +14,7 @@ import { network, publicIp, lanIp, firewallHint } from "./dist/netinfo.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor } from "./dist/settings.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenProblem } from "./dist/tokenserver.js";
 import { startProxy, onProxyWarning } from "./dist/proxy.js";
-import { logLines, onLog } from "./dist/log.js";
+import { log, logLines, onLog } from "./dist/log.js";
 import { useSplit, splitSummary, parseSite, hits, recentSites } from "./dist/split.js";
 import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost } from "./dist/global.js";
 import { VERSION } from "./dist/update.js";
@@ -29,6 +31,15 @@ const label = (c) => countryName(c.code, c.name);
 const RELAY_ROW = { code: RELAY_CODE, name: "Relay", locked: false, available: true, servers: [] };
 /** No relay on a phone (the user's call): it's never set up there, so it carries nothing and isn't offered. */
 const NO_RELAY = process.platform === "android" || process.platform === "ios";
+
+/** Data left, as the window shows it. */
+const usageView = (u) =>
+  !u ? null
+    : u.unlimited ? { unlimited: true }
+    : { left: gb(u.remaining), max: gb(u.max), reset: u.reset ? shortDate(u.reset) : null, fraction: u.max ? Number((u.remaining * 1000n) / u.max) / 1000 : 0 };
+
+/** Two accounts' emails are the same one (Mozilla's are case-insensitive); an unknown one matches none. */
+const sameEmail = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
 
 export class Controller extends EventEmitter {
   #copy; // puts text on the clipboard
@@ -51,6 +62,7 @@ export class Controller extends EventEmitter {
   #busy = false;
   #connecting = null; // the country being connected to
   #message = null; // { tone: info | ok | warn | error, text, id }
+  #notice = null; // { text, id }: the window shows it as an alert (an account already on the list)
   #auth = { stage: "checking" };
   #email = null;
   #net; // undefined: not read yet
@@ -65,21 +77,27 @@ export class Controller extends EventEmitter {
   #splitNote = null;
   #restoring = false;
   #receiver = null;
-  #keep = null; // ends the wait for another account (switchAccount)
+  #accounts = loadAccounts(); // accounts.js: the list, and the one in use
+  #gen = 0; // the account choice's: a change ends the sign-in's wait, which starts over with the new one
+  #signing = null; // the sign-in under way
+  #firefoxEmail = null; // Firefox's sign-in's, once read (peekFirefox: where reading it asks nothing)
+  #others = new Map(); // an account's id → { usage, error }: the data left of those not in use (refreshAccounts)
+  #openSignIn; // opens Foxhole's own Mozilla sign-in: the desktop's window (gui/main.js), the phone's page
   #updates; // updater.js: a new version of the app
   /**
-   * On Android (mobile/node/main.mjs), what the phone does in place of the desktop's ways; null elsewhere:
-   * openSignIn() its own Mozilla sign-in, which saves the session where findAccount() reads it; sessionStamp(),
-   * which changes with each sign-in; globalSession() Android's VPN, with GlobalSession's methods; network();
+   * On a phone (mobile/node/main.mjs), what it does in place of the desktop's ways; null elsewhere: openSignIn() its
+   * own Mozilla sign-in, whose session comes back by signedIn(); globalSession() Android's VPN, with GlobalSession's methods; network();
    * caTrusted() and setCaTrust(add), relay mode's certificate in Android's store (setCaTrust says what's left to do).
    */
   #android;
 
-  constructor({ copy, updates, android = null }) {
+  constructor({ copy, updates, android = null, openSignIn = null }) {
     super();
     this.#copy = copy;
     this.#updates = updates;
     this.#android = android;
+    this.#openSignIn = openSignIn ?? android?.openSignIn ?? null;
+    this.#firefoxEmail = peekFirefox();
   }
 
   #network = () => (this.#android?.network ?? network)();
@@ -105,30 +123,78 @@ export class Controller extends EventEmitter {
         if (this.#net !== undefined && (n !== this.#net || lan !== was)) this.#refreshNet();
       });
     }, 5000).unref();
-    await this.#signIn();
+    await this.#resignIn();
     await list;
     // Connects at once to the last country used; a first run waits for a pick.
     if (this.#rows().some((c) => c.code === loadLastCountry())) void this.connect(loadLastCountry()).then(() => global && this.#active && this.toggleGlobal());
     setInterval(() => this.#refreshUsage(), 3 * 60_000).unref();
   }
 
-  /** The Firefox login's VPN token, then a Connection; the window shows what's needed meanwhile. */
-  async #signIn() {
-    this.#auth = { stage: "checking" };
-    this.#changed();
-    this.#conn = new Connection(await this.#ensureAuth());
-    this.#email = findAccount()?.email ?? null;
-    this.#auth = { stage: "ready" };
-    this.#refreshUsage();
-    this.#changed();
+  /** Signs in (again) with the account in use, ending a sign-in still waiting for the one before. */
+  #resignIn() {
+    this.#gen++;
+    return (this.#signing ??= this.#signIn().finally(() => (this.#signing = null)));
   }
 
-  /** As cli.ts's ensureAuth: the Firefox session, else a saved token, else waits for a sign-in or the Browser Console. */
-  async #ensureAuth() {
+  /** The VPN token from the account in use, then the Connection on it (the proxy carries on through it); the window shows what's needed meanwhile. */
+  async #signIn() {
     for (;;) {
+      const gen = this.#gen;
+      this.#auth = { stage: "checking" };
+      this.#changed();
+      const auth = await this.#ensureAuth(gen);
+      if (gen !== this.#gen) continue; // another account picked meanwhile
+      if (this.#conn) this.#conn.setAuth(auth);
+      else this.#conn = new Connection(auth);
+      this.#email = this.#currentEmail();
+      this.#auth = { stage: "ready" };
+      this.#refreshUsage();
+      this.#changed();
+      return;
+    }
+  }
+
+  #currentEmail() {
+    const a = this.#accounts;
+    return a.current === FIREFOX ? this.#firefoxEmail : (a.own.find((x) => x.uid === a.current)?.email ?? null);
+  }
+
+  /** A token source for the account in use, once there's one that works; null if the choice changed meanwhile. */
+  async #ensureAuth(gen) {
+    for (let error = ""; gen === this.#gen; ) {
+      const a = this.#accounts;
+      if (!a.current) {
+        // none yet (a first start, or all removed): how to sign in. Firefox's account named where reading it asks nothing
+        this.#auth = { stage: "choose", firefox: this.#android ? null : { email: peekFirefox() }, error };
+        this.#changed();
+        await this.#until(() => false, gen);
+        continue;
+      }
+      if (a.current === FIREFOX) return this.#firefoxAuth(gen);
+      const auth = authFor(a, a.current);
+      try {
+        await auth.getAccessToken(AbortSignal.timeout(15_000));
+        return auth;
+      } catch (err) {
+        const email = this.#currentEmail();
+        // signed out elsewhere, or expired: signing in again brings it back (or another account)
+        if (err.errno === 110) this.#auth = { stage: "expired", email, id: a.current };
+        else this.#auth = { stage: "offline", email, error: `Couldn't get the VPN's token: ${err.message}` }; // tried again in a while
+        this.#changed();
+        const since = Date.now();
+        await this.#until(() => this.#auth.stage === "offline" && Date.now() - since > 20_000, gen);
+      }
+    }
+    return null;
+  }
+
+  /** As cli.ts's ensureAuth: Firefox's session, else a saved token, else waits for a sign-in or the Browser Console. */
+  async #firefoxAuth(gen) {
+    while (gen === this.#gen) {
       const errors = [];
       const account = findAccount();
       if (account?.signedIn) {
+        this.#firefoxEmail = account.email;
         const auth = new FirefoxAuth(account);
         try {
           await auth.getAccessToken(AbortSignal.timeout(15_000));
@@ -148,48 +214,49 @@ export class Controller extends EventEmitter {
         // macOS won't let the app read Firefox's profile: the window says how to allow it (Full Disk Access)
         this.#auth = { stage: "blocked", error: account.blocked.message, app: macApp() }; // app: the one macOS asks about
         this.#changed();
-        await this.#until(() => !findAccount()?.blocked); // allowed without a restart: carry on
+        await this.#until(() => !findAccount()?.blocked, gen); // allowed without a restart: carry on
         continue;
       }
-      if (account?.signedIn && !this.#android) return this.#captureToken(errors.join("\n"));
+      if (account?.signedIn) return this.#captureToken(errors.join("\n"), gen);
       // Signed out: the sign-in is all it takes, as the token then comes from that login.
-      if (!this.#android) openBrowser(SYNC);
+      openBrowser(SYNC);
       this.#auth = { stage: "signin", error: errors.join("\n") };
       this.#changed();
-      // Android: the app's own sign-in, or a while (the network may be back) to try the one there is again
-      const stamp = this.#android?.sessionStamp();
-      const since = Date.now();
-      await this.#until(() => (this.#android ? this.#android.sessionStamp() !== stamp || (account?.signedIn && Date.now() - since > 20_000) : findAccount()?.signedIn));
+      await this.#until(() => findAccount()?.signedIn, gen);
     }
+    return null;
   }
 
   /** Signed in, but the login gave no token: the Browser Console snippet posts one to a loopback receiver. */
-  async #captureToken(error) {
+  async #captureToken(error, gen) {
     const rec = (this.#receiver = await startTokenReceiver(2 ** 31 - 1)); // no timeout: the window waits
     this.#copy(rec.snippet);
-    this.#auth = { stage: "console", error, email: findAccount()?.email ?? null, snippet: rec.snippet };
+    this.#auth = { stage: "console", error, email: this.#firefoxEmail, snippet: rec.snippet };
     this.#changed();
-    const token = await rec.token;
+    const token = await Promise.race([rec.token, this.#until(() => false, gen)]);
     this.#receiver = null;
+    if (!token) {
+      rec.close(); // another account picked
+      return null;
+    }
     saveToken(token);
     return new StaticAuth(token);
   }
 
-  /** Resolves once `ok()` holds, checked every second. */
-  #until(ok) {
+  /** Resolves once `ok()` holds (checked every second), or the account choice changes (`gen` given). */
+  #until(ok, gen) {
     return new Promise((resolve) => {
       const timer = setInterval(() => {
-        if (!ok()) return;
+        if (!ok() && (gen === undefined || gen === this.#gen)) return;
         clearInterval(timer);
         resolve();
       }, 1000);
     });
   }
 
-  /** Opens Firefox's sign-in again (Android: the app's own). */
+  /** Opens Firefox's sign-in again. */
   openFirefox() {
-    if (this.#android) this.#android.openSignIn();
-    else openBrowser(SYNC);
+    openBrowser(SYNC);
   }
 
   /** Copies the Browser Console snippet again. */
@@ -197,32 +264,126 @@ export class Controller extends EventEmitter {
     if (this.#auth.snippet) this.#copy(this.#auth.snippet);
   }
 
-  /** Logs out to switch accounts: disconnects, forgets the token, and waits for Firefox's login to change (or keepAccount()). */
-  async switchAccount() {
-    if (this.#busy) return;
-    await this.disconnect();
-    forgetToken();
-    const was = findAccount();
-    const stamp = this.#android?.sessionStamp();
-    this.openFirefox();
-    this.#auth = { stage: "switch", email: was?.signedIn ? was.email : null };
-    this.#changed();
-    await new Promise((resolve) => {
-      this.#keep = resolve;
-      void this.#until(() => {
-        if (this.#auth.stage !== "switch") return true; // keepAccount() ended the wait
-        if (this.#android) return this.#android.sessionStamp() !== stamp; // signed in again there, even as the same account
-        const a = findAccount();
-        return a?.signedIn && a.email !== this.#auth.email;
-      }).then(resolve);
-    });
-    this.#keep = null;
-    await this.#signIn();
+  // ── Accounts (accounts.js) ─────────────────────────────────────────────────────────────────
+
+  #saveAccounts(next) {
+    this.#accounts = next;
+    try {
+      saveAccounts(next);
+    } catch (err) {
+      this.#say("error", `couldn't save the accounts: ${err.message}`);
+    }
   }
 
-  /** Stays with the account signed in now, after switchAccount(). */
-  keepAccount() {
-    this.#keep?.();
+  /** Another account: "mozilla", Foxhole's own sign-in (it comes back by signedIn()); "firefox", Firefox's sign-in. */
+  addAccount(how) {
+    if (how === "mozilla") return void this.#openSignIn?.();
+    if (how !== "firefox" || this.#android) return;
+    const twin = this.#accounts.own.find((x) => sameEmail(x.email, findAccount()?.email));
+    if (twin) return this.#alert(`You're already signed in with ${twin.email}, so it isn't added again.`);
+    this.#saveAccounts(withFirefox(this.#accounts));
+    void this.#resignIn();
+  }
+
+  /** Foxhole's own sign-in's session (the desktop's window, the phone's page): added, and in use. */
+  signedIn({ email, sessionToken, uid } = {}) {
+    if (typeof uid !== "string" || !uid || typeof sessionToken !== "string" || !/^[0-9a-f]{64}$/.test(sessionToken)) return log("sign-in: no session in the answer");
+    email = typeof email === "string" ? email : "";
+    // already on the list (and its sign-in hasn't ended: then this one renews it): said so, not added twice
+    const twin = this.#accounts.own.find((x) => x.uid === uid || sameEmail(x.email, email));
+    const ended = (id) => (this.#auth.stage === "expired" && this.#auth.id === id) || this.#others.get(id)?.error === "signed out";
+    if ((twin && !ended(twin.uid)) || (!twin && this.#accounts.firefox && sameEmail(email, findAccount()?.email))) {
+      void signOut(sessionToken); // the new session isn't kept
+      return this.#alert(`You're already signed in with ${email || twin?.email}${twin ? "" : " (Firefox's sign-in)"}, so it isn't added again.`);
+    }
+    this.#saveAccounts(withOwn(this.#accounts, { uid, email, sessionToken }));
+    this.#others.delete(uid);
+    void this.#resignIn();
+  }
+
+  /** Uses another account on the list, from now on (the next start too). The proxy carries on through it. */
+  useAccount(id) {
+    if (id === this.#accounts.current || !this.#ids().includes(id)) return;
+    this.#saveAccounts({ ...this.#accounts, current: id });
+    void this.#resignIn();
+  }
+
+  /** Signs an account out of Foxhole (Firefox's: Foxhole stops reading it; Firefox stays signed in). */
+  removeAccount(id) {
+    const own = this.#accounts.own.find((x) => x.uid === id);
+    if (own) void signOut(own.sessionToken);
+    const was = this.#accounts.current;
+    this.#saveAccounts(without(this.#accounts, id));
+    this.#others.delete(id);
+    if (id === FIREFOX) forgetToken(); // the token got from it
+    if (id === was) void this.#resignIn();
+    else this.#changed();
+  }
+
+  /** The data left of the accounts not in use (the one in use's comes with its passes): when Settings opens. */
+  refreshAccounts() {
+    for (const id of this.#ids()) {
+      if (id === this.#accounts.current) continue;
+      if (id === FIREFOX) this.#firefoxEmail = findAccount()?.email ?? this.#firefoxEmail; // on the list: reading it was allowed
+      const auth = authFor(this.#accounts, id);
+      if (!auth) {
+        this.#others.set(id, { usage: null, error: "signed out" });
+        continue;
+      }
+      void auth
+        .getAccessToken(AbortSignal.timeout(15_000))
+        .then((token) => fetchUsage(token, AbortSignal.timeout(15_000)))
+        .then(
+          (usage) => this.#others.set(id, { usage, error: null }),
+          (err) => this.#others.set(id, { usage: this.#others.get(id)?.usage ?? null, error: err.errno === 110 ? "signed out" : "couldn't check" }),
+        )
+        .then(() => this.#changed());
+    }
+    if (process.platform !== "darwin" && !this.#android) this.#firefoxEmail = peekFirefox() ?? this.#firefoxEmail; // asks nothing there
+    this.#changed();
+  }
+
+  /** "Try again" after Mozilla couldn't be reached. */
+  retrySignIn() {
+    void this.#resignIn();
+  }
+
+  /** Puts the low-data warning away for this account until its data renews. */
+  dismissLow() {
+    const id = this.#accounts.current;
+    const u = this.#conn?.usage;
+    if (!id || !u) return;
+    this.#saveAccounts({ ...this.#accounts, lowSeen: { ...this.#accounts.lowSeen, [id]: u.reset?.toISOString() ?? "" } });
+    this.#changed();
+  }
+
+  #ids() {
+    const a = this.#accounts;
+    return [...(a.firefox ? [FIREFOX] : []), ...a.own.map((x) => x.uid)];
+  }
+
+  /** The list, as the window shows it: each one's email and data left. */
+  #accountList() {
+    const a = this.#accounts;
+    return this.#ids().map((id) => {
+      const current = id === a.current;
+      const usage = current ? this.#conn?.usage : this.#others.get(id)?.usage;
+      return {
+        id, current, firefox: id === FIREFOX,
+        email: id === FIREFOX ? this.#firefoxEmail : a.own.find((x) => x.uid === id).email,
+        usage: usageView(usage),
+        error: current ? null : (this.#others.get(id)?.error ?? null),
+      };
+    });
+  }
+
+  /** The account in use has less than LOW_DATA left (and the warning wasn't put away this month): offer another. */
+  #low() {
+    const u = this.#conn?.usage;
+    const id = this.#accounts.current;
+    if (this.#auth.stage !== "ready" || !u || u.unlimited || u.remaining >= LOW_DATA) return null;
+    if (this.#accounts.lowSeen[id] === (u.reset?.toISOString() ?? "")) return null;
+    return { email: this.#email, left: gb(u.remaining) };
   }
 
   async reloadList() {
@@ -549,6 +710,7 @@ export class Controller extends EventEmitter {
   /** The Settings panel opened: an old note goes, and the firewall is looked at again. */
   openSettings() {
     this.#settingsNote = null;
+    this.refreshAccounts();
     this.#checkFirewall();
     void this.#caTrusted().then((ok) => ((this.#caOk = ok), this.#changed()));
     this.#changed();
@@ -742,6 +904,11 @@ export class Controller extends EventEmitter {
     this.#receiver?.close();
   }
 
+  #alert(text) {
+    this.#notice = { text, id: (this.#notice?.id ?? 0) + 1 };
+    this.#changed();
+  }
+
   #say(tone, text) {
     this.#message = { tone, text, id: (this.#message?.id ?? 0) + 1 };
     this.#changed();
@@ -778,11 +945,11 @@ export class Controller extends EventEmitter {
       busy: this.#busy,
       connecting: this.#connecting,
       message: this.#message,
-      usage: !u
-        ? null
-        : u.unlimited
-          ? { unlimited: true }
-          : { left: gb(u.remaining), max: gb(u.max), reset: u.reset ? shortDate(u.reset) : null, fraction: u.max ? Number((u.remaining * 1000n) / u.max) / 1000 : 0 },
+      usage: usageView(u),
+      accounts: this.#accountList(),
+      firefoxEmail: this.#firefoxEmail,
+      low: this.#low(),
+      notice: this.#notice,
       net: this.#net ?? null,
       netChecking: this.#net === undefined,
       ip: this.#ip ?? null,

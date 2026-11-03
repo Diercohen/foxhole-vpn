@@ -56,6 +56,7 @@
   <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5.5M6 11.5l6-6 6 6"/></symbol>
   <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
   <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M14 4h3.5A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5H14"/><path d="m9.5 8-4 4 4 4M5.5 12H15"/></symbol>
   <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></symbol>
   <symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></symbol>
 </svg>
@@ -223,12 +224,10 @@
     </div>
     <div class="note" id="settings-note"></div>
     <div class="group">
-      <div class="label">Firefox account</div>
-      <div class="account-line">
-        <span class="avatar big" id="acct-avatar-2">?</span>
-        <div class="grow"><b id="acct-email"></b><span>The VPN token comes from this Firefox login.</span></div>
-        <button class="btn" id="switch-account"><svg class="i"><use href="#i-user"/></svg>Switch account</button>
-      </div>
+      <div class="label">Mozilla accounts</div>
+      <div class="hint">The VPN uses the one in use, from now on too. Tap another to switch to it.</div>
+      <div class="accounts" id="accounts"></div>
+      <button class="btn" type="button" id="add-account"><svg class="i"><use href="#i-plus"/></svg>Add account</button>
     </div>
     <div class="group about">
       <svg class="logo"><use href="#fox"/></svg>
@@ -308,6 +307,53 @@
     <div class="actions">
       <button class="btn" type="button" id="up-later">Later</button>
       <button class="btn primary" type="button" id="up-restart">Restart now</button>
+    </div>
+  </div>
+</div>
+
+<!-- Another account: Foxhole's own sign-in, or Firefox's (app.js choices()) -->
+<div class="modal backdrop" id="add-modal">
+  <div class="box glass">
+    <div class="lock-orb"><svg class="i"><use href="#i-user"/></svg></div>
+    <h2>Add a Mozilla account</h2>
+    <div class="choices" id="add-choices"></div>
+    <span class="link fine" id="add-later">Cancel</span>
+  </div>
+</div>
+
+<!-- The account in use is low on data: another one, or add one -->
+<div class="modal backdrop" id="low-modal">
+  <div class="box glass">
+    <div class="lock-orb"><svg class="i"><use href="#i-user"/></svg></div>
+    <h2>Data is running low</h2>
+    <p id="low-why"></p>
+    <div class="accounts" id="low-accounts"></div>
+    <div class="actions">
+      <button class="btn" type="button" id="low-later">Later</button>
+      <button class="btn primary" type="button" id="low-add"><svg class="i"><use href="#i-plus"/></svg>Add account</button>
+    </div>
+  </div>
+</div>
+
+<!-- An account already on the list, signed in to again: said so -->
+<div class="modal backdrop" id="notice-modal">
+  <div class="box glass">
+    <div class="lock-orb"><svg class="i"><use href="#i-user"/></svg></div>
+    <h2>Already signed in</h2>
+    <p id="notice-text"></p>
+    <div class="actions"><button class="btn primary" type="button" id="notice-ok">OK</button></div>
+  </div>
+</div>
+
+<!-- Signing out of an account (or stopping using Firefox's sign-in): asked first -->
+<div class="modal backdrop" id="logout-modal">
+  <div class="box glass">
+    <div class="lock-orb"><svg class="i"><use href="#i-logout"/></svg></div>
+    <h2 id="logout-title"></h2>
+    <p id="logout-why"></p>
+    <div class="actions">
+      <button class="btn" type="button" id="logout-cancel">Cancel</button>
+      <button class="btn primary" type="button" id="logout-ok" data-act="removeAccount"><svg class="i"><use href="#i-logout"/></svg><span id="logout-label"></span></button>
     </div>
   </div>
 </div>

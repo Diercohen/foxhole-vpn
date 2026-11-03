@@ -1,5 +1,5 @@
 // Foxhole on a phone (Android, iOS): the desktop app's window (gui/renderer) in a WebView over its core (node/main.mjs,
-// run by the native side in Node), and the Mozilla sign-in, which the desktop leaves to Firefox.
+// run by the native side in Node), and the Mozilla sign-in (the desktop app has its own too: gui/signin.cjs).
 import React, { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, BackHandler, Keyboard, Linking, Modal, PermissionsAndroid, Platform, Pressable, StatusBar, StyleSheet, Text, View } from "react-native";
 import { SafeAreaProvider, initialWindowMetrics, useSafeAreaInsets } from "react-native-safe-area-context";

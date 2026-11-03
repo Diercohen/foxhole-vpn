@@ -110,8 +110,14 @@ after.start();
 assert.match(after.state().error, /^the last try failed: ENOENT/, "the reason survives the restart");
 // a download of a version no newer than this one (already in) is cleared at the start
 writeFileSync(path.join(downloads, "Foxhole-0.0.1.AppImage"), "old");
+writeFileSync(path.join(upd, "got-0.0.1"), "");
 new Updater({ dir: upd, downloads, target, via: () => null, changed: () => {} }).start();
 assert.ok(!existsSync(path.join(downloads, "Foxhole-0.0.1.AppImage")) && existsSync(saved), "an installed version's file goes, a newer one stays");
+
+// the start doesn't look in Downloads (macOS asks the user for it): only its own marks say what's there
+const fresh = new Updater({ dir: path.join(dir, "upd-fresh"), downloads, target, via: () => null, changed: () => {} });
+fresh.start();
+assert.equal(fresh.state(), null, "a file in Downloads without its mark isn't looked for");
 
 // a release without this system's file: said so, and nothing to install by hand
 const w = new Updater({ dir: path.join(dir, "upd-win"), downloads, target: { kind: "win", exe: "Foxhole.exe" }, via: () => null, changed: () => {} });

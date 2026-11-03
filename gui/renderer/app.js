@@ -64,10 +64,12 @@ function render() {
   renderCards();
   renderList();
   renderToast(ph);
+  renderNotice();
   renderSplit();
   renderSettings();
   renderPassword();
   renderTrust();
+  renderAccounts();
   renderOnboard();
   $("#restoring").classList.toggle("on", S.restoring);
 }
@@ -80,9 +82,8 @@ function renderHeader() {
     const r = S.relayStats; // relay mode: its requests instead of Firefox VPN's data
     $("#ver").textContent = `v${S.version}`;
     $("#about-ver").textContent = S.version;
-    for (const el of [$("#acct-avatar"), $("#acct-avatar-2")]) el.textContent = (S.email ?? "?")[0].toUpperCase();
-    $("#acct-name").textContent = S.email ?? "Firefox account";
-    $("#acct-email").textContent = S.email ?? "unknown";
+    $("#acct-avatar").textContent = (S.email || "?")[0].toUpperCase();
+    $("#acct-name").textContent = S.email || "Mozilla account";
     $("#data-k").textContent = r ? "Relay" : "Data";
     $("#data-v").textContent = r ? `${r.relayed.toLocaleString()} sent` : !u ? "—" : u.unlimited ? "Unlimited" : `${u.left} left`;
     $("#data-chip").title = r
@@ -149,10 +150,13 @@ function renderHero(ph) {
   $("#orb").setAttribute("aria-label", label);
   $("#orb").disabled = ph === "busy" || S.auth.stage !== "ready";
   const mode = $("#mode");
-  mode.dataset.v = S.globalOn ? "1" : "0";
-  for (const b of mode.querySelectorAll("button")) b.setAttribute("aria-pressed", String((b.dataset.mode === "global") === S.globalOn));
+  mode.dataset.v = globalMode() ? "1" : "0";
+  for (const b of mode.querySelectorAll("button")) b.setAttribute("aria-pressed", String((b.dataset.mode === "global") === globalMode()));
   mode.classList.toggle("disabled", ph === "busy" || S.auth.stage !== "ready");
 }
+
+/** The mode switch's side: while off, a phone's shows the mode it connects in (mobile/node/main.mjs). */
+const globalMode = () => (S.active ? S.globalOn : !!S.wantGlobal);
 
 function renderCards() {
   section("cards", [S.net, S.netChecking, S.ip, S.ipChecking, S.ipNote, S.proxy, S.splitSummary, S.globalOn, S.lanIp, S.relayOn], () => {
@@ -243,6 +247,14 @@ function reveal() {
 // ── Toast: the last message, once nothing is in progress (the orb's subtitle shows progress) ─
 
 let toastTimer = 0;
+
+function renderNotice() {
+  section("notice", [S.notice?.id], () => {
+    if (!S.notice) return;
+    $("#notice-text").textContent = S.notice.text;
+    $("#notice-modal").classList.add("on");
+  });
+}
 
 function renderToast(ph) {
   section("toast", [S.message?.id, ph === "busy"], () => {
@@ -381,6 +393,74 @@ function renderTrust() {
   });
 }
 
+// ── Accounts ───────────────────────────────────────────────────────────────────────────────
+
+/** Data left, short: "12.3 GB left", "Unlimited". */
+const left = (u) => (!u ? "" : u.unlimited ? "Unlimited" : `${u.left} left`);
+
+/** An account's row: tapped, it's the one in use (data-use); its button signs it out of Foxhole. */
+function accountRow(a, { remove = true } = {}) {
+  const what = [a.current ? "In use" : "", a.error ?? left(a.usage), a.firefox ? "Firefox's sign-in" : ""].filter(Boolean).join(" · ");
+  const title = a.firefox ? "Stop using Firefox's sign-in (Firefox stays signed in)" : "Sign out of this account";
+  return `<div class="account-line acct-row${a.current ? " current" : ""}" data-use="${esc(a.id)}">
+    <span class="avatar big">${esc((a.email || "?")[0].toUpperCase())}</span>
+    <div class="grow"><b>${esc(a.email || (a.firefox ? "Firefox's account" : "Mozilla account"))}</b><span>${esc(what)}</span></div>
+    ${remove ? `<button class="icon-btn" type="button" data-logout="${esc(a.id)}" title="${title}" aria-label="${title}">${icon("logout")}</button>` : ""}
+  </div>`;
+}
+
+/**
+ * The ways to sign in: Foxhole's own (Mozilla's page in a window of Foxhole's: nothing to allow), or Firefox's sign-in
+ * (macOS asks to let Foxhole read Firefox's data). `email`: Firefox's account, where it could be read without asking.
+ */
+function choices(email, { firefox = true } = {}) {
+  const mac = fh.platform === "darwin";
+  const ff = !firefox || PHONE ? ""
+    : `<button class="choice" type="button" data-act="addAccount" data-arg="firefox">${icon("external")}<span><b>${email ? `Use Firefox's account, ${esc(email)}` : "Use Firefox's sign-in"}</b>
+        <span>${email ? "Firefox is signed in to it on this computer." : mac ? "macOS asks you to let Foxhole read Firefox's data (Full Disk Access)." : "Firefox signed in to your Mozilla account, on this computer."}</span></span></button>`;
+  return `<button class="choice primary" type="button" data-act="addAccount" data-arg="mozilla">${icon("user")}<span><b>Sign in to a Mozilla account</b>
+      <span>Mozilla's own page opens in Foxhole. Nothing to allow, and no Firefox needed.</span></span></button>${ff}`;
+}
+
+/** Asks before an account's signed out of Foxhole (logout-ok then does it). */
+function askLogout(id) {
+  const a = S.accounts.find((x) => x.id === id);
+  if (!a) return;
+  const name = a.email || (a.firefox ? "Firefox's account" : "this account");
+  $("#logout-title").textContent = a.firefox ? "Stop using Firefox's sign-in?" : `Sign out of ${name}?`;
+  $("#logout-why").textContent = a.firefox
+    ? `Foxhole stops using ${name}. Firefox itself stays signed in, and you can add it again any time.`
+    : "Foxhole signs out of it and forgets it. You can sign in again any time.";
+  $("#logout-label").textContent = a.firefox ? "Stop using it" : "Sign out";
+  $("#logout-ok").dataset.arg = id;
+  $("#logout-modal").classList.add("on");
+}
+
+let lowShown = ""; // the low-data warning shown for this account and amount: once, until it changes
+
+function renderAccounts() {
+  section("accounts", [S.accounts, S.firefoxEmail], () => {
+    $("#accounts").innerHTML = S.accounts.map((a) => accountRow(a)).join("") || '<div class="hint">None yet.</div>';
+    $("#add-choices").innerHTML = choices(S.firefoxEmail, { firefox: !S.accounts.some((a) => a.firefox) });
+  });
+  section("low", [S.low, S.accounts], () => {
+    const low = S.low;
+    if (!low) return $("#low-modal").classList.remove("on");
+    $("#low-why").textContent = `${low.email || "This account"} has ${low.left} left this month. Switch to another account, or add one, to carry on without a break.`;
+    $("#low-accounts").innerHTML = S.accounts.filter((a) => !a.current).map((a) => accountRow(a, { remove: false })).join("");
+    const key = `${low.email} ${low.left}`;
+    if (lowShown !== key) $("#low-modal").classList.add("on");
+    lowShown = key;
+  });
+}
+
+/** Adds an account: on a phone, Mozilla's sign-in at once (no Firefox there); else the choice. */
+function addAccount() {
+  if (PHONE) return act("addAccount", "mozilla");
+  act("refreshAccounts"); // Firefox's account, freshly read where that asks nothing
+  $("#add-modal").classList.add("on");
+}
+
 // ── Signing in ─────────────────────────────────────────────────────────────────────────────
 
 /** The Browser Console snippet with a few colors (strings first, so words inside them aren't colored). */
@@ -393,7 +473,7 @@ function highlight(code) {
 
 function renderOnboard() {
   const a = S.auth;
-  section("onboard", [a], () => {
+  section("onboard", [a, S.accounts.map((x) => [x.id, x.email, x.current])], () => {
     $("#onboard").classList.toggle("on", a.stage !== "ready");
     $("#onboard").classList.toggle("wait", a.stage === "checking"); // shown only if the check takes a while
     $("#onboard-box").classList.toggle("wide", a.stage === "console");
@@ -402,20 +482,34 @@ function renderOnboard() {
     const err = a.error ? `<div class="err-box">${esc(a.error)}</div>` : "";
     const wait = (text) => `<div class="waiting"><span class="spin"></span>${text}</div>`;
     const mac = fh.platform === "darwin";
+    // the other accounts on the list, to use one of them instead
+    const others = S.accounts.filter((x) => !x.current);
+    const rest = others.length ? `<p class="fine">Or use another account:</p><div class="accounts">${others.map((x) => accountRow(x, { remove: false })).join("")}</div>` : "";
+    // instead of Firefox's sign-in: Foxhole's own
+    const own = `<p class="fine">Or <span class="link" data-act="addAccount" data-arg="mozilla">sign in to a Mozilla account here</span>, without Firefox.</p>`;
     // a phone: Mozilla's sign-in page opens in the app itself (App.tsx), no Firefox needed
     const phone = {
       checking: () => `${fox}<h2>Waking up the fox…</h2><p>Getting the VPN token from your Mozilla account.</p>${wait("One moment")}`,
-      signin: () => `${fox}<h2>Sign in to your Mozilla account</h2>
+      choose: () => `${fox}<h2>Sign in to your Mozilla account</h2>
         <p>Foxhole uses Firefox's free VPN, which comes with a <b>Mozilla account</b>: the one Firefox signs in with. Sign in with yours, or make one: it's free.</p>
         ${err}
-        <div class="buttons"><button class="btn primary" data-act="openFirefox">${icon("user")}Sign in</button></div>
+        <div class="buttons"><button class="btn primary" data-act="addAccount" data-arg="mozilla">${icon("user")}Sign in</button></div>
         <p class="fine">You sign in on Mozilla's own page. Foxhole keeps the sign-in on this phone, to get the VPN's token with.</p>`,
-      switch: () => `${fox}<h2>Switch account</h2>
-        <p>Sign in with the other Mozilla account, and Foxhole carries on with it.</p>
-        <div class="buttons"><button class="btn primary" data-act="openFirefox">${icon("user")}Sign in</button>${a.email ? `<button class="btn" data-act="keepAccount">Keep ${esc(a.email)}</button>` : ""}</div>`,
     };
     $("#onboard-box").innerHTML = ((PHONE && phone[a.stage]) || {
-      checking: () => `${fox}<h2>Waking up the fox…</h2><p>Getting the VPN token from your Firefox login.</p>${wait("One moment")}`,
+      checking: () => `${fox}<h2>Waking up the fox…</h2><p>Getting the VPN token from your Mozilla account.</p>${wait("One moment")}`,
+      // none yet: how to sign in (Firefox's account named where reading it asks nothing)
+      choose: () => `${fox}<h2>Sign in to your Mozilla account</h2>
+        <p>Foxhole uses Firefox's free VPN, which comes with a <b>Mozilla account</b>. Sign in with yours (or make one: it's free), or use the one Firefox is signed in to.</p>
+        ${err}<div class="choices">${choices(a.firefox?.email)}</div>`,
+      expired: () => `${fox}<h2>Sign in again</h2>
+        <p>The sign-in to <b>${esc(a.email || "your account")}</b> has ended: signed out elsewhere, or expired.</p>
+        <div class="buttons"><button class="btn primary" data-act="addAccount" data-arg="mozilla">${icon("user")}Sign in again</button>
+        <button class="btn" data-act="removeAccount" data-arg="${esc(a.id)}">${icon("logout")}Remove it</button></div>${rest}`,
+      offline: () => `${fox}<h2>Can't reach Mozilla</h2>
+        <p>Foxhole couldn't get the VPN's token for <b>${esc(a.email || "your account")}</b>.</p>${err}
+        <div class="buttons"><button class="btn primary" data-act="retrySignIn">${icon("refresh")}Try again</button></div>
+        ${wait("Trying again in a moment…")}${rest}`,
       signin: () => `${fox}<h2>Sign in to Firefox</h2>
         <p>Foxhole uses Firefox's built-in VPN, so the <b>Firefox browser</b> must be signed in to your Mozilla account: inside the browser, not on a website.</p>
         ${err}
@@ -424,7 +518,7 @@ function renderOnboard() {
           <li><span><b>Sync is optional</b>: Foxhole only needs the sign-in, so you can turn off everything on the <b>Choose what to sync</b> screen.</span></li>
         </ol>
         <div class="buttons"><button class="btn primary" data-act="openFirefox">${icon("external")}Open Firefox sign-in</button><button class="btn" data-open="firefox">Get Firefox</button></div>
-        ${wait("Waiting for Firefox to sign in…")}`,
+        ${wait("Waiting for Firefox to sign in…")}${own}${rest}`,
       console: () => `<div class="ok-line">${icon("check")}You are signed in to Firefox${a.email ? ` (${esc(a.email)})` : ""}</div>
         ${err}<h2>Let's grab a token from Firefox</h2>
         <div class="cols">
@@ -436,7 +530,7 @@ function renderOnboard() {
           <div class="snippet"><pre>${highlight(a.snippet)}</pre><button class="btn" data-act="copySnippet" data-copied>${icon("copy")}Copy</button></div>
         </div>
         ${wait("Waiting for the token from Firefox…")}
-        <p class="fine">The token comes back over localhost only and is saved, readable only by you, for next time.</p>`,
+        <p class="fine">The token comes back over localhost only and is saved, readable only by you, for next time.</p>${own}${rest}`,
       blocked: () => fh.platform === "darwin"
         ? `${fox}<h2>Let Foxhole read your Firefox sign-in</h2>
           <p>macOS keeps other apps out of Firefox's data until you allow it. Foxhole only reads the sign-in, to get your VPN token.</p>
@@ -450,12 +544,8 @@ function renderOnboard() {
           </ol>
           <p class="fine">If macOS asks whether ${esc(a.app)} may access data from other apps, click <b>Allow</b>.</p>
           <div class="buttons"><button class="btn primary" data-open="fda">${icon("lock")}Open Full Disk Access</button>${a.app === "Foxhole" ? `<button class="btn" data-act="relaunch">${icon("refresh")}Quit & reopen</button>` : ""}</div>
-          ${wait("Waiting for access…")}`
-        : `${fox}<h2>Can't read your Firefox sign-in</h2>${err}${wait("Trying again…")}`,
-      switch: () => `${fox}<h2>Switch account</h2>
-        <p>In Firefox's <b>Sync</b> settings click <b>Sign out</b>, then sign in with the other account. Foxhole carries on once it sees the new one.</p>
-        <div class="buttons"><button class="btn primary" data-act="openFirefox">${icon("external")}Open Firefox's Sync settings</button>${a.email ? `<button class="btn" data-act="keepAccount">Keep ${esc(a.email)}</button>` : ""}</div>
-        ${wait("Waiting for the other account…")}`,
+          ${wait("Waiting for access…")}${own}${rest}`
+        : `${fox}<h2>Can't read your Firefox sign-in</h2>${err}${wait("Trying again…")}${own}${rest}`,
     }[a.stage])();
   });
 }
@@ -627,11 +717,20 @@ fh.onLog((lines) => {
 
 document.addEventListener("click", async (e) => {
   const t = e.target.closest("button, .link, #toast");
+  // an account's row (not its button): use it
+  const row = !t && e.target.closest("[data-use]");
+  if (row && S) {
+    for (const m of ["#low-modal", "#add-modal"]) $(m).classList.remove("on");
+    return act("useAccount", row.dataset.use);
+  }
   if (!t || !S) return;
+  if (t.dataset.act === "addAccount") $("#add-modal").classList.remove("on");
+  if (t.dataset.logout !== undefined) return askLogout(t.dataset.logout);
+  if (t.id === "logout-ok") $("#logout-modal").classList.remove("on");
   if (t.id === "toast") return t.classList.remove("on");
   if (t.dataset.act) {
     if (t.hasAttribute("data-copied")) flash(t, `${icon("check")}Copied`);
-    return act(t.dataset.act);
+    return t.dataset.arg === undefined ? act(t.dataset.act) : act(t.dataset.act, t.dataset.arg);
   }
   if (t.dataset.open) return fh.open(t.dataset.open);
   if (t.dataset.copy) {
@@ -642,7 +741,7 @@ document.addEventListener("click", async (e) => {
     closeSheet(); // a phone's Locations sheet: the orb behind it shows the connecting
     return act("connect", t.dataset.code);
   }
-  if (t.dataset.mode) return (t.dataset.mode === "global") !== S.globalOn && act("toggleGlobal");
+  if (t.dataset.mode) return (t.dataset.mode === "global") !== globalMode() && act("toggleGlobal");
   if (t.dataset.via) return act("setSplitDefault", t.dataset.via);
   if (t.dataset.site) return act("addRule", t.dataset.site);
   if (t.hasAttribute("data-close")) return closeSheet();
@@ -692,9 +791,16 @@ document.addEventListener("click", async (e) => {
     case "wz-copy":
       act("copy", wz.setup.tokens.map((tk) => tk[1]).join("").replace(wz.setup.placeholder, wz.key));
       return flash(t, `${icon("check")}Copied`);
-    case "switch-account":
-      closeSheet();
-      return act("switchAccount");
+    case "add-account": return addAccount();
+    case "add-later": return $("#add-modal").classList.remove("on");
+    case "logout-cancel": return $("#logout-modal").classList.remove("on");
+    case "notice-ok": return $("#notice-modal").classList.remove("on");
+    case "low-later":
+      $("#low-modal").classList.remove("on");
+      return act("dismissLow");
+    case "low-add":
+      $("#low-modal").classList.remove("on");
+      return addAccount();
     case "open-repo": return fh.open("repo");
     case "update": case "get-update": {
       const up = S.update;
@@ -832,6 +938,10 @@ document.addEventListener("keydown", (e) => {
     if ($("#blocked-modal").classList.contains("on")) return $("#blocked-modal").classList.remove("on");
     if ($("#relay-modal").classList.contains("on")) return $("#relay-modal").classList.remove("on");
     if ($("#manual-modal").classList.contains("on")) return $("#manual-modal").classList.remove("on");
+    if ($("#notice-modal").classList.contains("on")) return $("#notice-modal").classList.remove("on");
+    if ($("#logout-modal").classList.contains("on")) return $("#logout-modal").classList.remove("on");
+    if ($("#add-modal").classList.contains("on")) return $("#add-modal").classList.remove("on");
+    if ($("#low-modal").classList.contains("on")) return $("#low-modal").classList.remove("on");
     if (openSheet) return closeSheet();
     if (document.activeElement === $("#search")) {
       $("#search").value = "";

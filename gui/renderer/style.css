@@ -567,6 +567,24 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .account-line, .about { flex-direction: row !important; align-items: center; gap: 14px !important; }
 .account-line .grow, .about .grow { display: flex; flex-direction: column; gap: 2px; }
 .account-line span, .about span { font-size: 12.5px; color: var(--ink-3); }
+/* Mozilla accounts (Settings, and the onboarding's and low-data dialog's lists): tapped, a row is the one in use */
+.accounts { display: flex; flex-direction: column; gap: 6px; width: 100%; text-align: left; }
+.acct-row { display: flex; padding: 8px 8px 8px 10px; border-radius: 14px; cursor: pointer; transition: background 0.2s, box-shadow 0.2s; }
+.acct-row:hover { background: rgba(255, 255, 255, 0.05); }
+.acct-row.current { background: rgba(255, 122, 26, 0.08); box-shadow: inset 0 0 0 1px rgba(255, 122, 26, 0.32); cursor: default; }
+.acct-row .grow { flex: 1; min-width: 0; }
+.acct-row b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-row .icon-btn { height: 36px; width: 36px; }
+/* The ways to sign in (choices()): Foxhole's own first */
+.choices { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.choice { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border: 0; border-radius: 16px; text-align: left; color: var(--ink); font: inherit; cursor: pointer;
+  background: rgba(255, 255, 255, 0.05); box-shadow: inset 0 0 0 1px var(--line-2); transition: transform 0.2s, background 0.2s; }
+.choice:hover { background: rgba(255, 255, 255, 0.09); transform: translateY(-1px); }
+.choice.primary { background: linear-gradient(135deg, rgba(255, 122, 26, 0.2), rgba(255, 61, 110, 0.14)); box-shadow: inset 0 0 0 1px rgba(255, 122, 26, 0.45); }
+.choice > .i { width: 22px; height: 22px; flex: none; color: var(--fox); }
+.choice > span { display: flex; flex-direction: column; gap: 3px; }
+.choice b { font-size: 14.5px; font-weight: 700; }
+.choice span span { font-size: 12.5px; color: var(--ink-3); line-height: 1.45; }
 .about .logo { width: 40px; height: 40px; filter: drop-shadow(0 6px 16px rgba(255, 122, 26, 0.5)); }
 .about .link { color: var(--fox); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 
@@ -579,6 +597,7 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 /* ── Password popup ───────────────────────────────────────────────────────────────────────── */
 
 .modal { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; pointer-events: none; }
+#notice-modal { z-index: 80; } /* above the sign-in screens (.overlay): an account signed in to again from there */
 .modal .box { width: min(420px, calc(100% - 40px)); padding: 30px 28px 24px; text-align: center; display: flex; flex-direction: column; gap: 14px;
   background: linear-gradient(160deg, rgba(38, 30, 56, 0.9), rgba(17, 14, 28, 0.94)); -webkit-backdrop-filter: blur(40px) saturate(160%); backdrop-filter: blur(40px) saturate(160%);
   opacity: 0; transform: translateY(24px) scale(0.92); transition: transform 0.6s var(--spring), opacity 0.35s; }

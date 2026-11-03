@@ -6,7 +6,8 @@
 // - Linux, the .deb: installed at once with pkexec dpkg (the system asks for the password);
 // - Android (mobile/), the APK: checked by the app (this app, this version, its key), then given to Android's installer.
 // The file goes to the user's Downloads and stays there until the new version runs, to install by hand if it doesn't
-// go in by itself.
+// go in by itself. The app's own folder keeps a mark of each (got-<version>): the Downloads folder is looked in only
+// once the Update button is pressed (macOS asks the user for it the first time).
 // A copy that can't update itself (run from the disk image, a development copy, Linux on Arm) links to the download.
 import { execFile, spawn } from "node:child_process";
 import { chmodSync, copyFileSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, statfsSync, writeFileSync } from "node:fs";
@@ -121,7 +122,7 @@ function downloaded(dir, kind) {
 }
 
 export class Updater {
-  #dir; // the app's own: the Mac's new app unpacked, the old one it replaced, and the marks of tries to install
+  #dir; // the app's own: the Mac's new app unpacked, the old one it replaced, the marks of downloads and of tries to install
   #downloads; // where the release file goes, and stays: to install by hand if it doesn't go in by itself
   // how this copy updates itself: { kind: "mac", bundle } | { kind: "win", exe } | { kind: "appimage", file } | { kind: "deb" }
   // | { kind: "apk", check(file, version), open(file) } (the phone's: promises);
@@ -148,14 +149,13 @@ export class Updater {
     mkdirSync(this.#dir, { recursive: true });
     // an update's leftovers: the app it replaced, and what's of versions no newer than this one (it's in: no longer needed)
     const done = (v) => SEMVER.test(v) && !newer(v, VERSION);
-    for (const f of readdirSync(this.#dir)) if (f === "old.app" || done(f) || done(f.replace(/^tried-/, ""))) rmSync(join(this.#dir, f), { recursive: true, force: true });
     const t = this.#target;
+    const got = readdirSync(this.#dir).filter((f) => f.startsWith("got-")).map((f) => f.slice(4)).filter((v) => SEMVER.test(v));
+    if (t) for (const v of got.filter(done)) for (const f of [this.#file(v), `${this.#file(v)}.part`]) rmSync(f, { force: true });
+    for (const f of readdirSync(this.#dir)) if (f === "old.app" || done(f) || done(f.replace(/^(tried|got)-/, ""))) rmSync(join(this.#dir, f), { recursive: true, force: true });
     if (!t) return this.#schedule();
-    for (const { version, name } of downloaded(this.#downloads, t.kind)) {
-      if (done(version)) for (const f of [name, `${name}.part`]) rmSync(join(this.#downloads, f), { force: true });
-    }
     // one downloaded before: ready at once (it goes in even on a quit before the first look), or installed by hand
-    const waiting = downloaded(this.#downloads, t.kind).map((d) => d.version).sort((a, b) => (newer(a, b) ? -1 : 1))[0];
+    const waiting = got.filter((v) => !done(v)).sort((a, b) => (newer(a, b) ? -1 : 1))[0];
     if (waiting) {
       this.#version = waiting;
       this.#ready = t.kind === "mac" ? (existsSync(this.#readyPath(waiting)) ? this.#readyPath(waiting) : null) : t.kind === "deb" ? null : this.#readyPath(waiting);
@@ -182,8 +182,8 @@ export class Updater {
 
   /** The downloaded file, kept to install by hand: its path while it's there, else null. */
   file() {
-    const f = this.#version && this.#target && this.#file(this.#version);
-    return f && existsSync(f) ? f : null;
+    const v = this.#version;
+    return v && this.#target && existsSync(join(this.#dir, `got-${v}`)) && existsSync(this.#file(v)) ? this.#file(v) : null;
   }
 
   /** What the window and tray show: null, or the new version, whether (and how) this copy updates itself, and how far it got. */
@@ -231,7 +231,7 @@ export class Updater {
       for (const d of [this.#downloads, this.#dir]) mkdirSync(d, { recursive: true });
       // an older version's download: not needed now
       for (const d of downloaded(this.#downloads, t.kind)) if (d.version !== v) for (const f of [d.name, `${d.name}.part`]) rmSync(join(this.#downloads, f), { force: true });
-      for (const f of readdirSync(this.#dir)) if (f !== v) rmSync(join(this.#dir, f), { recursive: true, force: true });
+      for (const f of readdirSync(this.#dir)) if (f !== v && f !== `got-${v}`) rmSync(join(this.#dir, f), { recursive: true, force: true });
       if (!existsSync(file)) {
         const { bavail, bsize } = statfsSync(this.#downloads);
         const need = t.kind === "mac" ? 1e9 : 4e8; // the download (and on a Mac the app in it, and the one it replaces)
@@ -246,6 +246,7 @@ export class Updater {
         );
         renameSync(`${file}.part`, file);
       }
+      writeFileSync(join(this.#dir, `got-${v}`), "");
       [this.#phase, this.#progress] = ["installing", null];
       this.#changed();
       if (t.kind === "mac") {
