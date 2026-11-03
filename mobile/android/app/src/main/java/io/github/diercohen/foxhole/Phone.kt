@@ -21,6 +21,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.provider.Settings
+import android.widget.Toast
 import android.security.KeyChain
 import androidx.core.content.FileProvider
 import androidx.core.graphics.drawable.toBitmap
@@ -255,7 +256,14 @@ object Phone {
   private fun apkInstall(ctx: Context, apk: File): Any? {
     if (!ctx.packageManager.canRequestPackageInstalls()) {
       waitingApk = apk
-      if (!open(ctx, Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${ctx.packageName}")))) error("Settings didn't open")
+      if (open(ctx, Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${ctx.packageName}")))) return null
+      // some TVs' Settings have no page for one app: the list of them, else Security (Unknown sources), saying what to turn on
+      val where = if (isTv(ctx)) "Device Preferences → Security & restrictions → Unknown sources" else "Settings → Apps → Special app access → Install unknown apps"
+      if (!open(ctx, Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)) && !open(ctx, Intent(Settings.ACTION_SECURITY_SETTINGS))) {
+        waitingApk = null
+        error("Android needs Foxhole allowed to install apps first: in $where, turn on Foxhole, then try again")
+      }
+      Toast.makeText(ctx, "Turn on Foxhole here, then come back", Toast.LENGTH_LONG).show()
       return null
     }
     val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.updates", apk) // res/xml/updates.xml

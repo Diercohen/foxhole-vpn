@@ -113,7 +113,7 @@ function renderHeader() {
     $("#about-update").innerHTML = !up
       ? "Firefox's free VPN for your whole system. Unofficial, not affiliated with Mozilla."
       : !up.auto ? `Version ${esc(up.version)} is out. <span class="link" id="get-update">Download it</span>`
-      : up.ready && PHONE ? `Version ${esc(up.version)} is downloaded. <span class="link" id="get-update">Install it</span>`
+      : up.ready && PHONE ? `Version ${esc(up.version)} is downloaded${up.error ? `, but couldn't be installed: ${esc(up.error)}` : ""}. <span class="link" id="get-update">${up.error ? "Try again" : "Install it"}</span>`
       : up.ready ? `Version ${esc(up.version)} is ready: restart Foxhole to switch to it. <span class="link" id="get-update">Restart now</span>`
       : up.phase === "downloading" ? `Downloading version ${esc(up.version)} · ${up.progress ?? 0}%…`
       : up.phase === "installing" ? `Installing version ${esc(up.version)}…`
@@ -1110,6 +1110,8 @@ fh.onLog((lines) => {
 
 // ── Events ─────────────────────────────────────────────────────────────────────────────────
 
+// the update dialog's words on a phone: Android's installer replaces the app (updater.js), closing it and the VPN
+const PHONE_UPDATE = "Android asks you to install it. Foxhole closes while it does, and the VPN with it: open Foxhole again after.";
 document.addEventListener("click", async (e) => {
   const t = e.target.closest("button, .link, #toast");
   // an account's row (not its button): use it
@@ -1215,8 +1217,12 @@ document.addEventListener("click", async (e) => {
       const up = S.update;
       if (!up?.auto) return fh.open("releases");
       if (up.phase) return;
-      if (up.error && up.file) return showManual(up); // it didn't go in by itself: install it by hand
-      if (up.ready) return $("#update-modal").classList.add("on");
+      if (up.error && up.file && !PHONE) return showManual(up); // it didn't go in by itself: install it by hand (a phone's ready one tries Android's installer again)
+      if (up.ready) {
+        // a phone's last try at Android's installer failed: why, in the dialog (a TV has no tooltip to show it)
+        if (PHONE) $("#update-modal p").textContent = up.error ? `It didn't install: ${up.error}.` : PHONE_UPDATE;
+        return $("#update-modal").classList.add("on");
+      }
       // downloads and installs; once it's ready, asks to restart; failed with the file there, offers it by hand
       if (await act("update")) return $("#update-modal").classList.add("on");
       const now = (await act("state")).update;
@@ -1423,7 +1429,7 @@ window.addEventListener("focus", () => document.body.classList.remove("idle"));
     $("#blocked-later").textContent = "OK"; // the blocked dialog's only button there: no relay on a phone (controller.js NO_RELAY)
     // Android's installer replaces the app (updater.js): it closes, the VPN with it
     $("#update-modal h2").textContent = "The update is downloaded";
-    $("#update-modal p").textContent = "Android asks you to install it. Foxhole closes while it does, and the VPN with it: open Foxhole again after.";
+    $("#update-modal p").textContent = PHONE_UPDATE;
     $("#up-restart").textContent = "Install";
     if (STILL) document.body.classList.add("still");
     // the page's own words, written for a computer

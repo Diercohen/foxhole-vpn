@@ -318,7 +318,16 @@ export class Updater {
     if (!this.#ready || this.#ready === true) return false; // nothing waiting, or a .deb that's in already
     // Android's installer asks, then replaces this app (ending it); asked again if the user says no now
     if (t.kind === "apk") {
-      t.open(this.#ready).catch((err) => log(`update: couldn't open Android's installer: ${err.message}`));
+      // a failure's shown (the window's Install update tries again), not only logged
+      if (this.#error) {
+        this.#error = null;
+        this.#changed();
+      }
+      t.open(this.#ready).catch((err) => {
+        log(`update: couldn't open Android's installer: ${err.message}`);
+        this.#error = err.message;
+        this.#changed();
+      });
       return true;
     }
     if (t.kind === "win" && !relaunch) return false; // an installer cut off by a shutdown would leave half an app: it waits for "Restart now"
