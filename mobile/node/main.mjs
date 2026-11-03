@@ -55,7 +55,7 @@ const ACTIONS = new Set([
   "state", "power", "connect", "disconnect", "toggleGlobal",
   "setShare", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "setSplitDefault", "addRule", "toggleRule", "removeRule",
   "logs", "copy", "copyLogs", "reloadList",
-  "addAccount", "useAccount", "removeAccount", "refreshAccounts", "dismissLow", "retrySignIn", "checkEntitled",
+  "addAccount", "useAccount", "removeAccount", "refreshAccounts", "dismissLow", "retrySignIn", "checkEntitled", "tvWait", "tvFind", "tvSend", "showWifiName",
   "trustCa", "untrustCa", "dismissTrust",
 ]);
 
@@ -113,14 +113,24 @@ const apk = process.platform === "android" && {
   check: (file, version) => ask("apkCheck", { path: file, version }),
   open: (file) => ask("apkInstall", { path: file }),
 };
+// what this device is: a TV (Android TV) signs in from another device (tvpair.ts); its name is shown on both
+const device = {};
+if (process.platform === "android") void ask("device").then((d) => (Object.assign(device, d), controller.emit("change")), () => {});
 const updater = new Updater({ dir: join(homedir(), "update"), downloads: join(homedir(), "apk"), target: apk || null, via: () => controller.via(), changed: () => controller.emit("change") });
 const controller = new Controller({
   copy: (text) => void ask("copy", { text }).catch(() => {}),
   updates: updater,
-  android: { // the phone's part (iOS's too)
+  android: { // the phone's part (iOS's too), and a TV's
+    get tv() {
+      return !!device.tv;
+    },
+    get name() {
+      return typeof device.name === "string" ? device.name : "";
+    },
     openSignIn: () => send({ t: "signIn" }), // its session comes back as "signedIn"
     globalSession,
     network: () => ask("network").catch(() => null),
+    wifiAccess: () => ask("wifiAccess"), // Android's question for the Wi-Fi's name (Phone.kt)
     caTrusted: () => (caPem() ? ask("caTrusted", { pem: caPem() }).catch(() => false) : Promise.resolve(false)),
     setCaTrust: async (add) =>
       ask(add ? "caInstall" : "caRemove", { pem: add ? loadCa().pem : caPem(), url: add && process.platform === "ios" ? await caUrl() : undefined }),

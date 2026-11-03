@@ -1,6 +1,6 @@
 // Wi-Fi name parsing for each OS's tool output, and the network row. No network.
 import assert from "node:assert";
-import { parseIwDev, parseSsid, parseNmcliWifi, unescapeIw, describeNetwork, firewallCommands, ipIn } from "../dist/netinfo.js";
+import { parseIwDev, parseSsid, parseNmcliWifi, unescapeIw, describeNetwork, firewallCommands, ipIn, windowsHidesWifi } from "../dist/netinfo.js";
 
 // Sharing the proxy: the command that opens its port in whichever firewall is on.
 assert.deepEqual(firewallCommands(true, null, 1080), ["sudo firewall-cmd --permanent --add-port=1080/tcp", "sudo firewall-cmd --reload"], "firewalld (Fedora)");
@@ -30,6 +30,10 @@ assert.equal(
 assert.equal(parseSsid("    BSSID                  : 2c:97:b1:a9:06:60\n"), null, "netsh: BSSID alone isn't a name");
 assert.equal(parseSsid("<dictionary> {\n  SSID : Office\n  Security : WPA2\n"), "Office", "macOS ipconfig getsummary");
 assert.equal(parseSsid("  SSID : <redacted>\n"), null, "macOS without location access");
+// Windows 11 24H2 without Location (netsh's own words, which vary with the language; the address doesn't)
+assert.ok(windowsHidesWifi("Network shell commands need location permission to access WLAN information. Turn on Location services on the Location page in Privacy & security settings.\n\nHere is the URI for the Location page in the Settings app:\nms-settings:privacy-location\n"), "netsh: hidden");
+assert.ok(!windowsHidesWifi("    SSID                   : Cafe\n"), "netsh: shown");
+assert.ok(!windowsHidesWifi(""), "netsh: no Wi-Fi");
 assert.equal(parseSsid("Current Wi-Fi Network: Office\n"), "Office", "macOS networksetup");
 
 assert.equal(describeNetwork("Home 5G", "en0"), "Wi-Fi · Home 5G", "on Wi-Fi");

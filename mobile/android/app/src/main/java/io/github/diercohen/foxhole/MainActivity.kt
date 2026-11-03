@@ -32,8 +32,15 @@ class MainActivity : ReactActivity() {
     if (requestCode == VPN_CONSENT) Phone.consented(resultCode == RESULT_OK)
   }
 
+  // the answer to Android's question about Location, for the Wi-Fi's name (Phone.wifiAccess)
+  override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    if (requestCode == LOCATION) Phone.locationAnswered(permissions, grantResults)
+  }
+
   companion object {
     const val VPN_CONSENT = 0x5650
+    const val LOCATION = 0x4c4f
     /** The app on screen, if it is: what asks Android for the VPN, and opens Settings. */
     @Volatile var shown: MainActivity? = null
   }

@@ -3,7 +3,7 @@
 // was a list). One is in use, and stays so for the next start: the VPN's token comes from it.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { FirefoxAuth, SessionAuth, fxaPost, type Authenticator } from "./auth.js";
+import { FirefoxAuth, RefreshAuth, SessionAuth, destroyToken, fxaPost, type Authenticator } from "./auth.js";
 import { findAccount, userHome } from "./profile.js";
 
 /** Firefox's sign-in, in the list. */
@@ -14,7 +14,8 @@ export const LOW_DATA = 500n * 1024n * 1024n;
 export interface OwnAccount {
   uid: string;
   email: string;
-  sessionToken: string; // hex: what Firefox keeps in signedInUser.json
+  sessionToken?: string; // hex: what Firefox keeps in signedInUser.json
+  refreshToken?: string; // hex, VPN-only: what a TV's sent (tvpair.ts), instead of a session
 }
 
 export interface Accounts {
@@ -29,8 +30,11 @@ const configDir = () => join(userHome(), ".config", "foxhole-vpn");
 const accountsFile = () => join(configDir(), "accounts.json");
 const isOwn = (a: unknown): a is OwnAccount => {
   const o = a as Partial<OwnAccount> | null;
-  return typeof o?.uid === "string" && !!o.uid && typeof o.email === "string" && typeof o.sessionToken === "string" && /^[0-9a-f]{64}$/.test(o.sessionToken);
+  const hex = (t: unknown) => typeof t === "string" && /^[0-9a-f]{64}$/.test(t);
+  return typeof o?.uid === "string" && !!o.uid && typeof o.email === "string" && (hex(o.sessionToken) || hex(o.refreshToken));
 };
+/** An account as it's kept: its uid, email, and its session or refresh token. */
+const keep = ({ uid, email, sessionToken, refreshToken }: OwnAccount): OwnAccount => (sessionToken ? { uid, email, sessionToken } : { uid, email, refreshToken });
 
 /** A file's accounts, the well-formed ones; null if it isn't one. Pure. */
 export function parseAccounts(json: string): Accounts | null {
@@ -41,7 +45,7 @@ export function parseAccounts(json: string): Accounts | null {
     return null;
   }
   if (!o || typeof o !== "object") return null;
-  const own = Array.isArray(o.own) ? o.own.filter(isOwn).map(({ uid, email, sessionToken }) => ({ uid, email, sessionToken })) : [];
+  const own = Array.isArray(o.own) ? o.own.filter(isOwn).map(keep) : [];
   const firefox = o.firefox === true && !PHONE;
   const ids = [...(firefox ? [FIREFOX] : []), ...own.map((a) => a.uid)];
   const current = typeof o.current === "string" && ids.includes(o.current) ? o.current : (ids[0] ?? null);
@@ -60,7 +64,7 @@ function migrate(): Accounts {
   if (PHONE) {
     try {
       const { accountData: a } = JSON.parse(readFileSync(join(userHome(), ".mozilla", "firefox", "foxhole.default", "signedInUser.json"), "utf8"));
-      if (isOwn(a)) return { ...none, current: a.uid, own: [{ uid: a.uid, email: a.email, sessionToken: a.sessionToken }] };
+      if (isOwn(a)) return { ...none, current: a.uid, own: [keep(a)] };
     } catch {}
     return none;
   }
@@ -112,7 +116,7 @@ export function authFor(a: Accounts, id: string): Authenticator | null {
     return f?.signedIn ? new FirefoxAuth(f) : null;
   }
   const own = a.own.find((x) => x.uid === id);
-  return own ? new SessionAuth(() => own.sessionToken) : null;
+  return !own ? null : own.sessionToken ? new SessionAuth(() => own.sessionToken as string) : new RefreshAuth(own.refreshToken as string);
 }
 
 /**
@@ -125,7 +129,8 @@ export function peekFirefox(): string | null {
   return f?.signedIn && !f.blocked ? f.email : null;
 }
 
-/** Signs a session out at Mozilla (it leaves the account's devices list); quietly, as the account goes from here anyway. */
-export async function signOut(sessionToken: string): Promise<void> {
-  await fxaPost("/session/destroy", {}, sessionToken, AbortSignal.timeout(10_000)).catch(() => {});
+/** Signs an account out at Mozilla (it leaves the account's devices list); quietly, as the account goes from here anyway. */
+export async function signOut(a: Pick<OwnAccount, "sessionToken" | "refreshToken">): Promise<void> {
+  if (a.refreshToken) return destroyToken(a.refreshToken);
+  if (a.sessionToken) await fxaPost("/session/destroy", {}, a.sessionToken, AbortSignal.timeout(10_000)).catch(() => {});
 }

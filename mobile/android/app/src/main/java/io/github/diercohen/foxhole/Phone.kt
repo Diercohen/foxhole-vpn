@@ -1,5 +1,7 @@
 package io.github.diercohen.foxhole
 
+import android.Manifest
+import android.app.UiModeManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
@@ -7,10 +9,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.net.VpnService
+import android.location.LocationManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -36,6 +41,8 @@ object Phone {
           Core.answer(id, null)
         }
         "network" -> Core.answer(id, network(ctx))
+        "wifiAccess" -> main.post { wifiAccess(ctx, id) }
+        "device" -> Core.answer(id, JSONObject().put("tv", isTv(ctx)).put("name", deviceName(ctx)))
         "keepAlive" -> {
           FoxholeService.keep(ctx, if (args.optBoolean("off")) null else Triple(args.getString("title"), args.getString("text"), args.optBoolean("paused")))
           Core.answer(id, null)
@@ -65,15 +72,73 @@ object Phone {
     }
 
   /** What the phone is online through, as the window's Network card says it; null offline. */
+  /** A TV (Android TV, Google TV): its window works by remote, and it signs in from another device. */
+  fun isTv(ctx: Context): Boolean =
+    ctx.getSystemService(UiModeManager::class.java).currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
+      ctx.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+
+  /** The name the user gave this device (Settings → About), else its model: shown on the other device. */
+  private fun deviceName(ctx: Context): String =
+    Settings.Global.getString(ctx.contentResolver, "device_name")?.takeIf { it.isNotBlank() } ?: Build.MODEL
+
   private fun network(ctx: Context): String? {
     val cm = ctx.getSystemService(ConnectivityManager::class.java)
     val caps = cm.getNetworkCapabilities(cm.activeNetwork ?: return null) ?: return null // outside Foxhole's VPN: the real one
     return when {
-      caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
+      caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi · ${wifiName(ctx) ?: "name hidden"}"
       caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Mobile data"
       caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet (wired)"
       else -> "Online"
     }
+  }
+
+  // ── The Wi-Fi's name: Android shows it only to apps allowed precise Location, with Location on (it can tell where
+  //    you are). Asked for only when the user chooses to see it, having been told why (app.js wifi-modal). ──────────
+
+  private const val FINE = Manifest.permission.ACCESS_FINE_LOCATION
+  private var located: ((Boolean, Boolean) -> Unit)? = null // waits for Android's answer: precise, approximate
+
+  /** The connected Wi-Fi's name, or null where Android won't tell (not allowed, or Location off). */
+  private fun wifiName(ctx: Context): String? {
+    if (ctx.checkSelfPermission(FINE) != PackageManager.PERMISSION_GRANTED) return null
+    @Suppress("DEPRECATION") // its replacement (a network callback's WifiInfo) tells the same, asynchronously
+    val ssid = ctx.applicationContext.getSystemService(WifiManager::class.java).connectionInfo?.ssid ?: return null
+    return ssid.removeSurrounding("\"").takeUnless { it.isBlank() || it == WifiManager.UNKNOWN_SSID }
+  }
+
+  /**
+   * Asks Android's question (once; denied twice, Android stops asking, so Foxhole's own settings page opens instead),
+   * then has Location turned on. Answers "allowed", "denied", "approximate" (precise needed), or "opened" (Settings is
+   * on screen, to turn it on there).
+   */
+  private fun wifiAccess(ctx: Context, id: Int) {
+    val activity = MainActivity.shown ?: return Core.fail(id, "open Foxhole to allow it")
+    val prefs = ctx.getSharedPreferences("foxhole", Context.MODE_PRIVATE)
+    fun open(action: String, data: Uri? = null) =
+      try {
+        activity.startActivity(Intent(action, data))
+        Core.answer(id, "opened")
+      } catch (e: android.content.ActivityNotFoundException) {
+        Core.fail(id, "This device has no Location settings to turn it on in.")
+      }
+    fun locationOn() =
+      if (ctx.getSystemService(LocationManager::class.java).isLocationEnabled) Core.answer(id, "allowed")
+      else open(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+    if (activity.checkSelfPermission(FINE) == PackageManager.PERMISSION_GRANTED) return locationOn()
+    if (prefs.getBoolean("locationAsked", false) && !activity.shouldShowRequestPermissionRationale(FINE))
+      return open(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", ctx.packageName, null))
+    prefs.edit().putBoolean("locationAsked", true).apply()
+    located = { precise, approximate ->
+      if (precise) locationOn() else Core.answer(id, if (approximate) "approximate" else "denied")
+    }
+    activity.requestPermissions(arrayOf(FINE, Manifest.permission.ACCESS_COARSE_LOCATION), MainActivity.LOCATION)
+  }
+
+  /** Android's answer (MainActivity). */
+  fun locationAnswered(permissions: Array<out String>, results: IntArray) {
+    val granted = permissions.filterIndexed { i, _ -> results.getOrNull(i) == PackageManager.PERMISSION_GRANTED }
+    located?.invoke(FINE in granted, Manifest.permission.ACCESS_COARSE_LOCATION in granted)
+    located = null
   }
 
   // ── Whole-system mode: Android asks the user once whether Foxhole may be a VPN ──────────────────────────────

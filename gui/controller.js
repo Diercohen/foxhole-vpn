@@ -1,16 +1,19 @@
 // The desktop app's state and actions, on the same modules as the TUI (src/tui.ts, which this
 // follows step by step): the main process owns them, the window shows state() and asks for actions.
 import { EventEmitter } from "node:events";
+import { hostname } from "node:os";
 import { findAccount, openBrowser, macApp } from "./dist/profile.js";
 import { fetchServerList } from "./dist/serverlist.js";
 import { Connection, RELAY_CODE } from "./dist/connection.js";
-import { FirefoxAuth, StaticAuth } from "./dist/auth.js";
+import { FirefoxAuth, RefreshAuth, StaticAuth, destroyToken } from "./dist/auth.js";
+import { askTv, findTvs, parseTvLink, sendToTv, waitForSignIn } from "./dist/tvpair.js";
+import { qrSvgPath } from "./dist/qr.js";
 import { FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox, saveAccounts, signOut, withFirefox, withOwn, without } from "./dist/accounts.js";
 import { fetchEntitlement, fetchUsage } from "./dist/guardian.js";
 import { GuardianError, GuardianBlocked, useRelay } from "./dist/guardian.js";
 import { loadRelay, relayUrl } from "./dist/httprelay.js";
 import { STEPS, KEY_PLACEHOLDER, relayTemplate, highlightJs, deploymentId } from "./dist/relaysetup.js";
-import { network, publicIp, lanIp, firewallHint } from "./dist/netinfo.js";
+import { network, publicIp, lanIp, firewallHint, wifiAccess } from "./dist/netinfo.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor } from "./dist/settings.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenProblem } from "./dist/tokenserver.js";
 import { startProxy, onProxyWarning } from "./dist/proxy.js";
@@ -85,6 +88,11 @@ export class Controller extends EventEmitter {
   #switchTo = null; // an account picked (useAccount), until it's signed in with
   #switched = 0; // counts the switches done: the window closes Settings on each
   #unentitledAsk = 0; // counts the times it's found not to: each shows the window's how-to again
+  #tvIn = null; // a TV's wait for a sign-in from another device (tvpair.ts): a promise of it
+  #tvHandle = null; // ...and the wait itself, once it's started
+  #tvError = null; // why it couldn't wait
+  #tvQr = null; // { link, qr }: its QR code, drawn once per link
+  #tvsFound = []; // the TVs found waiting on this device's network (tvFind), for a code typed
   #firefoxEmail = null; // Firefox's sign-in's, once read (peekFirefox: where reading it asks nothing)
   #others = new Map(); // an account's id → { usage, error }: the data left of those not in use (refreshAccounts)
   #openSignIn; // opens Foxhole's own Mozilla sign-in: the desktop's window (gui/main.js), the phone's page
@@ -92,7 +100,8 @@ export class Controller extends EventEmitter {
   /**
    * On a phone (mobile/node/main.mjs), what it does in place of the desktop's ways; null elsewhere: openSignIn() its
    * own Mozilla sign-in, whose session comes back by signedIn(); globalSession() Android's VPN, with GlobalSession's methods; network();
-   * caTrusted() and setCaTrust(add), relay mode's certificate in Android's store (setCaTrust says what's left to do).
+   * caTrusted() and setCaTrust(add), relay mode's certificate in Android's store (setCaTrust says what's left to do);
+   * tv: it's a TV (Android TV), which signs in from another device (tvWait); name: the device's.
    */
   #android;
 
@@ -317,6 +326,110 @@ export class Controller extends EventEmitter {
     this.#say(this.#entitled === false ? "error" : "ok", this.#entitled === false ? "the VPN isn't turned on for this account yet" : this.#entitled ? "the VPN is turned on for this account" : "couldn't check: try again in a moment");
   }
 
+  // ── A TV's sign-in from another device (tvpair.ts) ──────────────────────────────────────────────────────────
+
+  /** The TV's sign-in screen shown (on) or put away: meanwhile it waits for a sign-in from a computer or phone. */
+  async tvWait(on) {
+    if (!on) {
+      const h = await this.#tvIn;
+      this.#tvIn = this.#tvHandle = null;
+      h?.stop();
+      return this.#changed();
+    }
+    this.#tvError = null;
+    this.#tvIn ??= waitForSignIn({
+      name: this.#android?.name || "TV",
+      host: () => lanIp(),
+      accept: (account, from) => this.#tvAccept(account, from),
+      changed: () => this.#changed(),
+    }).then(
+      (h) => ((this.#tvHandle = h), this.#changed(), h),
+      (err) => {
+        this.#tvIn = null;
+        this.#tvError = err.code === "EADDRINUSE" ? "Another app on this TV is using Foxhole's sign-in port (47533)." : err.message;
+        this.#changed();
+        return null;
+      },
+    );
+  }
+
+  /** What another device sent: checked with Mozilla (the sender's told if it doesn't work), then added and in use. */
+  async #tvAccept({ uid, email, refreshToken }, from) {
+    await new RefreshAuth(refreshToken).getAccessToken(AbortSignal.timeout(15_000));
+    await this.disconnect(); // as a switch of accounts does
+    const old = this.#accounts.own.find((x) => x.uid === uid);
+    this.#saveAccounts(withOwn(this.#accounts, { uid, email, refreshToken }));
+    if (old) void signOut(old); // the sign-in it replaces
+    this.#others.delete(uid);
+    setTimeout(() => void this.tvWait(false)); // once the sender has its answer
+    this.#alert(`You're signed in with ${email}${from ? `, sent from ${from}` : ""}, and it's the account in use now.`, "Signed in");
+    void this.#resignIn();
+  }
+
+  /** The TV's screen: its code and QR code (drawn once each), or why it can't wait. */
+  #tvView() {
+    if (!this.#tvHandle) return this.#tvError ? { error: this.#tvError } : null;
+    const w = this.#tvHandle.waiting();
+    if (w.link && this.#tvQr?.link !== w.link) this.#tvQr = { link: w.link, qr: qrSvgPath(w.link) };
+    return { code: w.code, host: w.host, qr: w.link ? this.#tvQr.qr : null };
+  }
+
+  /**
+   * The window's "Show the name" (the user was told why first): the system asked to show Foxhole the Wi-Fi's name
+   * (netinfo.ts wifiAccess; Android's own question). "allowed", "denied", "settings" (for the window to open), or on
+   * Android "opened" (Settings is on screen) and "approximate" (the name needs Precise location).
+   */
+  async showWifiName() {
+    const how = await (this.#android?.wifiAccess ?? wifiAccess)();
+    this.#refreshNet();
+    return how;
+  }
+
+  /** "Sign in a TV": the TVs waiting on this device's network. */
+  async tvFind() {
+    this.#tvsFound = await findTvs();
+    return this.#tvsFound.map(({ host, name }) => ({ host, name }));
+  }
+
+  /**
+   * Sends a TV a sign-in of the account `id` (a VPN-only one of its own: auth.ts refreshToken), to the TV in its QR
+   * code's `link`, or to the one found waiting with the `code` typed. Resolves with the TV's name.
+   */
+  async tvSend({ code, link } = {}, id = this.#accounts.current) {
+    let tvs;
+    if (link) {
+      const tv = parseTvLink(link);
+      if (!tv) throw new Error("That QR code isn't a Foxhole TV's.");
+      const there = await askTv(tv);
+      if (!there) throw new Error(`Can't reach the TV at ${tv.host}: is this ${this.#android ? "phone" : "computer"} on the TV's Wi-Fi?`);
+      if (there.pub !== tv.pub) throw new Error("That QR code is an old one: the TV shows a new one now.");
+      tvs = [{ ...tv, name: there.name }];
+    } else {
+      if (!this.#tvsFound.length) await this.tvFind();
+      tvs = this.#tvsFound;
+      if (!tvs.length) throw new Error("No TV is waiting on this network. Is the TV on the same Wi-Fi, showing its code?");
+    }
+    const auth = authFor(this.#accounts, id);
+    if (typeof auth?.refreshToken !== "function") throw new Error("This account's sign-in came from another device: sign in to it here first, or send the TV another account.");
+    const a = this.#accounts;
+    const email = id === FIREFOX ? (findAccount()?.email ?? this.#firefoxEmail) : a.own.find((x) => x.uid === id)?.email;
+    const uid = id === FIREFOX ? findAccount()?.uid : id;
+    if (!uid || !email) throw new Error("Couldn't read this account's details: try another one.");
+    const refreshToken = await auth.refreshToken(AbortSignal.timeout(15_000));
+    const from = this.#android?.name || hostname().replace(/\.local$/, "");
+    let lastErr;
+    for (const tv of tvs)
+      try {
+        await sendToTv(tv, { code }, { uid, email, refreshToken }, from);
+        this.#say("ok", `${tv.name} is signed in with ${email}`);
+        return tv.name;
+      } catch (err) {
+        lastErr = err;
+      }
+    void destroyToken(refreshToken); // no TV took it
+    throw lastErr;
+  }
+
   /** Another account: "mozilla", Foxhole's own sign-in (it comes back by signedIn()); "firefox", Firefox's sign-in. */
   addAccount(how) {
     if (how === "mozilla") return void this.#openSignIn?.();
@@ -336,7 +449,7 @@ export class Controller extends EventEmitter {
     if (twin?.sessionToken === sessionToken) return; // the same sign-in handed over again (the phone's page: at login, then when it's done)
     const ended = (id) => (this.#auth.stage === "expired" && this.#auth.id === id) || this.#others.get(id)?.error === "signed out";
     if ((twin && !ended(twin.uid)) || (!twin && this.#accounts.firefox && sameEmail(email, findAccount()?.email))) {
-      void signOut(sessionToken); // the new session isn't kept
+      void signOut({ sessionToken }); // the new session isn't kept
       return this.#alert(`You're already signed in with ${email || twin?.email}${twin ? "" : " (Firefox's sign-in)"}, so it isn't added again.`);
     }
     this.#saveAccounts(withOwn(this.#accounts, { uid, email, sessionToken }));
@@ -358,7 +471,7 @@ export class Controller extends EventEmitter {
   /** Signs an account out of Foxhole (Firefox's: Foxhole stops reading it; Firefox stays signed in). */
   removeAccount(id) {
     const own = this.#accounts.own.find((x) => x.uid === id);
-    if (own) void signOut(own.sessionToken);
+    if (own) void signOut(own);
     const was = this.#accounts.current;
     this.#saveAccounts(without(this.#accounts, id));
     this.#others.delete(id);
@@ -417,6 +530,7 @@ export class Controller extends EventEmitter {
       const usage = current ? this.#conn?.usage : this.#others.get(id)?.usage;
       return {
         id, current, firefox: id === FIREFOX,
+        send: id === FIREFOX || !!a.own.find((x) => x.uid === id)?.sessionToken, // can sign in a TV (tvSend)
         email: id === FIREFOX ? this.#firefoxEmail : a.own.find((x) => x.uid === id).email,
         usage: usageView(usage),
         error: current ? null : (this.#others.get(id)?.error ?? null),
@@ -1003,6 +1117,8 @@ export class Controller extends EventEmitter {
       entitled: this.#entitled,
       unentitledAsk: this.#unentitledAsk,
       switched: this.#switched,
+      tv: !!this.#android?.tv,
+      tvWait: this.#tvView(),
       net: this.#net ?? null,
       netChecking: this.#net === undefined,
       ip: this.#ip ?? null,

@@ -4,7 +4,8 @@ const PHONE = fh.platform === "android" || fh.platform === "ios"; // the app on 
 const IOS = fh.platform === "ios"; // its VPN Android's; iOS has none (Apple's needs a paid developer account): proxy only
 // iOS 16 and older (or a version not found): no animations, transitions or 3D fox; they stop its WebKit painting (style.css)
 const STILL = IOS && !(+/OS (\d+)_/.exec(navigator.userAgent)?.[1] > 16);
-const DEVICE = PHONE ? "phone" : "computer";
+const TV = !!fh.tv; // Android TV (phone.js): signs in from a phone or computer on its network, driven by a remote
+const DEVICE = TV ? "TV" : PHONE ? "phone" : "computer";
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 // The countries with a picture in flags/ (<code>.svg; pictures, as Windows draws no flag emoji); the rest show their code
@@ -73,6 +74,7 @@ function render() {
   renderAccounts();
   renderSwitched();
   renderOnboard();
+  renderTv();
   $("#restoring").classList.toggle("on", S.restoring);
 }
 
@@ -170,7 +172,7 @@ function renderCards() {
     };
     const skel = '<span class="skel"></span>';
     if (S.netChecking) fill("#c-net", skel, '<span class="skel short"></span>');
-    else fill("#c-net", esc(S.net ?? "offline"), S.lanIp ? `LAN ${esc(S.lanIp)}` : "no local address", S.net ? "" : "warn");
+    else fill("#c-net", esc(S.net ?? "offline"), (S.lanIp ? `LAN ${esc(S.lanIp)}` : "no local address") + showName(), S.net ? "" : "warn");
     $("#c-net use").setAttribute("href", S.net?.startsWith("Mobile") ? "#i-phone" : S.net && !S.net.startsWith("Wi-Fi") ? "#i-plug" : "#i-wifi");
     if (S.ipChecking) fill("#c-ip", skel, '<span class="skel short"></span>');
     else fill("#c-ip", esc(S.ip ?? "unreachable"), esc(S.ip ? S.ipNote : "the IP check didn't answer"), S.ip ? "" : "warn");
@@ -257,6 +259,7 @@ function renderNotice() {
     $("#notice-title").textContent = S.notice.title;
     $("#notice-text").textContent = S.notice.text;
     $("#notice-modal").classList.add("on");
+    tvModal(false); // signed in from another device (controller.js tvAccept)
   });
 }
 
@@ -484,6 +487,7 @@ function renderAccounts() {
 
 /** Adds an account: on a phone, Mozilla's sign-in at once (no Firefox there); else the choice. */
 function addAccount() {
+  if (TV) return tvModal(true);
   if (PHONE) return act("addAccount", "mozilla");
   act("refreshAccounts"); // Firefox's account, freshly read where that asks nothing
   $("#add-modal").classList.add("on");
@@ -501,10 +505,10 @@ function highlight(code) {
 
 function renderOnboard() {
   const a = S.auth;
-  section("onboard", [a, S.accounts.map((x) => [x.id, x.email, x.current])], () => {
+  section("onboard", [a, S.accounts.map((x) => [x.id, x.email, x.current]), TV && [S.tvWait, S.net]], () => {
     $("#onboard").classList.toggle("on", a.stage !== "ready");
     $("#onboard").classList.toggle("wait", a.stage === "checking"); // shown only if the check takes a while
-    $("#onboard-box").classList.toggle("wide", a.stage === "console");
+    $("#onboard-box").classList.toggle("wide", a.stage === "console" || (TV && TV_STAGES.has(a.stage)));
     if (a.stage === "ready") return;
     const fox = '<svg class="fox-hero"><use href="#fox"/></svg>';
     const err = a.error ? `<div class="err-box">${esc(a.error)}</div>` : "";
@@ -524,7 +528,17 @@ function renderOnboard() {
         <div class="buttons"><button class="btn primary" data-act="addAccount" data-arg="mozilla">${icon("user")}Sign in</button></div>
         <p class="fine">You sign in on Mozilla's own page. Foxhole keeps the sign-in on this phone, to get the VPN's token with.</p>`,
     };
-    $("#onboard-box").innerHTML = ((PHONE && phone[a.stage]) || {
+    // a TV: signed in from a phone or computer on its network (tvPanel)
+    const tv = {
+      checking: phone.checking,
+      choose: () => `<h2>Sign in to your Mozilla account</h2>
+        <p>Foxhole uses Firefox's free VPN, which comes with a <b>Mozilla account</b>. Sign in to yours from your phone or computer, with Foxhole on it:</p>
+        ${err}${tvPanel()}`,
+      expired: () => `<h2>Sign in again</h2>
+        <p>The sign-in to <b>${esc(a.email || "your account")}</b> has ended. Sign in again from your phone or computer, with Foxhole on it:</p>
+        ${tvPanel()}<div class="buttons"><button class="btn" data-act="removeAccount" data-arg="${esc(a.id)}">${icon("logout")}Remove it</button></div>${rest}`,
+    };
+    $("#onboard-box").innerHTML = ((TV && tv[a.stage]) || (PHONE && phone[a.stage]) || {
       checking: () => `${fox}<h2>Waking up the fox…</h2><p>Getting the VPN token from your Mozilla account.</p>${wait("One moment")}`,
       // none yet: how to sign in (Firefox's account named where reading it asks nothing)
       choose: () => `${fox}<h2>Sign in to your Mozilla account</h2>
@@ -576,6 +590,217 @@ function renderOnboard() {
         : `${fox}<h2>Can't read your Firefox sign-in</h2>${err}${wait("Trying again…")}${own}${rest}`,
     }[a.stage])();
   });
+}
+
+// ── A TV's sign-in from a phone or computer (controller.js tvWait) ──────────────────────────────
+
+const TV_STAGES = new Set(["choose", "expired"]); // the sign-in screens that show tvPanel
+
+/** The TV's QR code and code, for a phone or computer on its network to sign it in with, and that network. */
+function tvPanel() {
+  const w = S.tvWait;
+  if (w?.error) return `<div class="err-box">${esc(w.error)}</div>`;
+  if (!w) return '<div class="waiting"><span class="spin"></span>Getting a code…</div>';
+  const net = w.host
+    ? `<div class="tv-net">${icon("wifi")}<span>This TV is on <b>${esc(S.net ?? "a network")}</b> · ${esc(w.host)}${showName()}. The phone or computer must be on it too.</span></div>`
+    : `<div class="tv-net warn">${icon("wifi")}<span>This TV isn't on a network: connect it to the Wi-Fi or a cable first.</span></div>`;
+  const qr = w.qr
+    ? `<svg class="tv-qr" viewBox="0 0 ${w.qr.size} ${w.qr.size}" role="img" aria-label="The QR code to sign in with"><rect width="100%" height="100%" fill="#fff"/><path d="${w.qr.path}"/></svg>`
+    : "";
+  return `<div class="tvpair">${qr}<div class="tv-how">
+    <ol class="steps">
+      <li><span>On your phone or computer, open <b>Foxhole</b>, then <b>Settings</b> → <b>Sign in a TV</b>.</span></li>
+      <li><span>Scan this QR code, or type this code:</span></li>
+    </ol>
+    <div class="tv-code">${esc(w.code.slice(0, 3))} ${esc(w.code.slice(3))}</div>
+    ${net}
+    <p class="fine">Or <span class="link" data-act="addAccount" data-arg="mozilla">sign in on the TV, with the remote</span>.</p>
+  </div></div>`;
+}
+
+let tvWanted = false; // the TV's waiting for a sign-in, as last asked
+/** The TV waits for a sign-in from another device while its panel's on screen. */
+function syncTv() {
+  const want = TV && !!S && ($("#tvwait-modal").classList.contains("on") || ($("#onboard").classList.contains("on") && TV_STAGES.has(S.auth.stage)));
+  if (want !== tvWanted) void act("tvWait", (tvWanted = want));
+}
+
+function tvModal(on) {
+  $("#tvwait-modal").classList.toggle("on", on);
+  if (on) $("#tvwait-body").innerHTML = tvPanel();
+  syncTv();
+}
+
+function renderTv() {
+  section("tvsendnet", [S.net, S.lanIp], () => $("#tvsend-modal").classList.contains("on") && drawSendNet());
+  if (!TV) return;
+  section("tvwait", [S.tvWait, S.net], () => $("#tvwait-modal").classList.contains("on") && ($("#tvwait-body").innerHTML = tvPanel()));
+  syncTv();
+}
+
+// ── Signing in a TV from here (controller.js tvSend) ───────────────────────────────────────
+
+/** An action's error, without Electron's wrapping. */
+const why = (err) => String(err?.message ?? err).replace(/^Error invoking remote method '\w+': (\w*Error: )?/, "");
+
+// "foxhole" as a QR code (21 rows of 21 modules, base 36), to see whether this device's QR reader reads at all
+const TEST_QR = ["18ltr", "mv5t", "wspp", "ws4d", "wr4t", "mywx", "18prz", "5j4", "xe9o", "mprd", "6xyi", "17mq5", "2qyy", "3e9", "18mti", "myi7", "wrde", "wt80", "wthg", "mva4", "18owi"];
+let canScan = null; // a promise: there's a camera API and a QR reader that works (not on Windows and Linux, nor phones without Google Play)
+let camera = null; // the camera's stream, while scanning
+let tvLooking = 0; // the search for TVs waiting, again while none is found
+
+async function scanWorks() {
+  if (!("BarcodeDetector" in window) || !navigator.mediaDevices?.getUserMedia) return false;
+  try {
+    const c = document.createElement("canvas");
+    c.width = c.height = 29 * 6;
+    const g = c.getContext("2d");
+    g.fillStyle = "#fff";
+    g.fillRect(0, 0, c.width, c.height);
+    g.fillStyle = "#000";
+    TEST_QR.forEach((row, y) => [...parseInt(row, 36).toString(2).padStart(21, "0")].forEach((b, x) => b === "1" && g.fillRect((x + 4) * 6, (y + 4) * 6, 6, 6)));
+    return (await new BarcodeDetector({ formats: ["qr_code"] }).detect(c))[0]?.rawValue === "foxhole";
+  } catch {
+    return false;
+  }
+}
+
+function tvNote(tone, text) {
+  $("#tvsend-note").dataset.tone = tone;
+  $("#tvsend-note").textContent = text;
+}
+
+function drawFound(tvs) {
+  const names = tvs.map((t) => `<b>${esc(t.name)}</b>`).join(", ");
+  $("#tvsend-found").innerHTML = tvs.length
+    ? `${icon("tv")}<span>Waiting to sign in: ${names}</span>`
+    : `${icon("tv")}<span>No TV waiting here yet. Is it showing its code, on the same network as this ${DEVICE}?</span>`;
+  $("#tvsend-found").classList.toggle("warn", !tvs.length);
+  clearTimeout(tvLooking);
+  if (!tvs.length && $("#tvsend-modal").classList.contains("on")) tvLooking = setTimeout(findTvs, 4000);
+}
+const findTvs = () => act("tvFind").then(drawFound, () => drawFound([]));
+
+/** The "Sign in a TV" dialog; with a TV's QR code's `link` (scanned with the phone's camera app: App.tsx), it sends at once. */
+function tvSendOpen(link) {
+  const accts = S.accounts.filter((a) => a.send);
+  $("#tvsend-acct").innerHTML = accts.map((a) => `<option value="${esc(a.id)}"${a.current ? " selected" : ""}>${esc(a.email || "Firefox's account")}</option>`).join("");
+  $("#tvsend-acct-wrap").hidden = accts.length < 2;
+  drawSendNet();
+  $("#tvsend-found").innerHTML = `${icon("tv")}<span>Looking for TVs on this network…</span>`;
+  $("#tvsend-found").classList.remove("warn");
+  $("#tvsend-code").value = "";
+  tvNote("", accts.length ? "" : "Sign in to a Mozilla account on this device first: Foxhole sends the TV a sign-in of it.");
+  $("#tvsend-modal").classList.add("on");
+  void findTvs();
+  void (canScan ??= scanWorks()).then((ok) => ($("#tvsend-scan").hidden = !ok || !!camera));
+  if (link) void tvSend({ link });
+  else if (!PHONE) $("#tvsend-code").focus();
+}
+
+const drawSendNet = () => ($("#tvsend-net").innerHTML = `This ${DEVICE} is on <b>${esc(S.net ?? "no network")}</b>${S.lanIp ? ` · ${esc(S.lanIp)}` : ""}${showName()}`);
+
+function tvSendClose() {
+  stopScan();
+  clearTimeout(tvLooking);
+  $("#tvsend-modal").classList.remove("on");
+}
+
+async function tvSend(to) {
+  const id = $("#tvsend-acct").value;
+  if (!id) return;
+  const btn = $("#tvsend-form button");
+  btn.disabled = true;
+  tvNote("", "Signing in the TV…");
+  try {
+    const name = await act("tvSend", to, id);
+    tvNote("ok", `${name} is signed in.`);
+    setTimeout(tvSendClose, 2500);
+  } catch (err) {
+    tvNote("error", why(err));
+  }
+  btn.disabled = false;
+}
+
+async function startScan() {
+  try {
+    camera = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+  } catch (err) {
+    return tvNote("error", err.name === "NotAllowedError" ? "Foxhole isn't allowed to use the camera. Type the code instead." : "No camera to scan with. Type the code instead.");
+  }
+  const video = $("#tvsend-video");
+  video.srcObject = camera;
+  $("#tvsend-cam").hidden = false;
+  $("#tvsend-scan").hidden = true;
+  tvNote("", "Point the camera at the QR code on the TV.");
+  await video.play().catch(() => {});
+  const reader = new BarcodeDetector({ formats: ["qr_code"] });
+  for (let warned = false; camera; await new Promise((r) => setTimeout(r, 200))) {
+    const read = (await reader.detect(video).catch(() => [])).map((c) => c.rawValue);
+    const link = read.find((r) => /^http:\/\/[^/]+\/#[\w-]+\.[\w-]+$/.test(r));
+    if (link) {
+      stopScan();
+      return tvSend({ link });
+    }
+    if (read.length && !warned) (warned = true), tvNote("warn", "That isn't a Foxhole TV's QR code.");
+  }
+}
+
+function stopScan() {
+  for (const track of camera?.getTracks() ?? []) track.stop();
+  camera = null;
+  $("#tvsend-video").srcObject = null;
+  $("#tvsend-cam").hidden = true;
+  void canScan?.then((ok) => ($("#tvsend-scan").hidden = !ok || !!camera));
+}
+
+$("#tvsend-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const code = $("#tvsend-code").value.replace(/\s/g, "");
+  if (code.length < 6) return tvNote("error", "The code on the TV has 6 letters and digits.");
+  void tvSend({ code });
+});
+// typed as on the TV: capitals, in two threes; sent once it's all there
+$("#tvsend-code").addEventListener("input", (e) => {
+  const v = e.target.value.toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 6);
+  e.target.value = v.length > 3 ? `${v.slice(0, 3)} ${v.slice(3)}` : v;
+  if (v.length === 6) $("#tvsend-form").requestSubmit();
+});
+
+/** A TV's QR code scanned with the phone's camera app opens Foxhole with it (App.tsx). */
+window.foxholeTvLink = (link) => (S ? tvSendOpen(link) : setTimeout(() => window.foxholeTvLink(link), 200));
+
+// ── The Wi-Fi's name, which macOS, Windows and Android show only to apps allowed Location ─────────────────
+
+const OS = IOS ? "iOS" : PHONE ? "Android" : { darwin: "macOS", win32: "Windows" }[fh.platform] ?? "The system";
+/** " · Show the name", where the system hides it (netinfo.ts WIFI_HIDDEN): what it takes is told first (askWifi). */
+const showName = () => (S.net?.endsWith("name hidden") ? ' · <span class="link" data-wifi>Show the name</span>' : "");
+
+/** Why Foxhole would want Location, and what the system then asks: before it asks (the user may say not now). */
+function askWifi() {
+  $("#wifi-why").textContent = `${OS} shows apps the Wi-Fi's name only if they're allowed Location, as a Wi-Fi's name can tell where you are.`;
+  $("#wifi-how").textContent = {
+    macOS: "macOS asks you once: choose Allow. You can change it any time in System Settings → Privacy & Security → Location Services.",
+    Windows: "Windows' Location settings open: turn on Location services and Let desktop apps access your location. You can turn them off there any time.",
+    Android: "Android asks you once: choose Precise and While using the app. You can change it any time in Android's settings.",
+  }[OS] ?? "";
+  $("#wifi-note").textContent = "";
+  $("#wifi-ok").textContent = "Continue";
+  $("#wifi-modal").classList.add("on");
+}
+
+async function wifiAsk(btn) {
+  btn.disabled = true;
+  btn.textContent = OS === "macOS" ? "Waiting for macOS…" : "One moment…";
+  const how = await act("showWifiName").catch((err) => ({ error: why(err) }));
+  btn.disabled = false;
+  btn.textContent = "Continue";
+  const note = (tone, text) => (($("#wifi-note").dataset.tone = tone), ($("#wifi-note").textContent = text));
+  if (how?.error) return note("error", how.error);
+  if (how === "approximate") return note("warn", "Android gives apps the Wi-Fi's name only with Precise location: Continue, and choose Precise.");
+  if (how === "denied") return note("warn", "Not allowed, so the name stays hidden. You can allow it here any time.");
+  if (how === "settings") fh.open("location");
+  $("#wifi-modal").classList.remove("on"); // allowed (the name shows within seconds), or it's turned on in Settings
 }
 
 // ── Sheets ─────────────────────────────────────────────────────────────────────────────────
@@ -752,8 +977,9 @@ document.addEventListener("click", async (e) => {
     return act("useAccount", row.dataset.use);
   }
   if (!t || !S) return;
-  if (t.dataset.act === "addAccount") $("#add-modal").classList.remove("on");
+  if (t.dataset.act === "addAccount") $("#add-modal").classList.remove("on"), TV && tvModal(false);
   if (t.dataset.logout !== undefined) return askLogout(t.dataset.logout);
+  if (t.hasAttribute("data-wifi")) return askWifi();
   if (t.id === "logout-ok") $("#logout-modal").classList.remove("on");
   if (t.id === "toast") return t.classList.remove("on");
   if (t.dataset.act) {
@@ -820,6 +1046,12 @@ document.addEventListener("click", async (e) => {
       act("copy", wz.setup.tokens.map((tk) => tk[1]).join("").replace(wz.setup.placeholder, wz.key));
       return flash(t, `${icon("check")}Copied`);
     case "add-account": return addAccount();
+    case "wifi-later": return $("#wifi-modal").classList.remove("on");
+    case "wifi-ok": return wifiAsk(t);
+    case "tvwait-close": return tvModal(false);
+    case "tvsend-open": return tvSendOpen();
+    case "tvsend-close": return tvSendClose();
+    case "tvsend-scan": return startScan();
     case "add-later": return $("#add-modal").classList.remove("on");
     case "logout-cancel": return $("#logout-modal").classList.remove("on");
     case "notice-ok": return $("#notice-modal").classList.remove("on");
@@ -973,6 +1205,9 @@ document.addEventListener("keydown", (e) => {
     if ($("#relay-modal").classList.contains("on")) return $("#relay-modal").classList.remove("on");
     if ($("#manual-modal").classList.contains("on")) return $("#manual-modal").classList.remove("on");
     if ($("#notice-modal").classList.contains("on")) return $("#notice-modal").classList.remove("on");
+    if ($("#wifi-modal").classList.contains("on")) return $("#wifi-modal").classList.remove("on");
+    if ($("#tvsend-modal").classList.contains("on")) return tvSendClose();
+    if ($("#tvwait-modal").classList.contains("on")) return tvModal(false);
     if ($("#unentitled-modal").classList.contains("on")) return $("#unentitled-modal").classList.remove("on");
     if ($("#logout-modal").classList.contains("on")) return $("#logout-modal").classList.remove("on");
     if ($("#add-modal").classList.contains("on")) return $("#add-modal").classList.remove("on");
@@ -1049,9 +1284,70 @@ window.addEventListener("focus", () => document.body.classList.remove("idle"));
     if (STILL) document.body.classList.add("still");
     // the page's own words, written for a computer
     const words = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    while (words.nextNode()) words.currentNode.nodeValue = words.currentNode.nodeValue.replace(/this computer/g, "this phone");
+    while (words.nextNode()) words.currentNode.nodeValue = words.currentNode.nodeValue.replace(/this computer/g, `this ${DEVICE}`);
   }
   $("#split-suggest .flag").outerHTML = flag("IR");
+}
+
+// ── A TV's remote: its arrows move the focus to the nearest control that way, in the layer on top ────────
+
+if (TV) {
+  document.body.classList.add("tv");
+  const CONTROLS = "button:not([disabled]), input, select, [data-use], .link";
+  const LAYERS = ".modal.on, .overlay.on, .sheet.on, .locations.on";
+  // the open dialog, sign-in screen or sheet that's highest (the last, of the same height), else the window
+  const layer = () => [...document.querySelectorAll(LAYERS)].reduce((top, el) =>
+    !top || +getComputedStyle(el).zIndex >= +getComputedStyle(top).zIndex ? el : top, null);
+  // shown: closed sheets, dialogs and sign-in screens are hidden (style.css), the Locations panel beside the orb isn't
+  const shown = (el) => el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && el.getClientRects().length > 0;
+  // on screen, not scrolled out of its list nor covered; a list's rows out of view are reached from within it
+  const inView = (el) => {
+    const q = el.getBoundingClientRect();
+    return el.contains(document.elementFromPoint((q.left + q.right) / 2, (q.top + q.bottom) / 2));
+  };
+  const scroller = (el) => {
+    for (let p = el?.parentElement; p; p = p.parentElement) if (/auto|scroll/.test(getComputedStyle(p).overflowY)) return p;
+    return null;
+  };
+  const focus = (el) => {
+    if (!el.matches("button, input, select")) el.tabIndex = -1; // a row or link: focusable from here
+    el.focus({ preventScroll: true });
+    el.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
+  const DIRS = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
+  document.addEventListener("keydown", (e) => {
+    const at = document.activeElement;
+    const d = DIRS[e.key];
+    if (!d && e.key !== "Enter") return;
+    // a field's caret moves left and right inside it, up to its ends
+    if (at?.matches("input") && d?.[0] && (d[0] < 0 ? at.selectionStart > 0 : at.selectionEnd < at.value.length)) return;
+    const top = layer();
+    const all = [...(top ?? document).querySelectorAll(CONTROLS)].filter((el) => shown(el) && (inView(el) || (scroller(el) && scroller(el) === scroller(at))));
+    // nothing focused here yet (the WebView's own first focus can be behind what's on top): the first press lands here
+    if (!all.includes(at)) {
+      if (!all.length) return;
+      e.preventDefault();
+      return focus(all.find((el) => el.matches("#orb, .primary")) ?? all[0]);
+    }
+    // OK clicks (a field keeps Enter: its form's sent); not left to the WebView, which clicks only on a key's character
+    if (!d) return !at.matches("input, select") && (e.preventDefault(), at.click());
+    e.preventDefault();
+    // the nearest the way pressed: the gap along it, then (twice as costly) across it
+    const r = at.getBoundingClientRect();
+    let best = null, bestCost = Infinity;
+    for (const el of all) {
+      if (el === at) continue;
+      const q = el.getBoundingClientRect();
+      const ahead = d[0] * (q.left + q.right - r.left - r.right) + d[1] * (q.top + q.bottom - r.top - r.bottom);
+      const gap = d[0] ? (d[0] > 0 ? q.left - r.right : r.left - q.right) : (d[1] > 0 ? q.top - r.bottom : r.top - q.bottom);
+      // not that way: its middle not past this one's, or (unless one holds the other: a row's button) overlapping it
+      if (ahead <= 1 || (gap < -8 && !at.contains(el) && !el.contains(at))) continue;
+      const across = d[0] ? Math.max(0, q.top - r.bottom, r.top - q.bottom) : Math.max(0, q.left - r.right, r.left - q.right);
+      const cost = Math.max(0, gap) + 2 * across + ahead / 100;
+      if (cost < bestCost) (best = el), (bestCost = cost);
+    }
+    if (best) focus(best);
+  });
 }
 
 let blockedSeen = 0; // the controller's count of times vpn.mozilla.org was found blocked, as far as the window said so

@@ -25,13 +25,15 @@ const LINKS = {
   relay: `${REPO_URL}#where-vpnmozillaorg-is-blocked-eg-iran`,
   gas: "https://script.google.com/home", // Google Apps Script, for the relay's setup
   fda: FULL_DISK_ACCESS, // macOS: where the app is allowed to read Firefox's profile
+  // Location, which shows apps the Wi-Fi's name (app.js wifi-modal)
+  location: process.platform === "win32" ? "ms-settings:privacy-location" : "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices",
 };
 // What the window may ask for: the Controller's actions, nothing else of it
 const ACTIONS = new Set([
   "state", "power", "connect", "disconnect", "toggleGlobal", "submitPassword", "cancelPassword",
   "setShare", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "setSplitDefault", "addRule", "toggleRule", "removeRule",
   "logs", "copy", "copyLogs", "openFirefox", "copySnippet", "reloadList",
-  "addAccount", "useAccount", "removeAccount", "refreshAccounts", "dismissLow", "retrySignIn", "checkEntitled",
+  "addAccount", "useAccount", "removeAccount", "refreshAccounts", "dismissLow", "retrySignIn", "checkEntitled", "tvFind", "tvSend", "showWifiName",
   "trustCa", "untrustCa", "dismissTrust", "copyEnv",
 ]);
 

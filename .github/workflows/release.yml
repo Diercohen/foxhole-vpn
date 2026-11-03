@@ -77,10 +77,14 @@ jobs:
           npm ci
           npm run build
           mv android/app/build/outputs/apk/release/app-universal-release.apk "$GITHUB_WORKSPACE/android-foxhole-$v.apk"
+          # the same APK, for Android TV (it finds it's on a TV when it starts)
+          cp "$GITHUB_WORKSPACE/android-foxhole-$v.apk" "$GITHUB_WORKSPACE/tv-android-$v.apk"
       - uses: actions/upload-artifact@v7
         with:
           name: android
-          path: android-foxhole-*.apk
+          path: |
+            android-foxhole-*.apk
+            tv-android-*.apk
           if-no-files-found: error
 
   release:

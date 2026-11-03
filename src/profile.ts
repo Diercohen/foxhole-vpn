@@ -130,6 +130,7 @@ export interface AccountState {
   signedIn: boolean;
   verified: boolean;
   email: string | null;
+  uid?: string; // the account's id at Mozilla
   blocked?: ProfileAccessError; // the system won't let us read the profile: signedIn is false, and this says how to allow it
 }
 
@@ -163,7 +164,7 @@ function readAccount(): AccountState | null {
     try {
       // Firefox writes `null` here on sign-out
       const data = JSON.parse(readProfileFile(f)) as {
-        accountData?: { email?: string; verified?: boolean; sessionToken?: string };
+        accountData?: { email?: string; uid?: string; verified?: boolean; sessionToken?: string };
       } | null;
       const acct = data?.accountData;
       const signedIn = !!acct?.sessionToken;
@@ -172,6 +173,7 @@ function readAccount(): AccountState | null {
         signedIn,
         verified: !!acct?.verified,
         email: acct?.email ?? null,
+        uid: acct?.uid,
       };
     } catch (err) {
       if (err instanceof ProfileAccessError) throw err; // not ours to read: say how to allow it, rather than "not signed in"

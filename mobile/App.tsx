@@ -112,6 +112,20 @@ function Main() {
   const [keyboard, setKeyboard] = useState(0); // its height: the window ends above it
   const account = useRef<object | null>(null); // from the sign-in page, until the core is signed in with it
   const askedNotify = useRef(false);
+  // a TV's QR code, scanned with the camera app (its page opens foxhole://tv?l=…): to the window's "Sign in a TV"
+  const tvLink = useRef<string | null>(null);
+  const loaded = useRef(false);
+  const giveTvLink = () => {
+    if (!tvLink.current || !loaded.current) return;
+    web.current?.injectJavaScript(`window.foxholeTvLink && window.foxholeTvLink(${JSON.stringify(tvLink.current)});true;`);
+    tvLink.current = null;
+  };
+  const opened = (url: string | null) => {
+    const m = url?.match(/^foxhole:\/\/tv\?l=(.+)$/);
+    if (!m) return;
+    tvLink.current = decodeURIComponent(m[1]);
+    giveTvLink();
+  };
 
   useEffect(() => {
     // the core's lines: its state, log and answers go to the window; it asks for the sign-in page
@@ -137,11 +151,14 @@ function Main() {
     });
     const shown = Keyboard.addListener("keyboardDidShow", (e) => setKeyboard(e.endCoordinates.height));
     const hidden = Keyboard.addListener("keyboardDidHide", () => setKeyboard(0));
-    return () => [lines, back, shown, hidden].forEach((s) => s.remove());
+    void Linking.getInitialURL().then(opened);
+    const link = Linking.addEventListener("url", (e) => opened(e.url));
+    return () => [lines, back, shown, hidden, link].forEach((s) => s.remove());
   }, []);
 
   // the system bars' room, for the page's layout (style.css): the window runs under them
-  const [page] = useState(() => `${WINDOW}#top=${insets.top}&bottom=${insets.bottom}&os=${Platform.OS}`); // from the first paint (phone.js)
+  // a TV (Platform.isTV: Android TV) gets the window for its remote, and its sign-in from another device
+  const [page] = useState(() => `${WINDOW}#top=${insets.top}&bottom=${insets.bottom}&os=${Platform.OS}${Platform.isTV ? "&tv=1" : ""}`); // from the first paint (phone.js)
   const insetsJs = `document.documentElement.style.setProperty("--safe-top", "${insets.top}px");
     document.documentElement.style.setProperty("--safe-bottom", "${keyboard ? 0 : insets.bottom}px");true;`;
   useEffect(() => web.current?.injectJavaScript(insetsJs), [insetsJs]);
@@ -179,7 +196,12 @@ function Main() {
         allowingReadAccessToURL={WWW}
         onContentProcessDidTerminate={() => web.current?.reload()} // iOS ends it in the background when short of memory
         onMessage={fromWindow}
-        onLoadEnd={() => web.current?.injectJavaScript(insetsJs)}
+        onLoadEnd={() => {
+          web.current?.injectJavaScript(insetsJs);
+          loaded.current = true;
+          giveTvLink();
+        }}
+        mediaPlaybackRequiresUserAction={false} // Sign in a TV: the camera's picture, to scan the TV's QR code
         textZoom={100}
         overScrollMode="never"
         bounces={false}

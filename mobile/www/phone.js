@@ -14,6 +14,7 @@
 
   window.foxhole = {
     platform: hash.get("os") ?? "android", // "android" or "ios"
+    tv: hash.get("tv") === "1", // Android TV (App.tsx): a remote, and the sign-in from another device
     act: (name, ...args) =>
       new Promise((resolve, reject) => {
         waiting.set(++seq, [resolve, reject]);

@@ -3,8 +3,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import http from "node:http";
-import { readFileSync } from "node:fs";
-import { networkInterfaces } from "node:os";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { networkInterfaces, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 const exec = promisify(execFile);
 
@@ -30,28 +31,77 @@ export function parseNmcliWifi(out: string): string | null {
 export const unescapeIw = (s: string): string =>
   Buffer.from(s.replace(/\\x([0-9a-f]{2})/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16))), "latin1").toString("utf8");
 
+// a command's output, failed or not (netsh exits 1 where it won't tell the Wi-Fi's name)
 const run = (cmd: string, args: string[], env?: Record<string, string>) =>
-  exec(cmd, args, { timeout: 3000, windowsHide: true, ...(env && { env: { ...process.env, ...env } }) }).then((r) => r.stdout, () => "");
+  exec(cmd, args, { timeout: 3000, windowsHide: true, ...(env && { env: { ...process.env, ...env } }) }).then(
+    (r) => r.stdout,
+    (e: { stdout?: string }) => e.stdout ?? "",
+  );
 
-// JXA: the SSID in the scan record macOS caches in its SystemConfiguration store,
-// which, unlike `ipconfig`, it doesn't redact. argv[0] is the Wi-Fi device.
+/**
+ * What stands for the Wi-Fi's name where the system shows it only to apps allowed Location (macOS 14.4+, Windows 11
+ * 24H2+, Android: the name can tell where you are). The window offers to ask (wifiAccess), in so many words first.
+ */
+export const WIFI_HIDDEN = "name hidden";
+
+/** Windows hides the name from apps without Location, and netsh says so, with its Settings page's address. Pure. */
+export const windowsHidesWifi = (out: string): boolean => !parseSsid(out) && out.includes("ms-settings:privacy-location");
+
+// JXA, argv[0] the Wi-Fi device: the scan record macOS 15 caches in its SystemConfiguration store, unredacted (empty
+// in macOS 27)
 const SCAN_RECORD_SSID = `function run(argv) {
   ObjC.import("SystemConfiguration");
-  const st = ObjC.castRefToObject($.SCDynamicStoreCopyValue(null, $("State:/Network/Interface/" + argv[0] + "/AirPort")));
-  return $.NSKeyedUnarchiver.unarchiveObjectWithData(st.objectForKey("CachedScanRecord")).objectForKey("SSID_STR").js;
+  try {
+    const st = ObjC.castRefToObject($.SCDynamicStoreCopyValue(null, $("State:/Network/Interface/" + argv[0] + "/AirPort")));
+    return $.NSKeyedUnarchiver.unarchiveObjectWithData(st.objectForKey("CachedScanRecord")).objectForKey("SSID_STR").js;
+  } catch {
+    return "";
+  }
 }`;
+
+// macOS: Foxhole.app's own little app (gui/build/wifi.m) that reads the name, asking for Location as "Foxhole". It's
+// started by `open`: macOS asks about and allows what LaunchServices starts, not a program another one runs.
+const MAC_HELPER = resolve(process.execPath, "../../Helpers/Foxhole Wi-Fi.app");
+
+/** The helper's answer: allowed / denied / unasked, and the Wi-Fi's name. `ask`: asks first, if it's not been asked. */
+async function macHelper(ask: boolean): Promise<[string, string]> {
+  const out = join(tmpdir(), `foxhole-wifi-${process.pid}-${Date.now()}`);
+  await exec("open", ["-g", "-j", "-n", "-W", "--stdout", out, MAC_HELPER, ...(ask ? ["--args", "ask"] : [])], { timeout: ask ? 130_000 : 5000 }).catch(() => {});
+  try {
+    const [how = "", name = ""] = readFileSync(out, "utf8").split("\n");
+    return [how, name.trim()];
+  } catch {
+    return ["", ""];
+  } finally {
+    rmSync(out, { force: true });
+  }
+}
+
+/**
+ * Asks to be shown the Wi-Fi's name (the user chose to, having been told why): "allowed", "denied", or "settings"
+ * where it's turned on in the system's Settings (Windows has no question per desktop app; macOS asks only once).
+ */
+export async function wifiAccess(): Promise<"allowed" | "denied" | "settings"> {
+  if (process.platform !== "darwin" || !existsSync(MAC_HELPER)) return "settings";
+  const [how] = await macHelper(true);
+  return how === "allowed" ? "allowed" : how === "denied" ? "settings" : "denied";
+}
 
 /** The connected Wi-Fi's name, or null (wired, offline, or unknown). */
 export async function wifiName(): Promise<string | null> {
-  if (process.platform === "win32") return parseSsid(await run("netsh", ["wlan", "show", "interfaces"]));
+  if (process.platform === "win32") {
+    const out = await run("netsh", ["wlan", "show", "interfaces"]);
+    return parseSsid(out) ?? (windowsHidesWifi(out) ? WIFI_HIDDEN : null);
+  }
   if (process.platform === "darwin") {
     const ports = await run("networksetup", ["-listallhardwareports"]);
     const dev = ports.match(/Hardware Port: Wi-Fi\s*\nDevice:\s*(\S+)/)?.[1] ?? "en0";
     const summary = await run("ipconfig", ["getsummary", dev]);
     const ssid = parseSsid(summary) ?? parseSsid(await run("networksetup", ["-getairportnetwork", dev]));
     if (ssid || !/^\s*SSID\s*:\s*<redacted>/m.test(summary)) return ssid;
-    // macOS 15+ redacts the name for apps without location access; the scan record still has it.
-    return (await run("osascript", ["-l", "JavaScript", "-e", SCAN_RECORD_SSID, dev])).trim() || "name hidden by macOS";
+    // redacted for apps not allowed Location: the helper's, else (no helper: the terminal app) macOS 15's scan record
+    if (existsSync(MAC_HELPER)) return (await macHelper(false))[1] || WIFI_HIDDEN;
+    return (await run("osascript", ["-l", "JavaScript", "-e", SCAN_RECORD_SSID, dev])).trim() || WIFI_HIDDEN;
   }
   // NetworkManager first (Ubuntu, Fedora, Mint…): always there, and it gives the name in UTF-8,
   // where iw isn't always installed. Cached results only: no Wi-Fi scan on each check.

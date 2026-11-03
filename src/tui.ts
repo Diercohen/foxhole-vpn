@@ -306,7 +306,7 @@ export class Tui {
   /** Signs an account out of foxhole (Firefox's: foxhole stops reading it); the last one gone, cli.ts asks how to sign in. */
   #remove(id: string): void {
     const own = this.#accounts.own.find((x) => x.uid === id);
-    if (own) void signOut(own.sessionToken);
+    if (own) void signOut(own);
     if (id === FIREFOX) forgetToken();
     const was = this.#accounts.current;
     this.#saveAccounts(without(this.#accounts, id));

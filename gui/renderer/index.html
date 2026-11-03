@@ -57,6 +57,8 @@
   <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
   <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path d="M14 4h3.5A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5H14"/><path d="m9.5 8-4 4 4 4M5.5 12H15"/></symbol>
+  <symbol id="i-tv" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="12.5" rx="2.5"/><path d="M8 21h8M9 2.5l3 2.5 3-2.5"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4.5 7.5h3l1.8-2.5h5.4l1.8 2.5h3A1.5 1.5 0 0 1 21 9v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18V9a1.5 1.5 0 0 1 1.5-1.5z"/><circle cx="12" cy="13" r="3.6"/></symbol>
   <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></symbol>
   <symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></symbol>
 </svg>
@@ -227,7 +229,10 @@
       <div class="label">Mozilla accounts</div>
       <div class="hint">The VPN uses the one in use, from now on too. Tap another to switch to it.</div>
       <div class="accounts" id="accounts"></div>
-      <button class="btn" type="button" id="add-account"><svg class="i"><use href="#i-plus"/></svg>Add account</button>
+      <div class="row-btns">
+        <button class="btn" type="button" id="add-account"><svg class="i"><use href="#i-plus"/></svg>Add account</button>
+        <button class="btn not-tv" type="button" id="tvsend-open"><svg class="i"><use href="#i-tv"/></svg>Sign in a TV</button>
+      </div>
     </div>
     <div class="group about">
       <svg class="logo"><use href="#fox"/></svg>
@@ -354,6 +359,53 @@
     <div class="actions">
       <button class="btn" type="button" id="unentitled-close">Close</button>
       <button class="btn primary" type="button" id="unentitled-check"><svg class="i"><use href="#i-check"/></svg>Check again</button>
+    </div>
+  </div>
+</div>
+
+<!-- A TV (Android TV) signs in from a phone or computer on its network: its QR code and code (app.js tvPanel) -->
+<div class="modal backdrop" id="tvwait-modal">
+  <div class="box glass wide">
+    <h2>Add a Mozilla account</h2>
+    <div id="tvwait-body"></div>
+    <span class="link fine" id="tvwait-close">Cancel</span>
+  </div>
+</div>
+
+<!-- A phone or computer signs in a TV on its network: the TV's QR code scanned, or its code typed -->
+<div class="modal backdrop" id="tvsend-modal">
+  <div class="box glass">
+    <div class="lock-orb"><svg class="i"><use href="#i-tv"/></svg></div>
+    <h2>Sign in a TV</h2>
+    <p>Open Foxhole on the TV: it shows a QR code and a 6-character code. Scan the QR code, or type the code.</p>
+    <div class="tv-nets">
+      <div class="tv-net"><svg class="i"><use href="#i-wifi"/></svg><span id="tvsend-net"></span></div>
+      <div class="tv-net" id="tvsend-found"></div>
+    </div>
+    <label class="tv-acct" id="tvsend-acct-wrap">Account to sign in with <select id="tvsend-acct"></select></label>
+    <div class="tv-cam" id="tvsend-cam" hidden><video id="tvsend-video" muted playsinline></video><i></i></div>
+    <form class="tv-code-form" id="tvsend-form">
+      <input id="tvsend-code" placeholder="ABC 234" maxlength="7" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="The code on the TV">
+      <button class="btn primary" type="submit"><svg class="i"><use href="#i-check"/></svg>Sign in</button>
+    </form>
+    <button class="btn" type="button" id="tvsend-scan" hidden><svg class="i"><use href="#i-camera"/></svg>Scan the QR code</button>
+    <div class="note" id="tvsend-note"></div>
+    <span class="link fine" id="tvsend-close">Close</span>
+  </div>
+</div>
+
+<!-- The Wi-Fi's name, which the system shows only to apps allowed Location: why, before the system asks (app.js askWifi) -->
+<div class="modal backdrop" id="wifi-modal">
+  <div class="box glass">
+    <div class="lock-orb"><svg class="i"><use href="#i-wifi"/></svg></div>
+    <h2>Show your Wi-Fi's name?</h2>
+    <p id="wifi-why"></p>
+    <p>Foxhole reads only the name, to show it here, so you can see which network you're on. It never reads where you are, and the name stays on this device.</p>
+    <p id="wifi-how"></p>
+    <div class="note" id="wifi-note"></div>
+    <div class="actions">
+      <button class="btn" type="button" id="wifi-later">Not now</button>
+      <button class="btn primary" type="button" id="wifi-ok">Continue</button>
     </div>
   </div>
 </div>

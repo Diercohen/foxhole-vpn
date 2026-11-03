@@ -120,6 +120,52 @@ export class SessionAuth implements Authenticator {
     if (data.errno === 110) throw new FxaError(this.#expired, 110);
     throw new FxaError(`Firefox account server refused the VPN token: ${data.message ?? `HTTP ${status}`}`, data.errno);
   }
+
+  /** A refresh token of this account for another device (a TV: tvpair.ts), VPN-only: it makes its own access tokens. */
+  async refreshToken(signal?: AbortSignal): Promise<string> {
+    const { ok, status, data } = await fxaPost(
+      "/oauth/token",
+      { client_id: FIREFOX_CLIENT_ID, grant_type: "fxa-credentials", scope: VPN_SCOPES.join(" "), access_type: "offline" },
+      this.#load(),
+      signal,
+    );
+    if (ok && typeof data.refresh_token === "string") return data.refresh_token;
+    if (data.errno === 110) throw new FxaError(this.#expired, 110);
+    throw new FxaError(`Mozilla refused a sign-in for the TV: ${data.message ?? `HTTP ${status}`}`, data.errno);
+  }
+}
+
+/** An account's sign-in another device sent this one (tvpair.ts): a refresh token, VPN-only. */
+export class RefreshAuth implements Authenticator {
+  readonly #token: string;
+  #cached: { token: string; expires: number } | null = null;
+
+  constructor(refreshToken: string) {
+    this.#token = refreshToken;
+  }
+
+  async getAccessToken(signal?: AbortSignal): Promise<string> {
+    if (this.#cached && this.#cached.expires - Date.now() > 300_000) return this.#cached.token;
+    const { ok, status, data } = await fxaPost(
+      "/oauth/token",
+      { client_id: FIREFOX_CLIENT_ID, grant_type: "refresh_token", refresh_token: this.#token, scope: VPN_SCOPES.join(" "), ttl: TOKEN_TTL },
+      undefined,
+      signal,
+    );
+    if (ok && typeof data.access_token === "string") {
+      const expiresIn = typeof data.expires_in === "number" ? data.expires_in : TOKEN_TTL;
+      this.#cached = { token: data.access_token, expires: Date.now() + expiresIn * 1000 };
+      return data.access_token;
+    }
+    // 108, 110: the token's gone (signed out of, from the account's devices)
+    if (data.errno === 108 || data.errno === 110 || status === 401) throw new FxaError("This sign-in has ended (signed out, or expired): sign in again.", 110);
+    throw new FxaError(`Firefox account server refused the VPN token: ${data.message ?? `HTTP ${status}`}`, data.errno);
+  }
+}
+
+/** Ends a refresh token at Mozilla (it leaves the account's devices list); quietly, as it goes from here anyway. */
+export async function destroyToken(token: string): Promise<void> {
+  await fxaPost("/oauth/destroy", { client_id: FIREFOX_CLIENT_ID, token }, undefined, AbortSignal.timeout(10_000)).catch(() => {});
 }
 
 /** The local Firefox profile's sign-in (its session token, read as each token is made). */
