@@ -13,7 +13,8 @@ import { FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox, saveAccounts, si
 import { fetchUsage, type Usage } from "./guardian.js";
 import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { logLines, onLog } from "./log.js";
-import { useSplit, splitOn, splitSummary, parseSite, hits, recentSites, type Split, type Via } from "./split.js";
+import { useSplit, splitOn, splitSummary, parseRule, appOf, hits, recentSites, type Split, type Via } from "./split.js";
+import { listApps } from "./apps.js";
 import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost, type Priv } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, restart, versionLines, UPDATE_COMMAND } from "./update.js";
 import { bold, dim, under, strike, green, red, yellow, cyan, lit, unlit, purple, litPurple, flag, EMOJI, emoji, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
@@ -147,6 +148,8 @@ export class Tui {
   #splitEdit: string | null = null; // the site being typed
   #splitTab: { query: string; i: number } | null = null; // Tab going through recent sites
   #splitNote = "";
+  #apps: string[] = []; // apps to Tab through while typing, and to pick from (apps.ts)
+  #pick: { query: string; sel: number } | null = null; // the app picker (p in the Split popup): what's searched for, the row
   #logsOpen = false; // the Logs popup is open
   #logsNote = ""; // how copying the logs went
   #restoring = false; // quitting: global mode's routes are being put back
@@ -565,6 +568,7 @@ export class Tui {
         if (key.name === "t") {
           this.#splitOpen = true;
           this.#splitNote = "";
+          void listApps().then((a) => (this.#apps = a.map((x) => x.name)), () => {});
           return this.#render();
         }
         switch (key.name) {
@@ -621,7 +625,7 @@ export class Tui {
     }
     if (this.#splitOpen) {
       const i = fy - h.setTop;
-      if (this.#splitEdit !== null || i < 0 || i >= this.#splitShown || fx < h.setX || fx >= h.setX + h.setW) return;
+      if (this.#splitEdit !== null || this.#pick || i < 0 || i >= this.#splitShown || fx < h.setX || fx >= h.setX + h.setW) return;
       this.#splitSel = this.#splitStart + i;
       return press("return");
     }
@@ -963,6 +967,7 @@ export class Tui {
     const sp = this.#settings.split;
     const n = sp.rules.length;
     const e = this.#splitEdit;
+    if (this.#pick) return this.#pickKey(s, key);
     if (e !== null) {
       if (key.name === "tab") return void (this.#nextRecent(), this.#render());
       this.#splitTab = null;
@@ -1005,20 +1010,53 @@ export class Tui {
         break;
       case "i":
         if (!n && sp.default === "vpn") return this.#addRule("*.ir");
+        break;
+      case "p":
+        this.#pick = { query: "", sel: 0 };
+        this.#splitNote = "";
+        void listApps().then((a) => ((this.#apps = a.map((x) => x.name)), this.#render()), () => {});
     }
     this.#render();
   }
 
-  /** Adds a typed site, going the other way than everything else. */
+  /** The app picker's rows: the apps not listed yet that have what's searched for, those starting with it first; none found, the typed name itself. */
+  #pickRows(): { name: string; typed?: boolean }[] {
+    const q = this.#pick?.query.trim().toLowerCase() ?? "";
+    const listed = new Set(this.#settings.split.rules.map((r) => r.match.toLowerCase()));
+    const has = this.#apps.filter((a) => !listed.has(`app:${a.toLowerCase()}`) && a.toLowerCase().includes(q));
+    const rows = [...has.filter((a) => a.toLowerCase().startsWith(q)), ...has.filter((a) => !a.toLowerCase().startsWith(q))].map((name) => ({ name }));
+    return rows.length || !q ? rows : [{ name: this.#pick!.query.trim(), typed: true }];
+  }
+
+  /** Keystrokes in the app picker: typing searches, ↑↓ pick, enter adds, esc goes back to the rules. */
+  #pickKey(s: string, key: readline.Key): void {
+    const pick = this.#pick!;
+    const rows = this.#pickRows();
+    if (key.name === "escape") this.#pick = null;
+    else if (key.name === "up") pick.sel = Math.max(0, pick.sel - 1);
+    else if (key.name === "down") pick.sel = Math.min(rows.length - 1, pick.sel + 1);
+    else if (key.name === "pageup") pick.sel = Math.max(0, pick.sel - 10);
+    else if (key.name === "pagedown") pick.sel = Math.min(rows.length - 1, pick.sel + 10);
+    else if (key.name === "return") {
+      const row = rows[pick.sel];
+      if (!row) return;
+      this.#pick = null;
+      return this.#addRule(`app:${row.name}`);
+    } else if (key.name === "backspace") (pick.query = pick.query.slice(0, -1)), (pick.sel = 0);
+    else if (s && s.length === 1 && s >= " " && !key.ctrl && !key.meta && pick.query.length < 60) (pick.query += s), (pick.sel = 0);
+    this.#render();
+  }
+
+  /** Adds a typed site or app, going the other way than everything else. */
   #addRule(text: string): void {
     const sp = this.#settings.split;
-    const match = parseSite(text);
+    const match = parseRule(text);
     if (!match) {
-      this.#splitNote = red(text.trim() ? `Not a site: “${fit(text.trim(), 24)}”. Try bbc.co.uk, *.ir or 1.2.3.4.` : "Type a site first.");
+      this.#splitNote = red(text.trim() ? `Not a site or an app: “${fit(text.trim(), 20)}”. Try *.ir or Telegram.` : "Type a site or an app first.");
       return this.#render();
     }
     this.#splitEdit = null;
-    const i = sp.rules.findIndex((r) => r.match === match);
+    const i = sp.rules.findIndex((r) => r.match.toLowerCase() === match.toLowerCase());
     if (i >= 0) {
       this.#splitSel = i + 1;
       this.#splitNote = yellow(`${match} is already in the list.`);
@@ -1028,18 +1066,19 @@ export class Tui {
     this.#saveSplit({ ...sp, rules: [...sp.rules, { match, via: flip(sp.default) }] });
   }
 
-  /** Tab while typing: the next site seen lately that has what was typed, and isn't listed yet. */
+  /** Tab while typing: the next site seen lately, or app on this computer, that has what was typed, and isn't listed yet. */
   #nextRecent(): void {
     const tab = (this.#splitTab ??= { query: this.#splitEdit ?? "", i: -1 });
-    const listed = new Set(this.#settings.split.rules.map((r) => r.match));
-    const found = recentSites.filter((site) => site.includes(tab.query) && !listed.has(site));
+    const listed = new Set(this.#settings.split.rules.map((r) => r.match.toLowerCase()));
+    const q = tab.query.toLowerCase();
+    const found = [...recentSites, ...this.#apps.map((a) => `app:${a}`)].filter((x) => x.toLowerCase().includes(q) && !listed.has(x.toLowerCase()));
     if (!found.length) {
-      this.#splitNote = dim(tab.query ? `No site seen lately has “${fit(tab.query, 24)}”.` : "No sites seen yet: browse through foxhole first.");
+      this.#splitNote = dim(tab.query ? `No site seen lately nor app has “${fit(tab.query, 24)}”.` : "No sites seen yet: browse through foxhole first.");
       return;
     }
     tab.i = (tab.i + 1) % found.length;
     this.#splitEdit = found[tab.i];
-    this.#splitNote = dim(`${tab.i + 1} of ${found.length} seen lately · tab next`);
+    this.#splitNote = dim(`${tab.i + 1} of ${found.length} seen lately or apps · tab next`);
   }
 
   /** Saves the rules: the proxy reads them live, so the next connection follows them. */
@@ -1412,8 +1451,44 @@ export class Tui {
     };
   }
 
+  /** The app picker, in the Split popup's place: a search, and the apps that have it. */
+  #pickPopup(frameHeight: number): string[] {
+    const pick = this.#pick!;
+    const sp = this.#settings.split;
+    const rows = this.#pickRows();
+    const q = pick.query.trim().toLowerCase();
+    const room = Math.max(3, frameHeight - 12);
+    const { slice } = window(pick.sel, rows.length, room);
+    const mark = (name: string) => {
+      const i = q ? name.toLowerCase().indexOf(q) : -1;
+      return i < 0 ? name : name.slice(0, i) + yellow(name.slice(i, i + q.length)) + name.slice(i + q.length);
+    };
+    const lines = slice.map((i) => {
+      const r = rows[i];
+      const label = r.typed ? `+ add “${fit(r.name, 30)}” as an app` : mark(fit(r.name, 54));
+      return `${i === pick.sel ? cyan("❯") : " "} ${i === pick.sel ? bold(label) : label}`;
+    });
+    const count = !this.#apps.length ? "Looking for apps…" : `${rows.filter((r) => !r.typed).length} of ${this.#apps.length} apps`;
+    return box(
+      [
+        "",
+        `${dim("search:")} ${pick.query}${cyan("▏")}`,
+        dim(count + (rows[0]?.typed ? " · none has it: not running now? add it by name" : "")),
+        "",
+        ...(lines.length ? lines : [dim("  No apps found.")]),
+        "",
+        dim(`The app you pick goes ${sp.default === "vpn" ? "direct" : "through the VPN"}: unlike the rest.`),
+        this.#splitNote,
+        "",
+        dim("type to search · ↑↓ select · enter add · esc back"),
+      ],
+      { title: bold(cyan("⇄ Split tunneling · pick an app")), width: 66 },
+    );
+  }
+
   /** The Split tunneling popup: everything else's way, then each rule's, with how many connections each took. */
   #splitPopup(frameHeight: number): string[] {
+    if (this.#pick) return this.#pickPopup(frameHeight);
     const sp = this.#settings.split;
     const e = this.#splitEdit;
     const way = (v: Via) => (v === "vpn" ? green("VPN") : yellow("direct"));
@@ -1421,7 +1496,7 @@ export class Tui {
     const all = [
       { label: "Everything else", way: way(sp.default), took: took("") },
       ...sp.rules.map((r) => ({ label: r.match, way: way(r.via), took: took(r.match) })),
-      { label: e !== null ? (e.length > 33 ? `…${e.slice(-32)}` : e) + cyan("▏") : dim("+ add a site"), way: "", took: "" }, // typing: its end shows
+      { label: e !== null ? (e.length > 33 ? `…${e.slice(-32)}` : e) + cyan("▏") : dim("+ add a site or app"), way: "", took: "" }, // typing: its end shows
     ];
     const room = Math.max(3, frameHeight - 13); // what fits beside the popup's other lines
     const { start, slice } = window(this.#splitSel, all.length, room);
@@ -1436,15 +1511,17 @@ export class Tui {
     const sel = this.#splitSel;
     const help =
       e !== null
-        ? [dim("Type a site: bbc.co.uk (and its subdomains), *.co.uk, ir,"), dim("1.2.3.4 or 10.0.0.0/8 · tab: seen lately · enter add · esc cancel")]
+        ? [dim("A site: bbc.co.uk (and its subdomains), *.co.uk, ir, 1.2.3.4"), dim("or an app: Telegram · tab: seen lately · enter add · esc cancel")]
         : sel === 0
-          ? [sp.default === "vpn" ? "Sites not listed use the VPN: list the ones to bypass it." : "Sites not listed go direct: list the ones that need the VPN.", dim("enter switches it")]
-          : sel <= sp.rules.length
-            ? [dim("A site covers its subdomains; the most specific rule wins."), dim("Direct sites see your real IP. Applies to new connections.")]
-            : [dim(`A new site goes ${sp.default === "vpn" ? "direct" : "through the VPN"}: the other way from the rest.`), ""];
+          ? [sp.default === "vpn" ? "Sites and apps not listed use the VPN: list the ones to bypass it." : "Sites and apps not listed go direct: list those needing the VPN.", dim("enter switches it")]
+          : sel <= sp.rules.length && appOf(sp.rules[sel - 1].match) !== null
+            ? [dim("An app's rule covers all its connections, whatever the site."), dim("Direct apps see your real IP. Applies to new connections.")]
+            : sel <= sp.rules.length
+              ? [dim("A site covers its subdomains; the most specific rule wins."), dim("Direct sites see your real IP. Applies to new connections.")]
+              : [dim(`A new site or app goes ${sp.default === "vpn" ? "direct" : "through the VPN"}: unlike the rest.`), ""];
     const tip = !sp.rules.length && sp.default === "vpn" && e === null ? [`Tip: press ${under("i")} to send Iranian sites (*.ir) direct.`] : [];
     return box(
-      ["", ...rows, "", ...help, ...tip, this.#splitNote, "", dim("↑↓ select · enter VPN/direct · a add · x delete · esc close")],
+      ["", ...rows, "", ...help, ...tip, this.#splitNote, "", dim("↑↓ select · enter VPN/direct · a add · p apps · x del · esc close")],
       { title: bold(cyan("⇄ Split tunneling")), width: 66 },
     );
   }

@@ -20,7 +20,7 @@ routing**, on Linux, macOS and Windows. A desktop app or a terminal app.
 - 🌍 **Free VPN servers**: US, Germany, Japan, Australia, Argentina, South Africa
 - 🧦 **SOCKS5 and HTTP proxy on one port** (`127.0.0.1:1080`) for any app
 - 🛡️ **Whole-system mode** (TUN) with DNS over HTTPS inside the tunnel and IPv6/QUIC leak protection
-- ✂️ **Split tunneling**: pick the sites that skip the VPN, or the only ones that use it
+- ✂️ **Split tunneling**: pick the sites and apps that skip the VPN, or the only ones that use it (apps: on computers, and on Android in whole-system mode; iOS can only split sites)
 - 📱 **Share with your phone** on the same Wi-Fi
 - 🟣 **Relay mode** for networks that block Firefox VPN (e.g. Iran)
 

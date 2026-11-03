@@ -291,15 +291,43 @@ function renderToast(ph) {
 // ── Split tunneling ────────────────────────────────────────────────────────────────────────
 
 let knownRules = null; // the rules last drawn: a new one pops in
+let appIcons = {}; // apps' icons by id, data: URLs, asked for apart from the state (controller.js appIcons)
+let iconsAsked = -1; // how many the controller knew when last asked
+
+/** An app's icon, or "" (none, or not an image). */
+const appIcon = (id) => {
+  const url = appIcons[id];
+  return typeof url === "string" && /^data:image\/(png|svg\+xml);base64,[A-Za-z0-9+/=]+$/.test(url) ? `<img class="app-ico" src="${url}" alt="">` : "";
+};
 
 function renderSplit() {
-  section("split", [S.split.default, S.split.rules, S.splitNote], () => {
+  if (S.split.icons !== iconsAsked) {
+    iconsAsked = S.split.icons;
+    void act("appIcons").then((m) => ((appIcons = m ?? {}), renderSplit())); // the icons' count redraws the rows and chips
+  }
+  section("split", [S.split.default, S.split.rules, S.splitNote, S.split.apps === null, S.globalOn, Object.keys(appIcons).length], () => {
     const sp = S.split;
+    const apps = sp.apps !== null; // iOS: only sites
+    const what = apps ? "sites and apps" : "sites";
+    $("#split-card-s").textContent = `Choose ${what} that skip the VPN`;
+    $("#split-what").textContent = `Choose which ${what} use the VPN and which go direct.`;
+    $("#split-add-label").textContent = apps ? "Add a site or app" : "Add a site";
+    $("#split-list-label").textContent = apps ? "Sites and apps" : "Sites";
+    $("#split-input").placeholder = apps ? "bbc.co.uk, *.ir, 1.2.3.4 or an app: Telegram" : "bbc.co.uk, *.ir, 1.2.3.4 or 10.0.0.0/8";
+    $("#split-fine").textContent = `${apps ? "An app's rule covers all its connections; a site" : "A site"} covers its subdomains, and the most specific rule wins. Direct ${what} see your real IP. Changes apply to new connections.`;
+    // Android's own VPN does apps: only in whole-system mode (a TV's only one), and while some apps are listed for the
+    // VPN with everything else direct, only they go into it
+    const appRules = sp.rules.filter((r) => r.app !== null);
+    $("#split-apps-hint").textContent =
+      fh.platform !== "android" || !appRules.length ? ""
+        : !S.globalOn && !TV ? "Apps follow their rules in Whole system mode."
+        : sp.default === "direct" && appRules.some((r) => r.via === "vpn") && sp.rules.some((r) => r.app === null && r.via === "vpn") ? "With apps listed for the VPN, only they use it: the sites listed for the VPN do too, but only in those apps."
+        : "";
     $("#split-default").dataset.v = sp.default === "vpn" ? "0" : "1";
     $("#split-default-hint").innerHTML =
-      (sp.default === "vpn" ? "Sites not listed use the <b>VPN</b>: list the ones to bypass it." : "Sites not listed go <b>direct</b>: list the ones that need the VPN.") +
+      (sp.default === "vpn" ? `${apps ? "Sites and apps" : "Sites"} not listed use the <b>VPN</b>: list the ones to bypass it.` : `${apps ? "Sites and apps" : "Sites"} not listed go <b>direct</b>: list the ones that need the VPN.`) +
       (sp.defaultHits ? ` · ${sp.defaultHits} matched` : "");
-    $("#split-new-hint").innerHTML = `A new site goes <b>${sp.default === "vpn" ? "direct" : "through the VPN"}</b>: the other way from the rest.`;
+    $("#split-new-hint").innerHTML = `A new ${apps ? "site or app" : "site"} goes <b>${sp.default === "vpn" ? "direct" : "through the VPN"}</b>: the other way from the rest.`;
     const note = $("#split-note");
     note.dataset.tone = S.splitNote?.tone ?? "";
     note.textContent = S.splitNote?.text ?? "";
@@ -310,19 +338,20 @@ function renderSplit() {
     $("#split-rules").innerHTML = sp.rules.length
       ? sp.rules
           .map((r) => `<div class="rule${before && !before.has(r.match) ? " fresh" : ""}" data-match="${esc(r.match)}">
-            <span class="m" title="${esc(r.match)}">${esc(r.match)}</span>
+            ${r.app !== null ? `<span class="m app" title="${esc(r.match.slice(4))}">${appIcon(r.match.slice(4)) || `<span class="tag">App</span>`}${esc(r.app)}</span>` : `<span class="m" title="${esc(r.match)}">${esc(r.match)}</span>`}
             <span class="hits">${r.hits ? `${r.hits} matched` : ""}</span>
             <button class="via ${r.via}" data-toggle title="Switch between VPN and direct">${r.via === "vpn" ? "VPN" : "Direct"}</button>
             <button class="mini" data-remove title="Remove">${icon("trash")}</button></div>`)
           .join("")
-      : `<div class="empty"><b>No sites yet</b>Everything goes ${sp.default === "vpn" ? "through the VPN" : "direct"}.</div>`;
+      : `<div class="empty"><b>No ${what} yet</b>Everything goes ${sp.default === "vpn" ? "through the VPN" : "direct"}.</div>`;
   });
   // the counts climb as sites load: just the numbers, the rows stay put
   for (const r of S.split.rules) {
     const el = document.querySelector(`.rule[data-match="${CSS.escape(r.match)}"] .hits`);
     if (el) el.textContent = r.hits ? `${r.hits} matched` : "";
   }
-  section("recent", [S.split.recent, $("#split-input").value], drawRecent);
+  section("recent", [S.split.recent, S.split.apps, $("#split-input").value, Object.keys(appIcons).length], drawRecent);
+  drawPicker();
 }
 
 function drawRecent() {
@@ -331,7 +360,120 @@ function drawRecent() {
   $("#split-recent").innerHTML = found.length
     ? `<span class="k">Seen lately</span>${found.map((s) => `<button type="button" class="chip-btn" data-site="${esc(s)}">${esc(s)}</button>`).join("")}`
     : "";
+  const all = S.split.apps;
+  const apps = (all ?? []).filter((a) => a.name.toLowerCase().includes(typed)).slice(0, typed ? 11 : 8);
+  // last, every app: the picker, searching for what's typed
+  const more = `<button type="button" class="chip-btn more" data-pick-open title="Search every app"><svg class="i"><use href="#i-apps"/></svg>${all?.length ? `All ${all.length} apps` : "All apps"}</button>`;
+  $("#split-apps").innerHTML = all
+    ? `<span class="k">Apps</span>${apps.map((a) => `<button type="button" class="chip-btn" data-site="app:${esc(a.id)}" title="${esc(a.id)}">${appIcon(a.id)}${esc(a.name)}</button>`).join("")}${more}`
+    : "";
 }
+
+// ── Split tunneling's app picker: every app, found by name ─────────────────────────────────
+
+const pickerOn = () => $("#apps-modal").classList.contains("on");
+
+/** Opens the picker, searching for `query` (what was typed in the sheet). A phone's keyboard waits for a tap on the field. */
+function openPicker(query = "") {
+  $("#apps-search").value = query;
+  drawn.delete("picker");
+  $("#apps-modal").classList.add("on");
+  drawPicker();
+  $("#apps-list").scrollTop = 0;
+  // a computer types at once; a TV's remote starts in the list (↑ to the field); a phone's keyboard waits for a tap
+  if (TV) setTimeout(() => $("#apps-list .app-row")?.focus(), 60);
+  else if (!PHONE) setTimeout(() => $("#apps-search").focus(), 60);
+}
+
+function closePicker() {
+  $("#apps-modal").classList.remove("on");
+  if (TV || document.activeElement === document.body) $("#split-apps .more")?.focus(); // the remote carries on from where it was
+}
+
+/** `name` with where `q` is in it marked. */
+function marked(name, q) {
+  const i = q ? name.toLowerCase().indexOf(q) : -1;
+  return i < 0 ? esc(name) : `${esc(name.slice(0, i))}<mark>${esc(name.slice(i, i + q.length))}</mark>${esc(name.slice(i + q.length))}`;
+}
+
+/** The apps that have what's searched for, those starting with it first; on Android by package too. */
+function pickerApps() {
+  const q = $("#apps-search").value.trim().toLowerCase();
+  const all = S.split.apps ?? [];
+  if (!q) return all;
+  const has = all.filter((a) => a.name.toLowerCase().includes(q) || (a.id !== a.name && a.id.toLowerCase().includes(q)));
+  return [...has.filter((a) => a.name.toLowerCase().startsWith(q)), ...has.filter((a) => !a.name.toLowerCase().startsWith(q))];
+}
+
+function drawPicker() {
+  if (!pickerOn()) return;
+  const sp = S.split;
+  const typed = $("#apps-search").value.trim();
+  const q = typed.toLowerCase();
+  section("picker", [sp.apps, sp.appsLoading, sp.default, q, Object.keys(appIcons).length, S.splitNote], () => {
+    const found = pickerApps();
+    const way = sp.default === "vpn" ? "Direct" : "VPN";
+    const n = (sp.apps ?? []).length;
+    $("#apps-count").textContent = sp.appsLoading && !n ? "Looking for apps…" : `${n} app${n === 1 ? "" : "s"}${q ? ` · ${found.length} found` : ""}`;
+    const focused = document.activeElement?.closest?.(".app-row")?.dataset.pick; // kept through a redraw (icons coming in)
+    $("#apps-list").innerHTML = found.length
+      ? found
+          .map((a) => `<button type="button" class="app-row" role="option" data-pick="${esc(a.id)}">
+            ${appIcon(a.id) || `<span class="app-ico none">${esc(a.name.slice(0, 1).toUpperCase())}</span>`}
+            <span class="nm"><span>${marked(a.name, q)}</span>${a.id !== a.name ? `<small>${marked(a.id, q)}</small>` : ""}</span>
+            <span class="go">${way}</span></button>`)
+          .join("")
+      : sp.appsLoading
+        ? `<div class="empty"><b>Looking for apps…</b></div>`
+        : q
+          ? `<div class="empty"><b>No app has “${esc(typed)}”</b>${
+              sp.canTypeApp
+                ? `Not running now? Add it by its name.<br><button type="button" class="btn" data-pick-typed>${icon("plus")}Add “${esc(typed.slice(0, 40))}”</button>`
+                : `Only apps with an icon in the launcher are here.`
+            }</div>`
+          : `<div class="empty"><b>No apps found</b>${sp.canTypeApp ? "Type an app's name to add it." : ""}</div>`;
+    if (focused) $(`#apps-list [data-pick="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
+    const hint = $("#apps-hint");
+    hint.innerHTML = S.splitNote ? esc(S.splitNote.text) : `The app you pick goes <b>${way === "VPN" ? "through the VPN" : "direct"}</b>: the other way from the rest.`;
+    hint.dataset.tone = S.splitNote?.tone ?? "";
+  });
+}
+
+/** Adds the app (its id), closing the picker once it's in the list. */
+async function pick(id) {
+  if (await act("addRule", `app:${id}`)) closePicker();
+}
+
+$("#apps-search").addEventListener("input", () => S && drawPicker());
+$("#apps-modal").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) return closePicker(); // the backdrop
+  const t = e.target.closest("button");
+  if (!t || !S) return;
+  e.stopPropagation(); // not the window's own handler
+  if (t.id === "apps-close") return closePicker();
+  if (t.dataset.pick) return pick(t.dataset.pick);
+  if (t.hasAttribute("data-pick-typed")) return pick($("#apps-search").value.trim());
+});
+// The keyboard on a computer (a TV's remote moves the focus itself): Enter in the field picks the first one found,
+// ↓/↑ go through the list and back up to the field
+$("#apps-modal").addEventListener("keydown", (e) => {
+  if (TV || !S) return;
+  const rows = [...$("#apps-list").querySelectorAll(".app-row")];
+  const at = rows.indexOf(document.activeElement);
+  const inField = document.activeElement === $("#apps-search");
+  if (e.key === "Enter" && inField) {
+    e.preventDefault();
+    if (rows[0]) return void pick(rows[0].dataset.pick);
+    if ($("[data-pick-typed]")) return void pick($("#apps-search").value.trim());
+  }
+  const step = { ArrowDown: 1, ArrowUp: -1 }[e.key];
+  if (!step || (!inField && at < 0)) return;
+  e.preventDefault();
+  const next = inField ? (step > 0 ? 0 : -1) : at + step;
+  if (next < 0) return $("#apps-search").focus();
+  rows[Math.min(next, rows.length - 1)]?.focus();
+  rows[Math.min(next, rows.length - 1)]?.scrollIntoView({ block: "nearest" });
+});
 
 // ── Settings ───────────────────────────────────────────────────────────────────────────────
 
@@ -998,6 +1140,7 @@ document.addEventListener("click", async (e) => {
   if (t.dataset.mode) return (t.dataset.mode === "global") !== globalMode() && act("toggleGlobal");
   if (t.dataset.via) return act("setSplitDefault", t.dataset.via);
   if (t.dataset.site) return act("addRule", t.dataset.site);
+  if (t.hasAttribute("data-pick-open")) return openPicker($("#split-input").value.trim());
   if (t.hasAttribute("data-close")) return closeSheet();
   const rule = t.closest(".rule")?.dataset.match;
   if (rule && t.hasAttribute("data-toggle")) return act("toggleRule", rule);
@@ -1212,6 +1355,7 @@ document.addEventListener("keydown", (e) => {
     if ($("#logout-modal").classList.contains("on")) return $("#logout-modal").classList.remove("on");
     if ($("#add-modal").classList.contains("on")) return $("#add-modal").classList.remove("on");
     if ($("#low-modal").classList.contains("on")) return $("#low-modal").classList.remove("on");
+    if (pickerOn()) return closePicker();
     if (openSheet) return closeSheet();
     if (document.activeElement === $("#search")) {
       $("#search").value = "";
@@ -1293,6 +1437,7 @@ window.addEventListener("focus", () => document.body.classList.remove("idle"));
 
 if (TV) {
   document.body.classList.add("tv");
+  $("#mode").hidden = true; // a TV is whole-system only: nothing on it can be set to use a proxy (mobile/node/main.mjs)
   const CONTROLS = "button:not([disabled]), input, select, [data-use], .link";
   const LAYERS = ".modal.on, .overlay.on, .sheet.on, .locations.on";
   // the open dialog, sign-in screen or sheet that's highest (the last, of the same height), else the window

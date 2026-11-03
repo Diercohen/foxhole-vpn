@@ -4,14 +4,14 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { userHome } from "./profile.js";
 import type { ProxyLogin } from "./proxy.js";
-import { NO_SPLIT, parseSite, type Split, type Via } from "./split.js";
+import { NO_SPLIT, appOf, parseApp, parseSite, type Split, type Via } from "./split.js";
 
 export interface Settings {
   share: boolean; // proxy reachable from other devices on this network (0.0.0.0), not just this computer
   port: number; // proxy port (SOCKS5 and HTTP)
   username: string; // proxy login asked from other devices; both empty: none
   password: string;
-  split: Split; // split tunneling: which sites use the VPN, which go direct
+  split: Split; // split tunneling: which sites and apps use the VPN, which go direct
   // Optional Apps Script relay for reaching Guardian where vpn.mozilla.org is blocked (see httprelay.ts). Hand-set
   // in this file or given via FOXHOLE_RELAY_ID/KEY; not shown or edited in the UI. The authKey is a shared secret.
   relay?: { deploymentId: string; authKey: string };
@@ -30,7 +30,7 @@ function parseSplit(v: unknown): Split {
   const o = (v && typeof v === "object" ? v : {}) as { default?: unknown; rules?: unknown };
   const rules: Split["rules"] = [];
   for (const r of Array.isArray(o.rules) ? (o.rules as { match?: unknown; via?: unknown }[]) : []) {
-    const match = typeof r?.match === "string" ? parseSite(r.match) : null;
+    const match = typeof r?.match === "string" ? (appOf(r.match) !== null ? parseApp(r.match) : parseSite(r.match)) : null;
     if (match && isVia(r.via) && !rules.some((x) => x.match === match)) rules.push({ match, via: r.via });
   }
   return { default: isVia(o.default) ? o.default : NO_SPLIT.default, rules };

@@ -1,5 +1,5 @@
 // Foxhole's desktop app: one window and a tray icon over the Controller, which runs the VPN in this (main) process.
-import { app, BrowserWindow, ipcMain, clipboard, dialog, shell, nativeTheme, Notification, powerMonitor } from "electron";
+import { app, BrowserWindow, ipcMain, clipboard, dialog, shell, nativeTheme, nativeImage, Notification, powerMonitor } from "electron";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import net from "node:net";
 import { homedir } from "node:os";
@@ -31,7 +31,7 @@ const LINKS = {
 // What the window may ask for: the Controller's actions, nothing else of it
 const ACTIONS = new Set([
   "state", "power", "connect", "disconnect", "toggleGlobal", "submitPassword", "cancelPassword",
-  "setShare", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "setSplitDefault", "addRule", "toggleRule", "removeRule",
+  "setShare", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "appIcons", "setSplitDefault", "addRule", "toggleRule", "removeRule",
   "logs", "copy", "copyLogs", "openFirefox", "copySnippet", "reloadList",
   "addAccount", "useAccount", "removeAccount", "refreshAccounts", "dismissLow", "retrySignIn", "checkEntitled", "tvFind", "tvSend", "showWifiName",
   "trustCa", "untrustCa", "dismissTrust", "copyEnv",
@@ -67,7 +67,17 @@ function updateTarget() {
 }
 
 const updater = new Updater({ dir: join(app.getPath("userData"), "update"), downloads: app.getPath("downloads"), target: updateTarget(), via: () => controller.via(), changed: () => controller.emit("change") });
-const controller = new Controller({ copy: (text) => clipboard.writeText(text), updates: updater, openSignIn: () => openSignIn() });
+const controller = new Controller({
+  copy: (text) => clipboard.writeText(text),
+  updates: updater,
+  openSignIn: () => openSignIn(),
+  // split tunneling's app chips: an .app's or .exe's own icon. macOS's getFileIcon gives a stand-in for apps
+  // (a grey square), its Quick Look thumbnail the real one.
+  fileIcon: (path) =>
+    (process.platform === "darwin" ? nativeImage.createThumbnailFromPath(path, { width: 40, height: 40 }) : app.getFileIcon(path, { size: "normal" })).then(
+      (i) => (i.isEmpty() ? null : i.toDataURL()),
+    ),
+});
 let win = null;
 let done = false; // global mode's routes are back and the proxy closed: free to quit
 let relaunch = false; // the quit is a restart into the downloaded version

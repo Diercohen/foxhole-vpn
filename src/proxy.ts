@@ -5,7 +5,8 @@ import { lookup } from "node:dns/promises";
 import type { Connection } from "./connection.js";
 import { red, verbose } from "./ui.js";
 import { log } from "./log.js";
-import { route, splitOn, type Via } from "./split.js";
+import { route, splitOn, appsOn } from "./split.js";
+import { appFor } from "./apps.js";
 import { nameOf, DOH_HOST } from "./dns.js";
 import { IP_HOST, TRACE_HOST } from "./netinfo.js";
 import { relayServe, fakeName, realIp, setDirectTo, setDirectDial } from "./relaymode.js";
@@ -366,19 +367,32 @@ function dialDirect(target: Target): Promise<net.Socket | null> {
   });
 }
 
-/** VPN or direct for a connection to the site `name` (when known) at `ip` (when known). */
-function via(name: string | undefined, ip: string | undefined): Via {
-  if (name && OWN_HOSTS.has(name.toLowerCase())) return "vpn";
-  return route(name, ip) === "direct" && directOk ? "direct" : "vpn";
-}
-
-/** Opens the way the rules give `target`, the VPN tunnel or a direct connection; null (warned) if it can't. */
-async function open(conn: Connection, target: Target, name?: string): Promise<net.Socket | null> {
+/**
+ * Opens the way the rules give `target` (from `app`, when known), the VPN tunnel or a direct connection; null (warned)
+ * if it can't. foxhole's own hosts always use the VPN.
+ */
+async function open(conn: Connection, target: Target, name?: string, app?: string): Promise<net.Socket | null> {
   const fake = fakeName(target.host); // relay mode's made-up address, still cached after a switch to the VPN: by name
   if (fake) target = { host: fake, port: target.port };
   const ip = net.isIP(target.host) ? target.host : undefined;
-  return via(name ?? (ip ? nameOf(ip) : target.host), ip) === "direct" ? dialDirect(target) : dial(conn, target);
+  const site = name ?? (ip ? nameOf(ip) : target.host);
+  if ((site && OWN_HOSTS.has(site.toLowerCase())) || route(site, ip, app) !== "direct") return dial(conn, target);
+  if (directOk) return dialDirect(target);
+  // macOS global mode: a direct site goes around the tun by its DNS answer (relay.ts), but with apps in the rules its
+  // connection comes through it (an app's own, or the relay's held back for apps listed for the VPN), so its address
+  // is routed out the uplink first.
+  // ponytail: macOS routes by address, not app: from then on every app's connections to that address go around the
+  // tun too, till global mode ends. Per-app routing without that needs a Network Extension.
+  if (ip && pinDirect && appsOn() && (await pastTun(ip))) return dialDirect(target);
+  return dial(conn, target);
 }
+
+/**
+ * The app behind a client of this computer's, when a rule names apps (finding it costs a look at the system's
+ * connections). Not on a phone: Android's VPN does apps itself, iOS can't tell them apart.
+ */
+const PHONE = (process.platform as string) === "android" || (process.platform as string) === "ios";
+const appOf = (socket: net.Socket, target: Target) => (!PHONE && appsOn() ? appFor(socket, target) : Promise.resolve(undefined));
 
 // ── Relay mode (relaymode.ts): the web through the user's Apps Script; what isn't HTTP goes direct.
 
@@ -414,6 +428,7 @@ setDirectDial((conn, host, port) => relayDirect(conn, { host, port }, host)); //
 
 /** Relay mode: a connection the client opened (after its reply), web traffic to the relay, the rest direct. `early`: bytes it already sent. */
 async function relayOpen(conn: Connection, socket: net.Socket, target: Target, early: Buffer): Promise<void> {
+  const app = await appOf(socket, target);
   let first = early;
   if (!first.length && WEB_PORTS.has(target.port)) {
     const got = firstBytes(socket); // listening before it flows: nothing the client sends gets missed
@@ -426,7 +441,7 @@ async function relayOpen(conn: Connection, socket: net.Socket, target: Target, e
   const name = sniffHost(first) ?? (ip ? (fakeName(ip) ?? nameOf(ip)) : undefined) ?? target.host;
   const tlsHello = first[0] === 0x16;
   const web = tlsHello || /^[A-Z]{3,7} \S+ HTTP\/1\.[01]\r\n/.test(first.toString("latin1", 0, 2100));
-  if (web && !LOCAL.test(name) && (OWN_HOSTS.has(name) || route(name, ip) !== "direct")) {
+  if (web && !LOCAL.test(name) && (OWN_HOSTS.has(name) || route(name, ip, app) !== "direct")) {
     return relayServe(conn, socket, first, { host: name, port: target.port, tls: tlsHello });
   }
   const up = await relayDirect(conn, target, name);
@@ -503,6 +518,7 @@ async function handleSocks(socket: net.Socket, conn: Connection, greeting: Buffe
   // tun2socks (global mode) gives only an address. When rules need the site's name, the client's first
   // bytes have it, exactly even on a CDN address many sites share: a TLS SNI, an HTTP Host. They come
   // only after the reply, so it goes first.
+  const app = await appOf(socket, target); // before the reply: once it has one, tun2socks' app may be done already
   let hello: Buffer | null = null;
   let name: string | undefined;
   if (net.isIP(target.host) && splitOn() && (target.port === 443 || target.port === 80)) {
@@ -511,7 +527,7 @@ async function handleSocks(socket: net.Socket, conn: Connection, greeting: Buffe
     if (socket.destroyed) return;
     name = sniffHost(hello) ?? undefined;
   }
-  const up = await open(conn, target, name);
+  const up = await open(conn, target, name, app);
   if (!up) {
     if (!hello) replyFailure(socket);
     socket.destroy();
@@ -570,7 +586,7 @@ async function handleHttp(socket: net.Socket, conn: Connection, first: Buffer, l
     if (u.protocol !== "http:") return httpError(socket, "400 Bad Request");
     target = { host: u.hostname.replace(/^\[|\]$/g, ""), port: Number(u.port || 80) };
     // relay mode: the request as it came, absolute URL and all (it says where each one on this connection goes)
-    if (conn.relay && !LOCAL.test(target.host) && (OWN_HOSTS.has(target.host) || route(target.host) !== "direct")) {
+    if (conn.relay && !LOCAL.test(target.host) && (OWN_HOSTS.has(target.host) || route(target.host, undefined, await appOf(socket, target)) !== "direct")) {
       return relayServe(conn, socket, head, { ...target, tls: false });
     }
     const headers = lines.slice(1).filter((l) => !/^(proxy-[^:]*|connection|keep-alive):/i.test(l));
@@ -580,7 +596,7 @@ async function handleHttp(socket: net.Socket, conn: Connection, first: Buffer, l
     ]);
   }
 
-  const up = conn.relay ? await relayDirect(conn, target, target.host) : await open(conn, target);
+  const up = conn.relay ? await relayDirect(conn, target, target.host) : await open(conn, target, undefined, await appOf(socket, target));
   if (!up) return httpError(socket, "502 Bad Gateway");
   if (request) up.write(request);
   else {

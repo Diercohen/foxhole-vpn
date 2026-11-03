@@ -2,6 +2,7 @@
 // follows step by step): the main process owns them, the window shows state() and asks for actions.
 import { EventEmitter } from "node:events";
 import { hostname } from "node:os";
+import { readFile } from "node:fs/promises";
 import { findAccount, openBrowser, macApp } from "./dist/profile.js";
 import { fetchServerList } from "./dist/serverlist.js";
 import { Connection, RELAY_CODE } from "./dist/connection.js";
@@ -18,7 +19,8 @@ import { loadSettings, saveSettings, proxyHost, validPort, loginFor } from "./di
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenProblem } from "./dist/tokenserver.js";
 import { startProxy, onProxyWarning } from "./dist/proxy.js";
 import { log, logLines, onLog } from "./dist/log.js";
-import { useSplit, splitSummary, parseSite, hits, recentSites } from "./dist/split.js";
+import { useSplit, splitSummary, parseRule, appOf, hits, recentSites } from "./dist/split.js";
+import { listApps } from "./dist/apps.js";
 import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost } from "./dist/global.js";
 import { VERSION } from "./dist/update.js";
 import { countryName, gb, shortDate } from "./dist/ui.js";
@@ -34,6 +36,8 @@ const label = (c) => countryName(c.code, c.name);
 const RELAY_ROW = { code: RELAY_CODE, name: "Relay", locked: false, available: true, servers: [] };
 /** No relay on a phone (the user's call): it's never set up there, so it carries nothing and isn't offered. */
 const NO_RELAY = process.platform === "android" || process.platform === "ios";
+/** Split tunneling by app: a computer's proxy finds each connection's app (apps.ts), Android's VPN leaves apps out or takes only some; iOS can't tell apps apart. */
+const APPS = process.platform !== "ios";
 
 /** Data left, as the window shows it. */
 const usageView = (u) =>
@@ -78,6 +82,10 @@ export class Controller extends EventEmitter {
   #fwHint = null;
   #settingsNote = null;
   #splitNote = null;
+  #apps = []; // split tunneling's apps to pick from: [{ id, name }] (on Android the id is its package)
+  #appsLoading = false; // being looked up: the picker says so, not "no apps"
+  #icons = new Map(); // their icons, by id: data: URLs (null: none), asked for by the window apart from the state (appIcons)
+  #fileIcon; // the desktop app's: an .app's or .exe's icon as a data: URL (Electron draws it)
   #restoring = false;
   #receiver = null;
   #accounts = loadAccounts(); // accounts.js: the list, and the one in use
@@ -105,8 +113,9 @@ export class Controller extends EventEmitter {
    */
   #android;
 
-  constructor({ copy, updates, android = null, openSignIn = null }) {
+  constructor({ copy, updates, android = null, openSignIn = null, fileIcon = null }) {
     super();
+    this.#fileIcon = fileIcon;
     this.#copy = copy;
     this.#updates = updates;
     this.#android = android;
@@ -880,10 +889,57 @@ export class Controller extends EventEmitter {
     this.#changed();
   }
 
-  /** The Split tunneling panel opened: an old note goes. */
+  /** The Split tunneling panel opened: an old note goes, and the apps to pick from are looked up again. */
   openSplit() {
     this.#splitNote = null;
     this.#changed();
+    if (!APPS) return;
+    this.#appsLoading = true;
+    const apps = this.#android ? this.#android.apps() : listApps().then((list) => list.map((a) => ({ id: a.name, ...a })));
+    void apps.then(
+      (a) => {
+        this.#apps = a.map(({ id, name }) => ({ id, name }));
+        this.#appsLoading = false;
+        this.#changed();
+        return this.#loadIcons(a);
+      },
+      (err) => {
+        this.#appsLoading = false;
+        this.#changed();
+        log(`apps: ${err.message}`);
+      },
+    );
+  }
+
+  /** The icons of apps not seen before; `icon`: where it is (apps.ts), or Android's, drawn there already. */
+  async #loadIcons(apps) {
+    const fresh = apps.filter((a) => !this.#icons.has(a.id));
+    if (!fresh.length) return;
+    for (const a of fresh) this.#icons.set(a.id, null); // one look each
+    await Promise.all(fresh.map(async (a) => this.#icons.set(a.id, await this.#iconOf(a.icon).catch(() => null))));
+    this.#changed();
+  }
+
+  /** An icon as a data: URL, or null. */
+  async #iconOf(src) {
+    if (typeof src !== "string" || !src) return null;
+    if (/^data:image\/png;base64,/.test(src)) return src;
+    const svg = /\.svg$/i.test(src);
+    if (svg || /\.png$/i.test(src)) {
+      const b = await readFile(src);
+      return b.length <= 256 * 1024 ? `data:image/${svg ? "svg+xml" : "png"};base64,${b.toString("base64")}` : null;
+    }
+    return this.#fileIcon ? this.#fileIcon(src) : null;
+  }
+
+  /** The apps' icons known so far: { id: data: URL }. Apart from the state, which goes to the window every second. */
+  appIcons() {
+    return Object.fromEntries([...this.#icons].filter(([, url]) => url));
+  }
+
+  /** An app rule's name, as the list shows it: on Android its label, not its package. */
+  #appName(id) {
+    return this.#apps.find((a) => a.id === id)?.name ?? id;
   }
 
   /** Looks up, in the background, whether a firewall would keep other devices off the proxy's port. */
@@ -938,17 +994,29 @@ export class Controller extends EventEmitter {
     this.#saveSplit({ ...sp, rules: sp.rules.filter((r) => r.match !== match) });
   }
 
-  /** Adds a typed site, going the other way than everything else. True once it's in the list. */
+  /** Adds a typed site or app, going the other way than everything else. True once it's in the list. */
   addRule(text) {
     const sp = this.#settings.split;
-    const match = typeof text === "string" ? parseSite(text) : null;
+    const t = String(text ?? "").trim();
+    let match = typeof text === "string" ? parseRule(text) : null;
+    const app = match && appOf(match);
+    if (app !== null && !APPS) match = null; // iOS: only sites
+    else if (app !== null && this.#android) {
+      // Android's rules name packages: a typed name is the app's label
+      const a = this.#apps.find((x) => x.id === app) ?? this.#apps.find((x) => x.name.toLowerCase() === app.toLowerCase());
+      if (!a) {
+        this.#note("split", "error", `No app called “${app.slice(0, 40)}” on this ${this.#android.tv ? "TV" : "phone"}: pick one below.`);
+        return false;
+      }
+      match = `app:${a.id}`;
+    }
     if (!match) {
-      const t = String(text ?? "").trim();
-      this.#note("split", "error", t ? `Not a site: “${t.slice(0, 40)}”. Try bbc.co.uk, *.ir or 1.2.3.4.` : "Type a site first.");
+      const apps = APPS ? ", or an app" : "";
+      this.#note("split", "error", t ? `Not a site${apps}: “${t.slice(0, 40)}”. Try bbc.co.uk, *.ir or 1.2.3.4${APPS ? " or Telegram" : ""}.` : `Type a site${apps} first.`);
       return false;
     }
-    if (sp.rules.some((r) => r.match === match)) {
-      this.#note("split", "warn", `${match} is already in the list.`);
+    if (sp.rules.some((r) => r.match.toLowerCase() === match.toLowerCase())) {
+      this.#note("split", "warn", `${appOf(match) !== null ? this.#appName(appOf(match)) : match} is already in the list.`);
       return false;
     }
     return this.#saveSplit({ ...sp, rules: [...sp.rules, { match, via: flip(sp.default) }] });
@@ -1134,8 +1202,12 @@ export class Controller extends EventEmitter {
       split: {
         default: sp.default,
         defaultHits: hits.get("") ?? 0,
-        rules: sp.rules.map((r) => ({ ...r, hits: hits.get(r.match) ?? 0 })),
+        rules: sp.rules.map((r) => ({ ...r, hits: hits.get(r.match) ?? 0, app: appOf(r.match) !== null ? this.#appName(appOf(r.match)) : null })),
         recent: recentSites.filter((s) => !listed.has(s)).slice(0, 30),
+        apps: APPS ? this.#apps.filter((a) => !listed.has(`app:${a.id}`)) : null, // null: no apps here (iOS)
+        appsLoading: this.#appsLoading,
+        canTypeApp: APPS && !this.#android, // a computer's rules take any app's name, one not running too; Android's name installed ones
+        icons: [...this.#icons.values()].filter(Boolean).length, // more drawn: the window asks for them (appIcons)
       },
       splitNote: this.#splitNote,
       pw: this.#pw,

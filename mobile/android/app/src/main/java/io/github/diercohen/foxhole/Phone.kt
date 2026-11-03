@@ -23,6 +23,7 @@ import android.provider.MediaStore
 import android.provider.Settings
 import android.security.KeyChain
 import androidx.core.content.FileProvider
+import androidx.core.graphics.drawable.toBitmap
 import java.io.File
 import java.security.KeyStore
 import java.security.cert.CertificateFactory
@@ -47,7 +48,8 @@ object Phone {
           FoxholeService.keep(ctx, if (args.optBoolean("off")) null else Triple(args.getString("title"), args.getString("text"), args.optBoolean("paused")))
           Core.answer(id, null)
         }
-        "vpnStart" -> vpnStart(ctx, id, args.getInt("port"))
+        "vpnStart" -> vpnStart(ctx, id, args.getInt("port"), strings(args, "skip"), strings(args, "only"))
+        "apps" -> Core.answer(id, apps(ctx))
         "vpnStop" -> {
           FoxholeService.vpnOff()
           Core.answer(id, null)
@@ -143,12 +145,44 @@ object Phone {
 
   // ── Whole-system mode: Android asks the user once whether Foxhole may be a VPN ──────────────────────────────
 
-  private fun vpnStart(ctx: Context, id: Int, port: Int) {
-    val question = VpnService.prepare(ctx) ?: return FoxholeService.vpnOn(ctx, id, port)
+  private fun strings(args: JSONObject, key: String): ArrayList<String> {
+    val a = args.optJSONArray(key) ?: return arrayListOf()
+    return ArrayList((0 until a.length()).map { a.getString(it) })
+  }
+
+  /** `skip`: split tunneling's direct apps, left out of the VPN; `only`: when any, the only apps in it (packages). */
+  private fun vpnStart(ctx: Context, id: Int, port: Int, skip: ArrayList<String>, only: ArrayList<String>) {
+    val question = VpnService.prepare(ctx) ?: return FoxholeService.vpnOn(ctx, id, port, skip, only)
     val activity = MainActivity.shown ?: return Core.fail(id, "open Foxhole to allow its VPN")
-    consent = { ok -> if (ok) FoxholeService.vpnOn(ctx, id, port) else Core.fail(id, "Android's VPN wasn't allowed") }
+    consent = { ok -> if (ok) FoxholeService.vpnOn(ctx, id, port, skip, only) else Core.fail(id, "Android's VPN wasn't allowed") }
     @Suppress("DEPRECATION") main.post { activity.startActivityForResult(question, MainActivity.VPN_CONSENT) }
   }
+
+  /** Split tunneling's apps to pick from: those with an icon in the launcher (a TV's too), by name, but this one, each with its icon. */
+  private fun apps(ctx: Context): org.json.JSONArray {
+    val pm = ctx.packageManager
+    val found = sortedMapOf<String, JSONObject>(String.CASE_INSENSITIVE_ORDER) // by name
+    for (category in listOf(Intent.CATEGORY_LAUNCHER, Intent.CATEGORY_LEANBACK_LAUNCHER)) {
+      @Suppress("DEPRECATION") // its replacement (ResolveInfoFlags) is Android 13+
+      for (r in pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(category), 0)) {
+        val pkg = r.activityInfo.packageName
+        val name = r.activityInfo.applicationInfo.loadLabel(pm).toString()
+        if (pkg == ctx.packageName || name in found) continue
+        found[name] = JSONObject().put("id", pkg).put("name", name).put("icon", iconUrl { r.loadIcon(pm) })
+      }
+    }
+    return org.json.JSONArray(found.values)
+  }
+
+  /** An icon as a 48-pixel PNG data: URL (the window's app chips), or null. */
+  private fun iconUrl(icon: () -> android.graphics.drawable.Drawable): String? =
+    try {
+      val png = java.io.ByteArrayOutputStream()
+      icon().toBitmap(48, 48).compress(android.graphics.Bitmap.CompressFormat.PNG, 100, png)
+      "data:image/png;base64," + android.util.Base64.encodeToString(png.toByteArray(), android.util.Base64.NO_WRAP)
+    } catch (e: Exception) {
+      null
+    }
 
   fun consented(ok: Boolean) {
     consent?.invoke(ok)

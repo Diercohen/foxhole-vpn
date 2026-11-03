@@ -6,7 +6,7 @@
 import { execFile } from "node:child_process";
 import net from "node:net";
 import { startDnsForwarder, type DnsForwarderOptions } from "./dns.js";
-import { useSplit, viaOf, type Split } from "./split.js";
+import { useSplit, viaOf, currentSplit, appOf, type Split } from "./split.js";
 import { OWN_HOSTS } from "./proxy.js";
 
 // Private, loopback, link-local and CGNAT addresses: the LAN's routes already take them
@@ -27,7 +27,9 @@ export interface DirectRoutes {
 export function directRoutes(via: string[], run: (argv: string[]) => Promise<boolean>): DirectRoutes {
   const names = new Map<string, Set<string>>(); // every site an address was looked up for
   const routed = new Set<string>(); // addresses taken around the tunnel
-  const direct = (name: string) => !OWN_HOSTS.has(name) && viaOf(name) === "direct";
+  // An app listed for the VPN must reach the tun whatever the site: then nothing's routed around it by name, and the
+  // proxy takes direct connections out by address instead (proxy.ts open)
+  const direct = (name: string) => !OWN_HOSTS.has(name) && viaOf(name) === "direct" && !currentSplit().rules.some((r) => appOf(r.match) !== null && r.via === "vpn");
   const allDirect = (ip: string) => [...names.get(ip)!].every(direct);
   const unroute = async (ip: string) => void (routed.delete(ip) && (await run(["route", "-n", "delete", "-host", ip])));
   return {

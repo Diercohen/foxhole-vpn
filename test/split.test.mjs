@@ -9,7 +9,9 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
-import { parseSite, ruleFor, useSplit, route, viaOf, hits, recentSites, splitOn, splitSummary, NO_SPLIT } from "../dist/split.js";
+import { execFile } from "node:child_process";
+import { parseSite, parseRule, ruleFor, useSplit, route, viaOf, hits, recentSites, splitOn, splitSummary, appsOn, NO_SPLIT } from "../dist/split.js";
+import { parseMac, parseSs, parseWin, appName, appFor, desktopIcon } from "../dist/apps.js";
 import { startProxy, sniffHost, setDirectFrom, holdDirect, onProxyWarning } from "../dist/proxy.js";
 import { questionName, answerAddrs } from "../dist/dns.js";
 import { directRoutes } from "../dist/relay.js";
@@ -67,6 +69,65 @@ assert.equal(m("news.bbc.co.uk", "10.1.2.3"), "bbc.co.uk", "a name rule beats an
 assert.equal(m("10.9.9.9"), "10.0.0.0/8", "an address as the name");
 assert.equal(m(undefined, "2001:db8::1"), "2001:db8::/32");
 assert.equal(m(undefined, "8.8.8.8"), null);
+
+// Apps: typed, and an app's rule deciding all its connections
+for (const [typed, match] of Object.entries({ Telegram: "app:Telegram", "Google Chrome": "app:Google Chrome", "app: firefox": "app:firefox", "Telegram.exe": "app:Telegram", "Discord.app": "app:Discord", "app:org.telegram.messenger": "app:org.telegram.messenger", "bbc.co.uk": "bbc.co.uk", ir: "ir" })) {
+  assert.equal(parseRule(typed), match, `parseRule(${JSON.stringify(typed)})`);
+}
+for (const bad of ["", "app:", "app:a/b", "a:b"]) assert.equal(parseRule(bad), null, `parseRule(${JSON.stringify(bad)}) refused`);
+const withApps = { default: "vpn", rules: [...split.rules, { match: "app:Telegram", via: "direct" }, { match: "app:Bank", via: "vpn" }] };
+assert.equal(ruleFor(withApps, "www.google.com", undefined, "telegram")?.match, "app:Telegram", "an app's rule, whatever the case");
+assert.equal(ruleFor(withApps, "www.digikala.ir", undefined, "Bank")?.match, "app:Bank", "beats a site's");
+assert.equal(ruleFor(withApps, "www.digikala.ir", undefined, "Firefox")?.match, "*.ir", "another app: the sites'");
+assert.equal(ruleFor(withApps, "app")?.match ?? null, null, "an app's rule is no domain");
+assert.ok(appsOn(withApps) && !appsOn(split));
+assert.equal(splitSummary({ default: "vpn", rules: [{ match: "x.com", via: "direct" }, { match: "app:A", via: "direct" }, { match: "app:B", via: "direct" }] }), "1 site, 2 apps direct");
+assert.equal(splitSummary({ default: "direct", rules: [{ match: "app:A", via: "vpn" }] }), "only 1 app via VPN");
+
+// Which app holds a connection: each system's table
+assert.equal(appName("/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper"), "Google Chrome");
+assert.equal(appName("C:\\Program Files\\Telegram\\Telegram.exe"), "Telegram");
+assert.equal(appName("/usr/bin/curl"), "curl");
+const macNet = `Active Internet connections (including servers)
+Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)          rxbytes      txbytes  rhiwat  shiwat          process:pid    state  options
+tcp4       0      0  127.0.0.1.62868        127.0.0.1.1080         ESTABLISHED         5758         2541  131072  131768  Google Chrome He:4242  00102 00000000
+tcp4       0      0  198.18.0.1.50000       151.101.1.91.443       ESTABLISHED        22364         5580  131072  131480          firefox:66119  00102 00000000
+tcp6       0      0  ::1.50001              ::1.1080               ESTABLISHED           10           10  131072  131480              curl:7  00102 00000000
+tcp4       0      0  *.1080                 *.*                    LISTEN                 0            0  131072  131072           node:1  00102 00000000
+`;
+const macPs = "4242 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper\n66119 /Applications/Firefox.app/Contents/MacOS/firefox\n";
+assert.deepEqual(parseMac(macNet, macPs), [
+  { local: "127.0.0.1:62868", remote: "127.0.0.1:1080", pid: 4242, app: "Google Chrome", exe: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper" },
+  { local: "198.18.0.1:50000", remote: "151.101.1.91:443", pid: 66119, app: "Firefox", exe: "/Applications/Firefox.app/Contents/MacOS/firefox" },
+  { local: "::1:50001", remote: "::1:1080", pid: 7, app: "curl" },
+]);
+const ss = `ESTAB 0 0 127.0.0.1:43210 127.0.0.1:1080 users:(("Telegram",pid=123,fd=45))
+ESTAB 0 0 [::ffff:127.0.0.1]:43211 [::ffff:127.0.0.1]:1080 users:(("tun2socks",pid=9,fd=3))
+SYN-SENT 0 1 198.18.0.1:40000 1.2.3.4:443
+`;
+assert.deepEqual(parseSs(ss), [
+  { local: "127.0.0.1:43210", remote: "127.0.0.1:1080", pid: 123, app: "Telegram" },
+  { local: "127.0.0.1:43211", remote: "127.0.0.1:1080", pid: 9, app: "tun2socks" },
+  { local: "198.18.0.1:40000", remote: "1.2.3.4:443", pid: 0, app: "" },
+]);
+const winNet = `
+Active Connections
+
+  Proto  Local Address          Foreign Address        State           PID
+  TCP    0.0.0.0:1080           0.0.0.0:0              LISTENING       500
+  TCP    127.0.0.1:52344        127.0.0.1:1080         ESTABLISHED     1234
+  TCP    [::1]:52345            [::1]:1080             ESTABLISHED     77
+`;
+assert.deepEqual(parseWin(winNet, '"Telegram.exe","1234","Console","1","123,456 K"\r\n"chrome.exe","77","Console","1","1 K"\r\n'), [
+  { local: "127.0.0.1:52344", remote: "127.0.0.1:1080", pid: 1234, app: "Telegram" },
+  { local: "::1:52345", remote: "::1:1080", pid: 77, app: "chrome" },
+]);
+// Linux: an app's icon by the name ss gives its process (cut to 15 characters)
+assert.deepEqual(desktopIcon("[Desktop Entry]\nName=Telegram\nExec=env BAMF_DESKTOP_FILE_HINT=/x.desktop LANG=C /snap/bin/telegram-desktop -- %u\nIcon=/snap/telegram-desktop/icon.png\n"), { proc: "telegram-deskto", icon: "/snap/telegram-desktop/icon.png" });
+assert.deepEqual(desktopIcon('Exec="/opt/Signal/signal-desktop" --no-sandbox\nIcon=signal-desktop'), { proc: "signal-desktop", icon: "signal-desktop" });
+assert.equal(desktopIcon("Exec=/usr/bin/flatpak run org.x.App\nIcon=org.x.App"), null, "a Flatpak's process isn't in its launcher");
+assert.equal(desktopIcon("Name=x\nIcon=y"), null);
+assert.equal(await appFor({ remoteAddress: "192.168.1.9", remotePort: 5, localAddress: "192.168.1.2", localPort: 1080 }, { host: "x.com", port: 443 }), undefined, "another device's: no app");
 
 // Live rules, counted connections, recent sites
 useSplit(() => split);
@@ -129,6 +190,9 @@ await routes.answer("y.ir", ["185.9.9.9"]); // the route command fails: not coun
 mac = { default: "vpn", rules: [] };
 await routes.recheck();
 assert.deepEqual(ran.slice(-3), ["route -n add -host 185.3.3.3 192.168.0.1", "route -n add -host 185.9.9.9 192.168.0.1", "route -n delete -host 185.3.3.3"], "rules changed: no longer direct, back in");
+mac = { default: "direct", rules: [{ match: "app:Telegram", via: "vpn" }] };
+await routes.answer("web.telegram.org", ["185.6.6.6"]);
+assert.equal(ran.length, 5, "an app listed for the VPN: nothing goes around the tun by name");
 mac = { default: "direct", rules: [] };
 await routes.answer("api.ipify.org", ["185.5.5.5"]);
 assert.equal(ran.length, 5, "foxhole's own exit-IP check never goes around the tunnel");
@@ -185,19 +249,35 @@ assert.equal(tunnels, 2, "only these via VPN: listed, so the VPN");
 rules = { default: "vpn", rules: [{ match: "127.0.0.1", via: "direct" }] };
 assert.equal((await socks(1)).rep, 1, "a direct connection that fails (nothing on port 1): a SOCKS failure reply");
 
+// An app's rule, through the proxy: curl (another process) sent direct, the site's rules notwithstanding
+const web = net.createServer((s) => s.once("data", () => s.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")));
+const webPort = await listen(web);
+const curl = () => new Promise((r) => execFile("curl", ["-s", "--max-time", "5", "--socks5", `127.0.0.1:${proxy.port}`, `http://127.0.0.1:${webPort}/`], (err, out) => r(err ? null : out)));
+rules = { default: "vpn", rules: [{ match: "app:curl", via: "direct" }] };
+assert.equal(await curl(), "ok");
+assert.equal(tunnels, 2, "curl's rule: direct");
+rules = { default: "vpn", rules: [{ match: "app:Curl", via: "vpn" }, { match: "127.0.0.1", via: "direct" }] };
+assert.equal(await curl(), "ok");
+assert.equal(tunnels, 3, "curl's rule beats the address's: the VPN");
+rules = { default: "vpn", rules: [{ match: "app:someone-else", via: "direct" }] };
+assert.equal(await curl(), "ok");
+assert.equal(tunnels, 4, "another app's rule: curl takes the default");
+web.close();
+rules = { default: "vpn", rules: [{ match: "127.0.0.1", via: "direct" }] };
+
 // Global mode: while its routes go up or down, direct sites use the VPN (dialed then, they'd loop
 // through the tun); with them up, until the probe says direct connections really leave.
 const warnings = [];
 onProxyWarning((msg) => warnings.push(msg));
 holdDirect();
 await socks(sitePort);
-assert.equal(tunnels, 3, "routes going up or down: the VPN");
+assert.equal(tunnels, 5, "routes going up or down: the VPN");
 setDirectFrom(null);
 await socks(sitePort);
-assert.equal(tunnels, 3, "global off: direct again");
+assert.equal(tunnels, 5, "global off: direct again");
 setDirectFrom("127.0.0.1");
 await socks(sitePort);
-assert.equal(tunnels, 4, "before the probe answers: the VPN");
+assert.equal(tunnels, 6, "before the probe answers: the VPN");
 const looped = net.connect(proxy.port, "127.0.0.1"); // what a loop looks like: the probe's own connection, back via tun2socks
 looped.on("error", () => {});
 looped.write(Buffer.from([5, 1, 0]));
@@ -205,7 +285,7 @@ await read(looped);
 looped.write(Buffer.from([5, 1, 0, 1, 192, 0, 2, 1, 0, 9]));
 await new Promise((r) => setTimeout(r, 1200));
 await socks(sitePort);
-assert.equal(tunnels, 5, "a loop: direct sites keep using the VPN");
+assert.equal(tunnels, 7, "a loop: direct sites keep using the VPN");
 assert.ok(warnings.some((w) => /can't get past the tun/.test(w)), "and the TUI is told");
 setDirectFrom(null);
 

@@ -13,6 +13,7 @@ import { Updater } from "./updater.js";
 import { publicIp } from "./dist/netinfo.js";
 import { caPem, loadCa } from "./dist/mitm.js";
 import { useFastlyFallback } from "./dist/dns.js";
+import { currentSplit, appOf } from "./dist/split.js";
 import { log } from "./dist/log.js";
 
 net.setDefaultAutoSelectFamilyAttemptTimeout(3000); // as cli.ts: far VPN servers take 600-900 ms to answer
@@ -53,7 +54,7 @@ if (typeof WebAssembly === "undefined")
 const ACTIONS = new Set([
   "update", "restartToUpdate",
   "state", "power", "connect", "disconnect", "toggleGlobal",
-  "setShare", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "setSplitDefault", "addRule", "toggleRule", "removeRule",
+  "setShare", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "appIcons", "setSplitDefault", "addRule", "toggleRule", "removeRule",
   "logs", "copy", "copyLogs", "reloadList",
   "addAccount", "useAccount", "removeAccount", "refreshAccounts", "dismissLow", "retrySignIn", "checkEntitled", "tvWait", "tvFind", "tvSend", "showWifiName",
   "trustCa", "untrustCa", "dismissTrust",
@@ -71,13 +72,24 @@ const ask = (cmd, args = {}) =>
     send({ t: "ask", id: seq, cmd, args });
   });
 
+/**
+ * Split tunneling's apps, as Android's VPN takes them (its packages): `skip` stay out of it; `only`, when any, are the
+ * only ones in it (everything else direct, some apps via VPN). Pure.
+ */
+function vpnApps(split) {
+  const apps = (via) => split.rules.filter((r) => r.via === via && appOf(r.match) !== null).map((r) => appOf(r.match));
+  return split.default === "vpn" ? { skip: apps("direct"), only: [] } : { skip: [], only: apps("vpn") };
+}
+
 let vpn = null; // whole-system mode's session while Android's VPN is up: told when Android stops it
-/** Android's VPN for whole-system mode, as GlobalSession: it sends all apps' connections to the proxy (but this app's own). */
+/** Android's VPN for whole-system mode, as GlobalSession: it sends all apps' connections to the proxy (but this app's own, and split tunneling's direct apps). */
 function globalSession({ proxyPort }) {
   let exited = () => {};
+  let apps = "";
+  const up = () => ((apps = JSON.stringify(vpnApps(currentSplit()))), ask("vpnStart", { port: proxyPort, ...JSON.parse(apps) }));
   const session = {
     async start() {
-      await ask("vpnStart", { port: proxyPort });
+      await up();
       vpn = session;
     },
     async stop() {
@@ -87,7 +99,10 @@ function globalSession({ proxyPort }) {
     onExit: (cb) => (exited = cb),
     onNetworkChange() {}, // Android moves the VPN to the new network itself
     async addServer() {}, // the proxy's own connections are outside the VPN: nothing to pin
-    splitChanged() {}, // direct sites go direct from the proxy, outside the VPN
+    // direct sites go direct from the proxy, outside the VPN; a change of apps needs Android's VPN made again
+    splitChanged() {
+      if (vpn === session && JSON.stringify(vpnApps(currentSplit())) !== apps) void up().catch((err) => log(`apps: ${err.message}`));
+    },
     // through the proxy: this app's own connections don't go through its VPN
     verifyExitIp: (relay) => publicIp({ host: "127.0.0.1", port: proxyPort }, 3, relay),
     exit(why) {
@@ -115,7 +130,7 @@ const apk = process.platform === "android" && {
 };
 // what this device is: a TV (Android TV) signs in from another device (tvpair.ts); its name is shown on both
 const device = {};
-if (process.platform === "android") void ask("device").then((d) => (Object.assign(device, d), controller.emit("change")), () => {});
+const deviceKnown = process.platform === "android" ? ask("device").then((d) => (Object.assign(device, d), controller.emit("change")), () => {}) : Promise.resolve();
 const updater = new Updater({ dir: join(homedir(), "update"), downloads: join(homedir(), "apk"), target: apk || null, via: () => controller.via(), changed: () => controller.emit("change") });
 const controller = new Controller({
   copy: (text) => void ask("copy", { text }).catch(() => {}),
@@ -129,6 +144,7 @@ const controller = new Controller({
     },
     openSignIn: () => send({ t: "signIn" }), // its session comes back as "signedIn"
     globalSession,
+    apps: () => ask("apps"), // split tunneling's: [{ id: its package, name }] (Phone.kt)
     network: () => ask("network").catch(() => null),
     wifiAccess: () => ask("wifiAccess"), // Android's question for the Wi-Fi's name (Phone.kt)
     caTrusted: () => (caPem() ? ask("caTrusted", { pem: caPem() }).catch(() => false) : Promise.resolve(false)),
@@ -145,7 +161,7 @@ let kept = "";
 let paused = null; // paused from the notification: { code, global }, what its Resume connects to again
 
 // The mode last picked in the window, Proxy only or Whole system: connecting goes back to it, after a restart too.
-// iOS has no whole-system mode.
+// iOS has no whole-system mode; a TV has nothing else (nothing on it can be set to use a proxy): see global().
 const MODE = join(homedir(), "mode");
 let wantGlobal = process.platform === "android" && (() => {
   try {
@@ -164,15 +180,20 @@ function saveMode(global) {
   }
 }
 
-/** The power button or a country picked while off: connects in the mode last picked. */
+/** Whole-system mode wanted: the mode last picked, and always on a TV. */
+const global = () => wantGlobal || !!device.tv;
+
+/** The power button or a country picked while off: connects in the mode last picked. A TV left in proxy mode (Android's VPN refused) disconnects. */
 async function connect(code) {
   await controller.connect(code);
   const s = controller.state();
-  if (wantGlobal && s.active && !s.globalOn) await controller.toggleGlobal();
+  if (global() && s.active && !s.globalOn) await controller.toggleGlobal();
+  if (device.tv && controller.state().active && !controller.state().globalOn) await controller.disconnect();
 }
 
-/** The window's Proxy only / Whole system: switched while on; while off, connects in the other one. Remembered either way. */
+/** The window's Proxy only / Whole system: switched while on; while off, connects in the other one. Remembered either way. A TV has no switch. */
 async function setMode() {
+  if (device.tv) return;
   if (controller.state().active) await controller.toggleGlobal();
   else {
     saveMode(!wantGlobal);
@@ -186,7 +207,7 @@ async function setMode() {
 function view() {
   const s = controller.state();
   if (s.active) paused = null; // connected again: by Resume, or in the app
-  return { ...s, paused, wantGlobal };
+  return { ...s, paused, wantGlobal: global() };
 }
 
 function push() {
@@ -303,5 +324,5 @@ process.on("unhandledRejection", (err) => {
   log(`error: ${err?.stack ?? err}`);
 });
 
-controller.start({ global: wantGlobal }).catch((err) => log(`couldn't start: ${err.stack ?? err.message}`));
+void deviceKnown.then(() => controller.start({ global: global() })).catch((err) => log(`couldn't start: ${err.stack ?? err.message}`));
 updater.start();

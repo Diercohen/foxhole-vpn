@@ -44,6 +44,7 @@
   <symbol id="i-close" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M10 11v6M14 11v6"/><path d="m6.5 7 .9 11.6A2.5 2.5 0 0 0 9.9 21h4.2a2.5 2.5 0 0 0 2.5-2.4L17.5 7"/><path d="M9.5 7V4.5h5V7"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-apps" viewBox="0 0 24 24"><rect x="4" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.8"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.8"/><path d="m20 20-4.2-4.2"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10" rx="2.8"/><path d="M8 10.5V7.8a4 4 0 0 1 8 0v2.7"/><path d="M12 14.5v2"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.7-4.4L4 8"/><path d="M4 3.5V8h4.5"/><path d="M4 13a8 8 0 0 0 14.7 4.4L20 16"/><path d="M20 20.5V16h-4.5"/></symbol>
@@ -127,7 +128,7 @@
       <div class="card" id="c-net"><span class="ico"><svg class="i"><use href="#i-wifi"/></svg></span><div class="body"><div class="k">Network</div><div class="v"></div><div class="s"></div></div></div>
       <div class="card" id="c-ip"><span class="ico"><svg class="i"><use href="#i-globe"/></svg></span><div class="body"><div class="k">Public IP</div><div class="v"></div><div class="s"></div></div></div>
       <div class="card" id="c-proxy"><span class="ico"><svg class="i"><use href="#i-plug"/></svg></span><div class="body"><div class="k">Proxy</div><div class="v"></div><div class="s"></div></div><button class="mini copy" id="copy-proxy" title="Copy the address" hidden><svg class="i"><use href="#i-copy"/></svg></button></div>
-      <button class="card link" id="c-split"><span class="ico"><svg class="i"><use href="#i-split"/></svg></span><div class="body"><div class="k">Split tunneling</div><div class="v"></div><div class="s">Choose sites that skip the VPN</div></div><svg class="i chev"><use href="#i-chevron"/></svg></button>
+      <button class="card link" id="c-split"><span class="ico"><svg class="i"><use href="#i-split"/></svg></span><div class="body"><div class="k">Split tunneling</div><div class="v"></div><div class="s" id="split-card-s">Choose sites and apps that skip the VPN</div></div><svg class="i chev"><use href="#i-chevron"/></svg></button>
     </div>
   </section>
 
@@ -145,7 +146,7 @@
 <div class="scrim" id="scrim"></div>
 
 <section class="sheet glass" id="sheet-split" aria-label="Split tunneling">
-  <header><span class="badge"><svg class="i"><use href="#i-split"/></svg></span><div><h2>Split tunneling</h2><p>Choose which sites use the VPN and which go direct.</p></div><button class="icon-btn close" data-close><svg class="i"><use href="#i-close"/></svg></button></header>
+  <header><span class="badge"><svg class="i"><use href="#i-split"/></svg></span><div><h2>Split tunneling</h2><p id="split-what">Choose which sites and apps use the VPN and which go direct.</p></div><button class="icon-btn close" data-close><svg class="i"><use href="#i-close"/></svg></button></header>
   <div class="scroll">
     <div class="group">
       <div class="row-line">
@@ -154,14 +155,16 @@
       </div>
     </div>
     <form class="group" id="split-add">
-      <div class="label">Add a site</div>
+      <div class="label" id="split-add-label">Add a site or app</div>
       <div class="input-row">
-        <input id="split-input" placeholder="bbc.co.uk, *.ir, 1.2.3.4 or 10.0.0.0/8" spellcheck="false" autocomplete="off">
+        <input id="split-input" placeholder="bbc.co.uk, *.ir, 1.2.3.4 or an app: Telegram" spellcheck="false" autocomplete="off">
         <button class="btn primary" type="submit"><svg class="i"><use href="#i-plus"/></svg>Add</button>
       </div>
       <div class="hint" id="split-new-hint"></div>
       <div class="note" id="split-note"></div>
       <div class="chips" id="split-recent"></div>
+      <div class="chips" id="split-apps"></div>
+      <div class="hint" id="split-apps-hint"></div>
     </form>
     <div class="suggest" id="split-suggest" hidden>
       <span class="flag code">IR</span>
@@ -169,10 +172,10 @@
       <button class="btn" id="add-ir"><svg class="i"><use href="#i-plus"/></svg>Add *.ir</button>
     </div>
     <div class="group">
-      <div class="label">Sites <span class="count" id="split-count"></span></div>
+      <div class="label"><span id="split-list-label">Sites and apps</span> <span class="count" id="split-count"></span></div>
       <div class="rules" id="split-rules"></div>
     </div>
-    <p class="fine">A site covers its subdomains; the most specific rule wins. Direct sites see your real IP. Changes apply to new connections.</p>
+    <p class="fine" id="split-fine">An app's rule covers all its connections; a site covers its subdomains, and the most specific rule wins. Direct sites and apps see your real IP. Changes apply to new connections.</p>
   </div>
 </section>
 
@@ -323,6 +326,19 @@
     <h2>Add a Mozilla account</h2>
     <div class="choices" id="add-choices"></div>
     <span class="link fine" id="add-later">Cancel</span>
+  </div>
+</div>
+
+<!-- Split tunneling: every app on this device, to pick one by name (app.js openPicker) -->
+<div class="modal backdrop" id="apps-modal" role="dialog" aria-modal="true" aria-labelledby="apps-title">
+  <div class="box glass picker">
+    <header>
+      <div><h2 id="apps-title">Pick an app</h2><p id="apps-count"></p></div>
+      <button class="icon-btn close" id="apps-close" title="Close"><svg class="i"><use href="#i-close"/></svg></button>
+    </header>
+    <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="apps-search" type="search" placeholder="Search apps" spellcheck="false" autocomplete="off" enterkeyhint="go" aria-controls="apps-list"></label>
+    <div class="app-list" id="apps-list" role="listbox" aria-labelledby="apps-title"></div>
+    <p class="hint note" id="apps-hint"></p>
   </div>
 </div>
 

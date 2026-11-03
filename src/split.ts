@@ -6,9 +6,31 @@ import { domainToASCII } from "node:url";
 export type Via = "vpn" | "direct";
 
 export interface SplitRule {
-  match: string; // a domain with its subdomains ("*.x" means the same as "x"), or an IP address or CIDR
+  // a domain with its subdomains ("*.x" means the same as "x"), an IP address or CIDR, or an app ("app:Telegram"; on
+  // Android its package, "app:org.telegram.messenger")
+  match: string;
   via: Via;
 }
+
+export const APP = "app:";
+/** The app a rule's match names, or null for a site. Pure. */
+export const appOf = (match: string): string | null => (match.startsWith(APP) ? match.slice(APP.length) : null);
+
+/** A typed app ("app:Telegram", "Telegram.exe", "Telegram.app": "app:Telegram"), case kept; null if it can't be one. Pure. */
+export function parseApp(input: string): string | null {
+  const s = input.trim().replace(/^app:\s*/i, "").replace(/\.(exe|app)$/i, "");
+  return s && s.length <= 100 && !/[\x00-\x1f/\\]/.test(s) ? APP + s : null;
+}
+
+/** A typed rule: "app:…" an app, else a site (parseSite), else a word that can't be a site ("Telegram", "Google Chrome", "x.exe") an app. Pure. */
+export function parseRule(input: string): string | null {
+  const s = input.trim();
+  if (/^app:/i.test(s) || /\.(exe|app)$/i.test(s)) return parseApp(s);
+  return parseSite(s) ?? (/^[^.:/]+$/.test(s) ? parseApp(s) : null);
+}
+
+/** True when a rule names an app, so the proxy has to find out which app each connection is from. */
+export const appsOn = (s: Split = current()): boolean => s.rules.some((r) => r.match.startsWith(APP));
 
 export interface Split {
   default: Via; // for every site no rule matches
@@ -64,17 +86,20 @@ function subnet(match: string): { list: net.BlockList; bits: number } {
 }
 
 /**
- * The rule for a connection to the site `name` (when known) at the address `ip` (when known), or
- * null for the default. The most specific wins, so the order never matters: the longest matching
- * domain, else the longest matching address prefix. Pure.
+ * The rule for a connection from the app `app` (when known) to the site `name` (when known) at the address `ip` (when
+ * known), or null for the default. An app's rule decides all its connections; else the most specific site rule wins,
+ * so the order never matters: the longest matching domain, else the longest matching address prefix. Pure.
  */
-export function ruleFor(split: Split, name?: string, ip?: string): SplitRule | null {
+export function ruleFor(split: Split, name?: string, ip?: string, app?: string): SplitRule | null {
+  const a = app?.toLowerCase();
+  const mine = a ? split.rules.find((r) => appOf(r.match)?.toLowerCase() === a) : undefined;
+  if (mine) return mine;
   let best: SplitRule | null = null;
   let len = -1;
   const host = name?.toLowerCase().replace(/\.$/, "");
   if (host && !net.isIP(host)) {
     for (const r of split.rules) {
-      if (isAddr(r.match)) continue;
+      if (isAddr(r.match) || appOf(r.match) !== null) continue;
       const d = r.match.replace(/^\*\./, "");
       if ((host === d || host.endsWith(`.${d}`)) && d.length > len) (best = r), (len = d.length);
     }
@@ -83,7 +108,7 @@ export function ruleFor(split: Split, name?: string, ip?: string): SplitRule | n
   const addr = ip ?? (host && net.isIP(host) ? host : undefined);
   if (!addr) return null;
   for (const r of split.rules) {
-    if (!isAddr(r.match)) continue;
+    if (!isAddr(r.match)) continue; // an app's match ("app:…") isn't an address either
     const s = subnet(r.match);
     if (s.bits > len && s.list.check(addr, net.isIPv4(addr) ? "ipv4" : "ipv6")) (best = r), (len = s.bits);
   }
@@ -109,10 +134,10 @@ export const hits = new Map<string, number>();
 /** Site names seen lately, the newest first: suggestions when adding a rule. */
 export const recentSites: string[] = [];
 
-/** VPN or direct for a connection, counted for the TUI. */
-export function route(name?: string, ip?: string): Via {
+/** VPN or direct for a connection (from `app`, when known), counted for the TUI. */
+export function route(name?: string, ip?: string, app?: string): Via {
   const s = current();
-  const r = ruleFor(s, name, ip);
+  const r = ruleFor(s, name, ip, app);
   const key = r?.match ?? "";
   hits.set(key, (hits.get(key) ?? 0) + 1);
   if (name && !net.isIP(name)) {
@@ -131,10 +156,12 @@ export function viaOf(name: string): Via {
   return ruleFor(s, name)?.via ?? s.default;
 }
 
-/** "3 sites direct", "only 2 sites via VPN", or null when nothing is split: for the main screen. Pure. */
+/** "3 sites direct", "1 site, 2 apps direct", "only 2 sites via VPN", or null when nothing is split: for the main screen. Pure. */
 export function splitSummary(s: Split): string | null {
-  const n = s.rules.filter((r) => r.via !== s.default).length;
-  const sites = `${n} site${n === 1 ? "" : "s"}`;
-  if (s.default === "vpn") return n ? `${sites} direct` : null;
-  return n ? `only ${sites} via VPN` : "all direct";
+  const off = s.rules.filter((r) => r.via !== s.default);
+  const apps = off.filter((r) => appOf(r.match) !== null).length;
+  const count = (n: number, what: string) => (n ? `${n} ${what}${n === 1 ? "" : "s"}` : "");
+  const sites = [count(off.length - apps, "site"), count(apps, "app")].filter(Boolean).join(", ");
+  if (s.default === "vpn") return sites ? `${sites} direct` : null;
+  return sites ? `only ${sites} via VPN` : "all direct";
 }

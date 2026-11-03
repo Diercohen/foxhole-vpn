@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
@@ -31,7 +32,12 @@ class FoxholeService : VpnService() {
     running = this
     ServiceCompat.startForeground(this, NOTE_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
     when (val action = intent?.action) {
-      VPN_ON -> intent.getIntExtra("port", 0).let { port -> intent.getIntExtra("id", 0).let { id -> thread { tunnelOn(id, port) } } }
+      VPN_ON -> {
+        val (id, port) = intent.getIntExtra("id", 0) to intent.getIntExtra("port", 0)
+        val skip = intent.getStringArrayListExtra("skip").orEmpty()
+        val only = intent.getStringArrayListExtra("only").orEmpty()
+        thread { tunnelOn(id, port, skip, only) }
+      }
       PAUSE, RESUME, DISCONNECT -> Core.send("""{"t":"$action"}""") // the notification's buttons: the core does them
     }
     if (intent?.action != VPN_ON) idle()
@@ -49,8 +55,12 @@ class FoxholeService : VpnService() {
 
   private fun show() = getSystemService(NotificationManager::class.java).notify(NOTE_ID, notification())
 
+  /**
+   * Split tunneling's apps: `skip` stay out of the VPN (direct); `only`, when any, are the only ones in it. An app
+   * that's gone since is passed over.
+   */
   @Synchronized
-  private fun tunnelOn(id: Int, port: Int) {
+  private fun tunnelOn(id: Int, port: Int, skip: List<String>, only: List<String>) {
     try {
       tunnelOff()
       val builder = Builder()
@@ -61,8 +71,11 @@ class FoxholeService : VpnService() {
         .addAddress("fc00::1", 128) // IPv6 into the tunnel too, or it would go around the VPN
         .addRoute("::", 0)
         .addDnsServer("198.18.0.2") // the tunnel's DNS (mapdns): names go to the proxy as names
-        .addDisallowedApplication(packageName) // the proxy's own connections: out to the VPN servers, or direct
         .setConfigureIntent(openApp())
+      // the proxy's own connections go out to the VPN servers, or direct: this app is never in it
+      // (none of `only` installed: everything in, everything else's way, direct, done by the proxy)
+      val allowed = (only - packageName).count { pkg -> installed { builder.addAllowedApplication(pkg) } }
+      if (allowed == 0) for (pkg in skip + packageName) installed { builder.addDisallowedApplication(pkg) }
       if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false) // as metered as the network under it (Android 10+)
       val fd = builder.establish() ?: error("Android didn't let Foxhole start its VPN")
       val config = File(filesDir, "tunnel.yml").apply { writeText(tunnelConfig(port)) }
@@ -86,6 +99,15 @@ class FoxholeService : VpnService() {
       idle()
     }
   }
+
+  /** Runs `add` for an app, false if it isn't installed (any more). */
+  private fun installed(add: () -> Unit) =
+    try {
+      add()
+      true
+    } catch (_: PackageManager.NameNotFoundException) {
+      false
+    }
 
   @Synchronized
   private fun tunnelOff() {
@@ -154,9 +176,13 @@ class FoxholeService : VpnService() {
       }
     }
 
-    /** Whole-system mode on, through the proxy on `port`; answers the core's ask `id` once it's up (or not). */
-    fun vpnOn(ctx: Context, id: Int, port: Int) =
-      ContextCompat.startForegroundService(ctx, Intent(ctx, FoxholeService::class.java).setAction(VPN_ON).putExtra("id", id).putExtra("port", port))
+    /** Whole-system mode on, through the proxy on `port` (apps: see tunnelOn); answers the core's ask `id` once it's up (or not). */
+    fun vpnOn(ctx: Context, id: Int, port: Int, skip: ArrayList<String>, only: ArrayList<String>) =
+      ContextCompat.startForegroundService(
+        ctx,
+        Intent(ctx, FoxholeService::class.java).setAction(VPN_ON).putExtra("id", id).putExtra("port", port)
+          .putStringArrayListExtra("skip", skip).putStringArrayListExtra("only", only),
+      )
 
     fun vpnOff() {
       running?.apply {

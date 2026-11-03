@@ -4,6 +4,12 @@
     <!-- hev-socks5-tunnel's AAR says Android 10, but 2.18.0's libraries load on Android 7 and later (no ELF TLS) -->
     <uses-sdk tools:overrideLibrary="hev.socks5.tunnel" />
 
+    <!-- split tunneling's apps to pick from (Phone.apps): those in the launcher, a TV's too (Android 11+ hides the rest) -->
+    <queries>
+        <intent><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent>
+        <intent><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LEANBACK_LAUNCHER" /></intent>
+    </queries>
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- connected: the notification, and the service that keeps the proxy running for other apps -->
