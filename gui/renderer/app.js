@@ -88,7 +88,7 @@ function renderHeader() {
     $("#data-v").textContent = r ? `${r.relayed.toLocaleString()} sent` : !u ? "—" : u.unlimited ? "Unlimited" : `${u.left} left`;
     $("#data-chip").title = r
       ? `${r.relayed.toLocaleString()} requests through your relay and ${r.fronted.toLocaleString()} straight to Google since Foxhole started. Google allows about 20,000 relayed a day.`
-      : !u ? "Data left this month: not known yet" : u.unlimited ? "Unlimited data" : `${u.left} of ${u.max} left this month${u.reset ? ` · resets ${u.reset}` : ""}`;
+      : dataLeft(u);
     $("#data-ring").style.strokeDashoffset = String(CIRCUMFERENCE * (1 - (r ? Math.max(0, 1 - r.relayed / 20000) : !u ? 0 : u.unlimited ? 1 : u.fraction)));
     // The titlebar's Update button: a click downloads the new version (the button fills as it goes), installs it, and
     // asks to restart. Where Foxhole can't update itself (updater.js) it opens the download page instead.
@@ -251,6 +251,7 @@ let toastTimer = 0;
 function renderNotice() {
   section("notice", [S.notice?.id], () => {
     if (!S.notice) return;
+    $("#notice-title").textContent = S.notice.title;
     $("#notice-text").textContent = S.notice.text;
     $("#notice-modal").classList.add("on");
   });
@@ -398,6 +399,13 @@ function renderTrust() {
 /** Data left, short: "12.3 GB left", "Unlimited". */
 const left = (u) => (!u ? "" : u.unlimited ? "Unlimited" : `${u.left} left`);
 
+/** Data left, in full: the data chip's and the accounts' rings' tooltip. */
+const dataLeft = (u) => (!u ? "Data left this month: not known yet" : u.unlimited ? "Unlimited data" : `${u.left} of ${u.max} left this month${u.reset ? ` · resets ${u.reset}` : ""}`);
+
+/** An account's data left as a ring, as the top bar's (#data-ring): where it's known. */
+const gauge = (u) => !u ? "" : `<svg class="gauge" viewBox="0 0 36 36" role="img" aria-label="${esc(dataLeft(u))}"><title>${esc(dataLeft(u))}</title><circle class="track" cx="18" cy="18" r="15"/>
+  <circle class="bar" cx="18" cy="18" r="15" transform="rotate(-90 18 18)" style="stroke-dashoffset:${CIRCUMFERENCE * (1 - (u.unlimited ? 1 : u.fraction))}"/></svg>`;
+
 /** An account's row: tapped, it's the one in use (data-use); its button signs it out of Foxhole. */
 function accountRow(a, { remove = true } = {}) {
   const what = [a.current ? "In use" : "", a.error ?? left(a.usage), a.firefox ? "Firefox's sign-in" : ""].filter(Boolean).join(" · ");
@@ -405,6 +413,7 @@ function accountRow(a, { remove = true } = {}) {
   return `<div class="account-line acct-row${a.current ? " current" : ""}" data-use="${esc(a.id)}">
     <span class="avatar big">${esc((a.email || "?")[0].toUpperCase())}</span>
     <div class="grow"><b>${esc(a.email || (a.firefox ? "Firefox's account" : "Mozilla account"))}</b><span>${esc(what)}</span></div>
+    ${gauge(a.usage)}
     ${remove ? `<button class="icon-btn" type="button" data-logout="${esc(a.id)}" title="${title}" aria-label="${title}">${icon("logout")}</button>` : ""}
   </div>`;
 }

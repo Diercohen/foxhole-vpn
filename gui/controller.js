@@ -291,6 +291,7 @@ export class Controller extends EventEmitter {
     email = typeof email === "string" ? email : "";
     // already on the list (and its sign-in hasn't ended: then this one renews it): said so, not added twice
     const twin = this.#accounts.own.find((x) => x.uid === uid || sameEmail(x.email, email));
+    if (twin?.sessionToken === sessionToken) return; // the same sign-in handed over again (the phone's page: at login, then when it's done)
     const ended = (id) => (this.#auth.stage === "expired" && this.#auth.id === id) || this.#others.get(id)?.error === "signed out";
     if ((twin && !ended(twin.uid)) || (!twin && this.#accounts.firefox && sameEmail(email, findAccount()?.email))) {
       void signOut(sessionToken); // the new session isn't kept
@@ -298,6 +299,7 @@ export class Controller extends EventEmitter {
     }
     this.#saveAccounts(withOwn(this.#accounts, { uid, email, sessionToken }));
     this.#others.delete(uid);
+    this.#alert(`You're signed in with ${email || "your account"}, and it's the account in use now.`, "Signed in");
     void this.#resignIn();
   }
 
@@ -904,8 +906,8 @@ export class Controller extends EventEmitter {
     this.#receiver?.close();
   }
 
-  #alert(text) {
-    this.#notice = { text, id: (this.#notice?.id ?? 0) + 1 };
+  #alert(text, title = "Already signed in") {
+    this.#notice = { title, text, id: (this.#notice?.id ?? 0) + 1 };
     this.#changed();
   }
 

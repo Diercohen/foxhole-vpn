@@ -12,9 +12,14 @@ const c = new Controller({ copy: () => {}, updates: { state: () => ({}), on() {}
 const tok = (ch) => ch.repeat(64);
 
 c.signedIn({ uid: "u1", email: "Me@Example.com", sessionToken: tok("a") });
-assert.equal(c.state().notice, null);
+assert.equal(c.state().notice.title, "Signed in");
+const id = c.state().notice.id;
+c.signedIn({ uid: "u1", email: "Me@Example.com", sessionToken: tok("a") }); // the same sign-in handed over again (the phone's page)
+assert.equal(c.state().notice.id, id, "no alert for it");
+assert.equal(loadAccounts().own[0]?.sessionToken, tok("a"), "its session kept");
 c.signedIn({ uid: "u1", email: "me@example.com", sessionToken: tok("b") }); // the same account (Mozilla's emails ignore case)
 assert.equal(c.state().accounts.length, 1, "not added twice");
+assert.equal(c.state().notice.title, "Already signed in");
 assert.match(c.state().notice.text, /already signed in with me@example.com/);
 assert.equal(loadAccounts().own[0].sessionToken, tok("a"), "the first session kept");
 c.signedIn({ uid: "u2", email: "two@example.com", sessionToken: tok("c") });

@@ -162,9 +162,9 @@ body.mac .titlebar { padding-left: 96px; }
 .chip.data { padding-left: 4px; cursor: default; }
 .chip.data:hover { transform: none; }
 .chip .gauge { width: 32px; height: 32px; }
-.chip .gauge circle { fill: none; stroke-width: 3.4; }
-.chip .gauge .track { stroke: rgba(255, 255, 255, 0.08); }
-.chip .gauge .bar { stroke: url(#g-ring); stroke-linecap: round; stroke-dasharray: 94.25; stroke-dashoffset: 94.25;
+.gauge circle { fill: none; stroke-width: 3.4; }
+.gauge .track { stroke: rgba(255, 255, 255, 0.08); }
+.gauge .bar { stroke: url(#g-ring); stroke-linecap: round; stroke-dasharray: 94.25; stroke-dashoffset: 94.25;
   transition: stroke-dashoffset 1.4s var(--out); filter: drop-shadow(0 0 4px rgba(46, 242, 176, 0.6)); }
 .chip .txt { display: flex; flex-direction: column; line-height: 1.15; }
 .chip .k { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); }
@@ -575,6 +575,7 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .acct-row .grow { flex: 1; min-width: 0; }
 .acct-row b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-row .icon-btn { height: 36px; width: 36px; }
+.acct-row .gauge { width: 28px; height: 28px; flex: none; align-self: center; margin: 0 4px; overflow: visible; }
 /* The ways to sign in (choices()): Foxhole's own first */
 .choices { display: flex; flex-direction: column; gap: 10px; width: 100%; }
 .choice { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border: 0; border-radius: 16px; text-align: left; color: var(--ink); font: inherit; cursor: pointer;
