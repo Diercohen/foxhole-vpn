@@ -6,7 +6,7 @@ import { fetchServerList } from "./dist/serverlist.js";
 import { Connection, RELAY_CODE } from "./dist/connection.js";
 import { FirefoxAuth, StaticAuth } from "./dist/auth.js";
 import { FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox, saveAccounts, signOut, withFirefox, withOwn, without } from "./dist/accounts.js";
-import { fetchUsage } from "./dist/guardian.js";
+import { fetchEntitlement, fetchUsage } from "./dist/guardian.js";
 import { GuardianError, GuardianBlocked, useRelay } from "./dist/guardian.js";
 import { loadRelay, relayUrl } from "./dist/httprelay.js";
 import { STEPS, KEY_PLACEHOLDER, relayTemplate, highlightJs, deploymentId } from "./dist/relaysetup.js";
@@ -80,6 +80,11 @@ export class Controller extends EventEmitter {
   #accounts = loadAccounts(); // accounts.js: the list, and the one in use
   #gen = 0; // the account choice's: a change ends the sign-in's wait, which starts over with the new one
   #signing = null; // the sign-in under way
+  #tokenSource = null; // the account in use's token source
+  #entitled = null; // whether the account in use may use the VPN (null: not known yet)
+  #switchTo = null; // an account picked (useAccount), until it's signed in with
+  #switched = 0; // counts the switches done: the window closes Settings on each
+  #unentitledAsk = 0; // counts the times it's found not to: each shows the window's how-to again
   #firefoxEmail = null; // Firefox's sign-in's, once read (peekFirefox: where reading it asks nothing)
   #others = new Map(); // an account's id → { usage, error }: the data left of those not in use (refreshAccounts)
   #openSignIn; // opens Foxhole's own Mozilla sign-in: the desktop's window (gui/main.js), the phone's page
@@ -127,7 +132,7 @@ export class Controller extends EventEmitter {
     await list;
     // Connects at once to the last country used; a first run waits for a pick.
     if (this.#rows().some((c) => c.code === loadLastCountry())) void this.connect(loadLastCountry()).then(() => global && this.#active && this.toggleGlobal());
-    setInterval(() => this.#refreshUsage(), 3 * 60_000).unref();
+    setInterval(() => (this.#refreshUsage(), this.#entitled === false && this.#checkEntitled(false)), 3 * 60_000).unref();
   }
 
   /** Signs in (again) with the account in use, ending a sign-in still waiting for the one before. */
@@ -141,6 +146,7 @@ export class Controller extends EventEmitter {
     for (;;) {
       const gen = this.#gen;
       this.#auth = { stage: "checking" };
+      this.#entitled = null;
       this.#changed();
       const auth = await this.#ensureAuth(gen);
       if (gen !== this.#gen) continue; // another account picked meanwhile
@@ -148,7 +154,14 @@ export class Controller extends EventEmitter {
       else this.#conn = new Connection(auth);
       this.#email = this.#currentEmail();
       this.#auth = { stage: "ready" };
+      this.#tokenSource = auth;
+      if (this.#switchTo === this.#accounts.current) {
+        this.#switchTo = null;
+        this.#switched++;
+        this.#say("ok", `switched to ${this.#email ?? "Firefox's account"}`);
+      }
       this.#refreshUsage();
+      void this.#checkEntitled();
       this.#changed();
       return;
     }
@@ -178,6 +191,7 @@ export class Controller extends EventEmitter {
       } catch (err) {
         const email = this.#currentEmail();
         // signed out elsewhere, or expired: signing in again brings it back (or another account)
+        this.#switchTo = null; // it didn't take: no "switched" when it's signed in to again
         if (err.errno === 110) this.#auth = { stage: "expired", email, id: a.current };
         else this.#auth = { stage: "offline", email, error: `Couldn't get the VPN's token: ${err.message}` }; // tried again in a while
         this.#changed();
@@ -275,6 +289,34 @@ export class Controller extends EventEmitter {
     }
   }
 
+  /**
+   * Whether the account in use may use the VPN: Mozilla answers 403 until it's turned on once, in Firefox signed in to
+   * it (the VPN button in the toolbar, then Get started). Not: the window shows how (`tell`: again, if it's put away).
+   */
+  async #checkEntitled(tell = true) {
+    const auth = this.#tokenSource, gen = this.#gen;
+    let ok;
+    try {
+      ok = !!(await fetchEntitlement(await auth.getAccessToken(AbortSignal.timeout(15_000)), AbortSignal.timeout(15_000)));
+    } catch (err) {
+      if (!(err instanceof GuardianError && err.status === 403)) return; // offline, blocked: not known
+      ok = false;
+    }
+    if (gen === this.#gen) this.#setEntitled(ok, tell);
+  }
+
+  #setEntitled(ok, tell) {
+    if (!ok && tell) this.#unentitledAsk++;
+    this.#entitled = ok;
+    this.#changed();
+  }
+
+  /** The how-to's Check again: once it's turned on in Firefox, the window goes back to its colors. */
+  async checkEntitled() {
+    await this.#checkEntitled(false);
+    this.#say(this.#entitled === false ? "error" : "ok", this.#entitled === false ? "the VPN isn't turned on for this account yet" : this.#entitled ? "the VPN is turned on for this account" : "couldn't check: try again in a moment");
+  }
+
   /** Another account: "mozilla", Foxhole's own sign-in (it comes back by signedIn()); "firefox", Firefox's sign-in. */
   addAccount(how) {
     if (how === "mozilla") return void this.#openSignIn?.();
@@ -303,10 +345,13 @@ export class Controller extends EventEmitter {
     void this.#resignIn();
   }
 
-  /** Uses another account on the list, from now on (the next start too). The proxy carries on through it. */
-  useAccount(id) {
+  /** Uses another account on the list, from now on (the next start too); connected, it disconnects first. */
+  async useAccount(id) {
     if (id === this.#accounts.current || !this.#ids().includes(id)) return;
+    if (this.#busy) return this.#say("warn", "wait for it to connect (or disconnect), then switch");
+    await this.disconnect();
     this.#saveAccounts({ ...this.#accounts, current: id });
+    this.#switchTo = id;
     void this.#resignIn();
   }
 
@@ -466,6 +511,9 @@ export class Controller extends EventEmitter {
       else if (err instanceof GuardianError && err.status === 401) {
         forgetToken(); // so the next start asks for a new one
         this.#say("error", "token rejected (expired) — quit and open Foxhole again to get a new one");
+      } else if (err instanceof GuardianError && err.status === 403) {
+        this.#setEntitled(false, true);
+        this.#say("error", "this account hasn't turned on Firefox's VPN yet");
       } else {
         this.#saysBlocked(err);
         // fetch's own message is just "fetch failed"; the network reason is in its cause
@@ -952,6 +1000,9 @@ export class Controller extends EventEmitter {
       firefoxEmail: this.#firefoxEmail,
       low: this.#low(),
       notice: this.#notice,
+      entitled: this.#entitled,
+      unentitledAsk: this.#unentitledAsk,
+      switched: this.#switched,
       net: this.#net ?? null,
       netChecking: this.#net === undefined,
       ip: this.#ip ?? null,

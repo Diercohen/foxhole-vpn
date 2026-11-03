@@ -55,7 +55,7 @@ const ACTIONS = new Set([
   "state", "power", "connect", "disconnect", "toggleGlobal",
   "setShare", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "setSplitDefault", "addRule", "toggleRule", "removeRule",
   "logs", "copy", "copyLogs", "reloadList",
-  "addAccount", "useAccount", "removeAccount", "refreshAccounts", "dismissLow", "retrySignIn",
+  "addAccount", "useAccount", "removeAccount", "refreshAccounts", "dismissLow", "retrySignIn", "checkEntitled",
   "trustCa", "untrustCa", "dismissTrust",
 ]);
 

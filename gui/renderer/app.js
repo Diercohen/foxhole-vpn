@@ -65,11 +65,13 @@ function render() {
   renderList();
   renderToast(ph);
   renderNotice();
+  renderEntitled();
   renderSplit();
   renderSettings();
   renderPassword();
   renderTrust();
   renderAccounts();
+  renderSwitched();
   renderOnboard();
   $("#restoring").classList.toggle("on", S.restoring);
 }
@@ -139,6 +141,7 @@ function renderHero(ph) {
   else if (ph === "on") [title, sub, label] = ["Connected", `${where} · apps set to use the proxy`, "Disconnect"];
   // paused from Android's notification (mobile/node/main.mjs): the orb resumes, whole-system mode too
   else if (S.paused) [title, sub, label] = ["Paused", `Tap to resume · ${where}${S.paused.global ? " · whole system" : ""}`, "Resume"];
+  else if (S.entitled === false) [title, sub, label] = ["VPN not turned on", "Turn it on in Firefox, for this account", "Connect"];
   else [title, sub, label] = ["Not connected", c ? `Tap to connect · ${where}` : "Pick a location to connect", "Connect"];
   const t = $("#status-title");
   if (t.textContent !== title) {
@@ -254,6 +257,17 @@ function renderNotice() {
     $("#notice-title").textContent = S.notice.title;
     $("#notice-text").textContent = S.notice.text;
     $("#notice-modal").classList.add("on");
+  });
+}
+
+/** The account in use hasn't turned on Firefox's VPN: everything in dark red, the fox sad (fox3d.js), and how to turn it on. */
+function renderEntitled() {
+  const off = S.entitled === false;
+  if (off) document.body.dataset.unentitled = "";
+  else delete document.body.dataset.unentitled;
+  section("unentitled", [off, S.unentitledAsk], () => {
+    $("#unentitled-email").textContent = S.email || "This account";
+    $("#unentitled-modal").classList.toggle("on", off);
   });
 }
 
@@ -443,6 +457,11 @@ function askLogout(id) {
   $("#logout-label").textContent = a.firefox ? "Stop using it" : "Sign out";
   $("#logout-ok").dataset.arg = id;
   $("#logout-modal").classList.add("on");
+}
+
+/** Switched to another account (controller.js useAccount, signed in with it): Settings closes, the toast says so. */
+function renderSwitched() {
+  section("switched", [S.switched], () => S.switched && openSheet === "settings" && closeSheet());
 }
 
 let lowShown = ""; // the low-data warning shown for this account and amount: once, until it changes
@@ -804,6 +823,12 @@ document.addEventListener("click", async (e) => {
     case "add-later": return $("#add-modal").classList.remove("on");
     case "logout-cancel": return $("#logout-modal").classList.remove("on");
     case "notice-ok": return $("#notice-modal").classList.remove("on");
+    case "unentitled-close": return $("#unentitled-modal").classList.remove("on");
+    case "unentitled-check":
+      t.disabled = true;
+      await act("checkEntitled");
+      t.disabled = false;
+      return;
     case "low-later":
       $("#low-modal").classList.remove("on");
       return act("dismissLow");
@@ -948,6 +973,7 @@ document.addEventListener("keydown", (e) => {
     if ($("#relay-modal").classList.contains("on")) return $("#relay-modal").classList.remove("on");
     if ($("#manual-modal").classList.contains("on")) return $("#manual-modal").classList.remove("on");
     if ($("#notice-modal").classList.contains("on")) return $("#notice-modal").classList.remove("on");
+    if ($("#unentitled-modal").classList.contains("on")) return $("#unentitled-modal").classList.remove("on");
     if ($("#logout-modal").classList.contains("on")) return $("#logout-modal").classList.remove("on");
     if ($("#add-modal").classList.contains("on")) return $("#add-modal").classList.remove("on");
     if ($("#low-modal").classList.contains("on")) return $("#low-modal").classList.remove("on");

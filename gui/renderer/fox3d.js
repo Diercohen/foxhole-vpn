@@ -1,6 +1,7 @@
 // The hero's fox: the app icon's low-poly fox head in 3D (WebGL), lit by the connection's colors (--a1, --a2) and
 // in a mood for each phase (body[data-phase]): asleep when off, searching while busy, awake and watching the pointer
-// when connected, its eyes glowing in a ring of stars in whole-system mode. Without WebGL the orb keeps its power icon.
+// when connected, its eyes glowing in a ring of stars in whole-system mode; sad, in tears, when the account hasn't
+// turned on Firefox's VPN (body[data-unentitled]). Without WebGL the orb keeps its power icon.
 // Not on Android, nor on iOS 16 and older (.still, app.js), where WebGL in WebKit's GPU process stalls the page's painting for good about a second in.
 (() => {
   if (document.body.classList.contains("still") || window.foxhole?.platform === "android") return;
@@ -28,6 +29,8 @@
   const EYE = [[-0.49, 0.15, 0.33], [-0.21, 0.03, 0.51], [-0.43, -0.03, 0.37]];
   const LID = [-0.36, 0.085, 0.43];
   const GLINT = [-0.322, 0.04, 0.455];
+  // sad: the slit tipped the other way, its inner corner raised and its outer one drooping
+  const EYE_SAD = [[-0.5, 0.0, 0.32], [-0.2, 0.25, 0.52], [-0.41, 0.03, 0.38]];
 
   const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
   const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
@@ -50,16 +53,16 @@
   const tint = (kind, y) => (kind === "d" ? DARK : kind === "c" ? ramp(CREAM, y) : kind === "l" ? mix(ramp(FUR, y), [1, 1, 1], 0.3) : ramp(FUR, y));
 
   // A part: triangles { p: [a, b, c], shut?: [a, b, c], color, kind, out? } turned to face away from `center` (or
-  // toward `out`), as one interleaved buffer: position, shut position (the eyes), flat normal, color, kind (0 lit, 1 eye, 2 glint).
-  const STRIDE = 13;
+  // toward `out`), as one interleaved buffer: position, shut position and sad one (the eyes), flat normal, color, kind (0 lit, 1 eye, 2 glint).
+  const STRIDE = 16;
   function part(list, center) {
     const data = [];
-    for (const { p, shut = p, color, kind = 0, out } of list) {
-      let [a, b, c] = p, [sa, sb, sc] = shut;
+    for (const { p, shut = p, sad = p, color, kind = 0, out } of list) {
+      let [a, b, c] = p, [sa, sb, sc] = shut, [da, db, dc] = sad;
       let n = unit(cross(sub(b, a), sub(c, a)));
       const mid = [0, 1, 2].map((i) => (a[i] + b[i] + c[i]) / 3);
-      if (dot(n, out ?? sub(mid, center)) < 0) ([b, c, sb, sc] = [c, b, sc, sb]), (n = n.map((v) => -v)); // counter-clockwise from outside
-      for (const [v, s] of [[a, sa], [b, sb], [c, sc]]) data.push(...v, ...s, ...n, ...color, kind);
+      if (dot(n, out ?? sub(mid, center)) < 0) ([b, c, sb, sc, db, dc] = [c, b, sc, sb, dc, db]), (n = n.map((v) => -v)); // counter-clockwise from outside
+      for (const [v, s, d] of [[a, sa, da], [b, sb, db], [c, sc, dc]]) data.push(...v, ...s, ...d, ...n, ...color, kind);
     }
     return { data: new Float32Array(data), count: data.length / STRIDE };
   }
@@ -91,9 +94,9 @@
     const list = [];
     for (const at of [(v) => v, flip]) {
       const [a, b, c] = EYE.map(at), lid = at(LID), g = at(GLINT);
-      list.push({ p: [a, b, c], shut: [a, b, lid], color: DARK, kind: 1 });
+      list.push({ p: [a, b, c], shut: [a, b, lid], sad: EYE_SAD.map(at), color: DARK, kind: 1 });
       const glint = [[-0.032, 0.012, 0], [0.02, 0.018, 0], [-0.004, -0.026, 0]].map((d) => add(g, at(d)));
-      list.push({ p: glint, shut: [g, g, g], color: [1, 1, 1], kind: 2 });
+      list.push({ p: glint, shut: [g, g, g], sad: glint.map((v) => add(v, [0, 0.025, 0.004])), color: [1, 1, 1], kind: 2 });
     }
     return part(list, [0, 0, -0.3]);
   }
@@ -104,11 +107,11 @@
 
   // ── WebGL ─────────────────────────────────────────────────────────────────────────────────────────────────
   const MESH_VS = `
-    attribute vec3 aPos, aShut, aNormal, aColor; attribute float aKind;
-    uniform mat4 uModel, uView; uniform mediump float uOpen; // mediump: the fragment shader's precision, as it uses it too
+    attribute vec3 aPos, aShut, aSad, aNormal, aColor; attribute float aKind;
+    uniform mat4 uModel, uView; uniform mediump float uOpen, uRed; // mediump: the fragment shader's precision, as it uses it too
     varying vec3 vNormal, vColor, vWorld; varying float vKind;
     void main() {
-      vec4 w = uModel * vec4(mix(aShut, aPos, uOpen), 1.0);
+      vec4 w = uModel * vec4(mix(aShut, mix(aPos, aSad, uRed), uOpen), 1.0);
       vWorld = w.xyz; vNormal = (uModel * vec4(aNormal, 0.0)).xyz; vColor = aColor; vKind = aKind;
       gl_Position = uView * w;
     }`;
@@ -118,7 +121,7 @@
     precision mediump float;
     varying vec3 vNormal, vColor, vWorld; varying float vKind;
     uniform vec3 uRim, uFill, uGlow;
-    uniform float uSat, uLight, uRimAmt, uGlowAmt, uScan, uScanY, uOpen;
+    uniform float uSat, uLight, uRimAmt, uGlowAmt, uScan, uScanY, uOpen, uRed;
     void main() {
       vec3 n = normalize(vNormal), v = normalize(vec3(0.0, 0.0, 7.0) - vWorld);
       vec3 key = normalize(vec3(-0.55, 0.8, 0.9)), fill = normalize(vec3(0.9, -0.15, 0.5));
@@ -126,6 +129,7 @@
       float spec = pow(max(dot(n, normalize(key + v)), 0.0), 36.0);
       float rim = pow(1.0 - max(dot(n, v), 0.0), 2.2);
       vec3 base = mix(vec3(dot(vColor, vec3(0.3, 0.59, 0.11))), vColor, uSat);
+      base = mix(base, dot(base, vec3(0.5, 0.35, 0.15)) * vec3(0.78, 0.1, 0.14), uRed); // sad: its fur gone dark red
       vec3 c = base * (0.3 + 0.8 * d1 * vec3(1.0, 0.95, 0.88) + 0.45 * d2 * uFill) * uLight;
       c += spec * 0.22 * uLight + rim * uRim * uRimAmt;
       c += uRim * uScan * smoothstep(0.22, 0.0, abs(vWorld.y - uScanY)) * 0.55;
@@ -202,12 +206,18 @@
 
   // ── Moods: where each phase takes the fox; what's drawn eases toward it ───────────────────────────────────
   const MOODS = {
-    off: { pitch: -0.34, roll: 0.13, ear: -0.55, open: 0, sat: 0.14, light: 0.72, rim: 0.55, glow: 0, scan: 0, search: 0, watch: 0, gather: 0, drift: 0, stars: 0, breathe: 1, lift: 0.06 },
-    busy: { pitch: 0.03, roll: 0, ear: 0.35, open: 1, sat: 1, light: 1, rim: 0.9, glow: 0.15, scan: 1, search: 1, watch: 0.2, gather: 1, drift: 0, stars: 0, breathe: 0.3, lift: 0.02 },
-    on: { pitch: 0, roll: 0, ear: 0.12, open: 1, sat: 1, light: 1, rim: 0.8, glow: 0, scan: 0, search: 0, watch: 1, gather: 0, drift: 1, stars: 0, breathe: 0.5, lift: 0 },
-    global: { pitch: 0.07, roll: 0, ear: 0.2, open: 1, sat: 1.08, light: 1.06, rim: 1.15, glow: 1, scan: 0, search: 0, watch: 1, gather: 0, drift: 0, stars: 1, breathe: 0.5, lift: 0.03 },
+    off: { pitch: -0.34, roll: 0.13, ear: -0.55, open: 0, sat: 0.14, light: 0.72, rim: 0.55, glow: 0, scan: 0, search: 0, watch: 0, gather: 0, drift: 0, stars: 0, breathe: 1, lift: 0.06, tears: 0 },
+    busy: { pitch: 0.03, roll: 0, ear: 0.35, open: 1, sat: 1, light: 1, rim: 0.9, glow: 0.15, scan: 1, search: 1, watch: 0.2, gather: 1, drift: 0, stars: 0, breathe: 0.3, lift: 0.02, tears: 0 },
+    on: { pitch: 0, roll: 0, ear: 0.12, open: 1, sat: 1, light: 1, rim: 0.8, glow: 0, scan: 0, search: 0, watch: 1, gather: 0, drift: 1, stars: 0, breathe: 0.5, lift: 0, tears: 0 },
+    global: { pitch: 0.07, roll: 0, ear: 0.2, open: 1, sat: 1.08, light: 1.06, rim: 1.15, glow: 1, scan: 0, search: 0, watch: 1, gather: 0, drift: 0, stars: 1, breathe: 0.5, lift: 0.03, tears: 0 },
+    // bowed, its ears flat back, its eyes half shut, sighing, in tears
+    sad: { pitch: -0.6, roll: -0.12, ear: -1.6, open: 1, sat: 0.85, light: 0.8, rim: 0.85, glow: 0, scan: 0, search: 0, watch: 0.12, gather: 0, drift: 0, stars: 0, breathe: 1.8, lift: -0.05, tears: 1 },
   };
-  const phaseNow = () => (MOODS[document.body.dataset.phase] ? document.body.dataset.phase : "off");
+  const phaseNow = () => {
+    const p = document.body.dataset.phase;
+    if (p === "off" && "unentitled" in document.body.dataset) return "sad";
+    return MOODS[p] ? p : "off";
+  };
   let phase = phaseNow();
   const cur = { ...MOODS[phase] };
 
@@ -274,11 +284,12 @@
     gl.uniform1f(m.at.uLight, cur.light);
     gl.uniform1f(m.at.uRimAmt, cur.rim * (1 + 0.15 * cur.glow * Math.sin(t * 2.4))); // in whole-system mode its light breathes
     gl.uniform1f(m.at.uGlowAmt, cur.glow);
+    gl.uniform1f(m.at.uRed, cur.tears);
     gl.uniform1f(m.at.uScan, cur.scan);
     gl.uniform1f(m.at.uScanY, ((t * 0.9) % 1.6) * 2.4 - 1.4);
     for (const [name, model, o] of [["head", head, 1], ["earL", earM(MODEL.earL, ev.twitchEar === 0 ? twitch : 0), 1], ["earR", earM(MODEL.earR, ev.twitchEar === 1 ? twitch : 0), 1], ["eyes", head, open]]) {
       gl.bindBuffer(gl.ARRAY_BUFFER, buffers[name]);
-      for (const [attr, size, off] of [["aPos", 3, 0], ["aShut", 3, 3], ["aNormal", 3, 6], ["aColor", 3, 9], ["aKind", 1, 12]]) {
+      for (const [attr, size, off] of [["aPos", 3, 0], ["aShut", 3, 3], ["aSad", 3, 6], ["aNormal", 3, 9], ["aColor", 3, 12], ["aKind", 1, 15]]) {
         gl.enableVertexAttribArray(m.at[attr]);
         gl.vertexAttribPointer(m.at[attr], size, gl.FLOAT, false, STRIDE * 4, off * 4);
       }
@@ -286,7 +297,7 @@
       gl.uniform1f(m.at.uOpen, o);
       gl.drawArrays(gl.TRIANGLES, 0, MODEL[name].count);
     }
-    for (const attr of ["aPos", "aShut", "aNormal", "aColor", "aKind"]) gl.disableVertexAttribArray(m.at[attr]);
+    for (const attr of ["aPos", "aShut", "aSad", "aNormal", "aColor", "aKind"]) gl.disableVertexAttribArray(m.at[attr]);
 
     // points of light: gathering in while busy, drifting up while connected, orbiting in whole-system mode
     const pts = [];
@@ -306,6 +317,12 @@
       put(add(q, [0, 0.12, 0]), i % 3 === 0 ? [1, 1, 1] : i % 3 === 1 ? a1 : a2, (0.35 + 0.65 * tw) * cur.stars, 0.09 + 0.07 * tw, tw * tw);
     }
     for (const e of EYE_MID) put(apply(head, e), mix(a2, [1, 1, 1], 0.4), cur.glow * open * 0.85, 0.55);
+    // tears: from each eye's lower corner, welling up, then running down and falling
+    for (let i = 0; i < 6 && cur.tears > 0.01; i++) {
+      const side = i % 2, p = (t * 0.32 + hash(i + 70)) % 1, from = apply(head, side ? flip(EYE[2]) : EYE[2]);
+      const fall = Math.max(0, p - 0.25) / 0.75;
+      put([from[0] + (side ? 1 : -1) * fall * 0.08, from[1] - 0.02 - fall * fall * 1.6, from[2] + 0.06], [0.7, 0.85, 1], cur.tears * Math.min(1, p * 6) * (1 - fall), 0.09 + 0.06 * Math.min(1, p * 4), 0.3);
+    }
     const b = (t - ev.burst) / 1.1;
     for (let i = 0; i < 26 && b >= 0 && b < 1; i++) {
       const a = (i / 26) * Math.PI * 2, r = 0.7 + b * 1.4;
@@ -379,7 +396,7 @@
   still.addEventListener("change", wake);
   window.addEventListener("focus", () => ((focused = true), wake()));
   window.addEventListener("blur", () => (focused = false));
-  new MutationObserver(wake).observe(document.body, { attributes: true, attributeFilter: ["data-phase"] });
+  new MutationObserver(wake).observe(document.body, { attributes: true, attributeFilter: ["data-phase", "data-unentitled"] });
   canvas.addEventListener("webglcontextlost", (e) => (e.preventDefault(), cancelAnimationFrame(raf), (raf = 0), wrap.classList.remove("has-fox")));
   canvas.addEventListener("webglcontextrestored", () => (init(), wrap.classList.add("has-fox"), wake()));
   wake();

@@ -285,19 +285,22 @@ export class Tui {
     }
   }
 
-  /** Uses another account from now on (the next start too): the proxy goes on through it. */
-  #use(id: string): void {
+  /** Uses another account from now on (the next start too); connected, it disconnects first. */
+  async #use(id: string): Promise<void> {
     const auth = authFor(this.#accounts, id);
     if (!auth) {
       this.#acctNote = red(id === FIREFOX ? "Firefox isn't signed in (or can't be read): sign in to Firefox, then try again." : "That account isn't there anymore.");
       return;
     }
+    if (this.#busy) return void (this.#acctNote = yellow("wait for it to connect (or disconnect), then switch"));
+    await this.#disconnect();
     this.#saveAccounts({ ...this.#accounts, current: id });
     this.#conn.setAuth(auth);
     this.#lowOpen = false;
     this.#acctNote = "";
     this.#message = green(`using ${this.#emailOf(id)}`);
     this.#refreshUsage();
+    this.#render();
   }
 
   /** Signs an account out of foxhole (Firefox's: foxhole stops reading it); the last one gone, cli.ts asks how to sign in. */
@@ -312,7 +315,7 @@ export class Tui {
     if (id !== was) return;
     const next = this.#accounts.current;
     if (!next || !authFor(this.#accounts, next)) return void this.#quit("logout");
-    this.#use(next);
+    void this.#use(next);
   }
 
   /** The data left of the accounts not in use, as the popup opens. */
@@ -405,7 +408,7 @@ export class Tui {
           const twin = this.#accounts.own.find((x) => !!ff && x.email.toLowerCase() === ff);
           if (twin) return void ((this.#acctNote = yellow(`You're already signed in with ${twin.email}, so it isn't added again.`)), this.#render());
           this.#saveAccounts(withFirefox(this.#accounts));
-          this.#use(FIREFOX);
+          void this.#use(FIREFOX);
           this.#acctSel = 0;
         } else if (this.#acctSel === ids.length) {
           const url = `${REPO_URL}/releases/latest`;
@@ -415,7 +418,7 @@ export class Tui {
           ].join("\n");
           return this.#render();
         }
-        else if (ids[this.#acctSel] !== this.#accounts.current) this.#use(ids[this.#acctSel]);
+        else if (ids[this.#acctSel] !== this.#accounts.current) void this.#use(ids[this.#acctSel]);
         break;
       case "x":
       case "delete":

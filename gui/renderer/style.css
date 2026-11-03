@@ -36,6 +36,21 @@ body[data-phase="global"] { --a1: #ff8a2a; --a2: #ff3d6e; }
 /* relay mode (the user's own Apps Script, not Firefox VPN): purple */
 body[data-relay][data-phase="on"] { --a1: #b76bff; --a2: #ff6bd6; --on-ink: #1a0326; }
 body[data-relay][data-phase="global"] { --a1: #d35cff; --a2: #7c5cff; }
+/* the account hasn't turned on Firefox's VPN (app.js renderEntitled): everything in dark red */
+body[data-unentitled][data-phase] { --a1: #c0182f; --a2: #7a0f1f; --on-ink: #fff;
+  --fox: #c0182f; --fox-2: #8e1024; --mint: #e0384f; --sky: #a3142a; --violet: #8e1024; --amber: #d9364a; --rose: #e0384f; --bg: #0c0507; }
+body[data-unentitled] .bg { background: radial-gradient(1100px 760px at 18% -12%, #2e0a12 0%, transparent 62%), radial-gradient(900px 700px at 112% 112%, #24070d 0%, transparent 60%), var(--bg); }
+body[data-unentitled] .b3 { background: radial-gradient(circle, #8e1024, transparent 64%); }
+body[data-unentitled] #g-ring stop { stop-color: #e0384f; }
+body[data-unentitled] .zzz { display: none; }
+body[data-unentitled][data-phase="off"] .orb {
+  background: radial-gradient(circle at 32% 24%, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.04) 28%, transparent 52%),
+    radial-gradient(circle at 50% 125%, rgba(192, 24, 47, 0.45), transparent 62%), linear-gradient(150deg, #3a1219, #12060a);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1), inset 0 -26px 46px -14px rgba(0, 0, 0, 0.6), 0 30px 70px -26px rgba(192, 24, 47, 0.55); }
+body[data-unentitled] .modal .box { background: linear-gradient(160deg, rgba(58, 18, 26, 0.92), rgba(22, 7, 11, 0.95)); }
+body[data-unentitled] :is(.tier.free, .tier.on) { color: #ff8a99; background: rgba(224, 56, 79, 0.1); box-shadow: inset 0 0 0 1px rgba(224, 56, 79, 0.28); }
+body[data-unentitled] .tip em { color: #ff8a99; }
+body[data-unentitled] .gauge .bar { filter: drop-shadow(0 0 4px rgba(224, 56, 79, 0.6)); }
 
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -609,6 +624,8 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .modal input { text-align: center; font-size: 18px; letter-spacing: 0.2em; height: 48px; }
 .modal input:placeholder-shown { font-size: 15px; letter-spacing: normal; }
 .modal .actions { display: flex; gap: 10px; margin-top: 4px; }
+.modal .howto { width: min(240px, 70%); align-self: center; border-radius: 14px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
+#unentitled-modal p b { color: var(--ink); }
 .modal .actions .btn { flex: 1; }
 /* The relay's setup: a wide modal over Settings, a step at a time */
 .wizard, .modal.backdrop { background: rgba(7, 6, 12, 0.55); opacity: 0; transition: opacity 0.35s; }
