@@ -55,7 +55,7 @@ if (ios) {
   if (!existsSync(join(native, "nodejs-mobile/bin"))) {
     const zip = join(native, "nodejs-mobile.zip");
     await fetchChecked(NODE, zip);
-    execFileSync("unzip", ["-q", "-o", zip, "nodejs-mobile/bin/*", "-d", native], { stdio: "inherit" });
+    execFileSync("unzip", ["-q", "-o", zip, "bin/*", "-d", join(native, "nodejs-mobile")], { stdio: "inherit" });
     rmSync(zip);
   }
 }
