@@ -1,5 +1,5 @@
 # A version tag (git tag v1.2.3 && git push origin v1.2.3) builds the desktop app for macOS (Apple chip and Intel),
-# Windows and Linux, and the Android app (one APK for every phone), and puts them all in a draft release. Check it,
+# Windows and Linux, and the Android app (one APK for every phone and TV), and puts them all in a draft release. Check it,
 # then Publish: that's the download for everyone, and what installed desktop apps update themselves to (gui/updater.js
 # looks for the files by the names gui/package.json gives them).
 name: Release
@@ -76,15 +76,16 @@ jobs:
           cd mobile
           npm ci
           npm run build
-          mv android/app/build/outputs/apk/release/app-universal-release.apk "$GITHUB_WORKSPACE/android-foxhole-$v.apk"
-          # the same APK, for Android TV (it finds it's on a TV when it starts)
-          cp "$GITHUB_WORKSPACE/android-foxhole-$v.apk" "$GITHUB_WORKSPACE/tv-android-$v.apk"
+          # one APK for phones and Android TV (it finds it's on a TV when it starts)
+          mv android/app/build/outputs/apk/release/app-universal-release.apk "$GITHUB_WORKSPACE/mobile-and-TV-android-$v.apk"
+          # ponytail: the same APK by its old name, which apps up to 1.0.0 update from; drop it once few run those
+          cp "$GITHUB_WORKSPACE/mobile-and-TV-android-$v.apk" "$GITHUB_WORKSPACE/android-foxhole-$v.apk"
       - uses: actions/upload-artifact@v7
         with:
           name: android
           path: |
+            mobile-and-TV-android-*.apk
             android-foxhole-*.apk
-            tv-android-*.apk
           if-no-files-found: error
 
   release:
