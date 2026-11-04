@@ -142,7 +142,7 @@ mode. Its APKs, one per ABI, land in `mobile/android/app/build/outputs/apk/relea
 signed with the keystore at `FOXHOLE_KEYSTORE` (`FOXHOLE_KEYSTORE_PASSWORD`,
 `FOXHOLE_KEY_ALIAS`), or else the debug key.
 
-Release: push a tag (`git tag v0.9.1 && git push origin v0.9.1`); GitHub builds
+Release: push a tag (`git tag v0.9.2 && git push origin v0.9.2`); GitHub builds
 the apps into a draft release.
 
 ## License
