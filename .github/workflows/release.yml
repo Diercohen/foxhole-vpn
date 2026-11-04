@@ -77,11 +77,11 @@ jobs:
           npm ci
           npm run build
           # one APK for phones and Android TV (it finds it's on a TV when it starts)
-          mv android/app/build/outputs/apk/release/app-universal-release.apk "$GITHUB_WORKSPACE/mobile-and-TV-android-$v.apk"
+          mv android/app/build/outputs/apk/release/app-universal-release.apk "$GITHUB_WORKSPACE/phone-and-TV-android-$v.apk"
       - uses: actions/upload-artifact@v7
         with:
           name: android
-          path: mobile-and-TV-android-*.apk
+          path: phone-and-TV-android-*.apk
           if-no-files-found: error
 
   release:

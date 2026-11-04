@@ -105,7 +105,7 @@ export const ASSET = {
   win: (v) => `Foxhole-${v}-setup.exe`, // x64: Windows on Arm runs it too
   appimage: (v) => `Foxhole-${v}.AppImage`, // x64
   deb: (v) => `foxhole-desktop_${v}_amd64.deb`,
-  apk: (v) => `mobile-and-TV-android-${v}.apk`, // every phone's and TV's (.github/workflows/release.yml)
+  apk: (v) => `phone-and-TV-android-${v}.apk`, // every phone's and TV's (.github/workflows/release.yml)
 };
 
 /** The versions of this kind's file in `dir`: { version, name } for each complete one (not a .part). */
