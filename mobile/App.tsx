@@ -158,9 +158,12 @@ function Main() {
 
   // the system bars' room, for the page's layout (style.css): the window runs under them
   // a TV (Platform.isTV: Android TV) gets the window for its remote, and its sign-in from another device
-  const [page] = useState(() => `${WINDOW}#top=${insets.top}&bottom=${insets.bottom}&os=${Platform.OS}${Platform.isTV ? "&tv=1" : ""}`); // from the first paint (phone.js)
+  const [page] = useState(() => `${WINDOW}#top=${insets.top}&bottom=${insets.bottom}&left=${insets.left}&right=${insets.right}&os=${Platform.OS}${Platform.isTV ? "&tv=1" : ""}`); // from the first paint (phone.js)
   const insetsJs = `document.documentElement.style.setProperty("--safe-top", "${insets.top}px");
-    document.documentElement.style.setProperty("--safe-bottom", "${keyboard ? 0 : insets.bottom}px");true;`;
+    document.documentElement.style.setProperty("--safe-bottom", "${keyboard ? 0 : insets.bottom}px");
+    document.documentElement.style.setProperty("--safe-left", "${insets.left}px");
+    document.documentElement.style.setProperty("--safe-right", "${insets.right}px");
+    window.foxholeKeyboard && window.foxholeKeyboard(${keyboard > 0});true;`;
   useEffect(() => web.current?.injectJavaScript(insetsJs), [insetsJs]);
 
   const fromWindow = (e: WebViewMessageEvent) => {
@@ -228,11 +231,15 @@ function OldWebView({ pkg, major }: { pkg: string; major: number }) {
       <StatusBar barStyle="light-content" />
       <Text style={styles.oldTitle}>Update {app}</Text>
       <Text style={styles.oldText}>
-        Foxhole's screens run in {app}, and this phone has version {major} of it: Foxhole needs {NEEDS_WEBVIEW} or later.
+        Foxhole's screens run in {app}, and this {Platform.isTV ? "TV" : "phone"} has version {major} of it: Foxhole needs {NEEDS_WEBVIEW} or later.
         Update it from Google Play or your app store, then open Foxhole again.
       </Text>
       <Pressable style={styles.oldButton} onPress={() => void Linking.openURL(`https://play.google.com/store/apps/details?id=${pkg}`)}>
         <Text style={styles.oldButtonText}>Open in Google Play</Text>
+      </Pressable>
+      {/* Foxhole can't update itself from here (its core needs the window): its releases, should a newer one need less */}
+      <Pressable style={styles.oldLink} onPress={() => void Linking.openURL(LINKS.releases).catch(() => {})}>
+        <Text style={styles.oldLinkText}>Foxhole's latest version</Text>
       </Pressable>
     </View>
   );
@@ -260,4 +267,6 @@ const styles = StyleSheet.create({
   oldText: { color: "rgba(246, 243, 251, 0.75)", fontSize: 16, lineHeight: 24 },
   oldButton: { alignSelf: "flex-start", backgroundColor: "#ff7a1a", borderRadius: 14, paddingHorizontal: 22, paddingVertical: 13 },
   oldButtonText: { color: "#fff", fontSize: 16, fontWeight: "700" },
+  oldLink: { alignSelf: "flex-start", paddingVertical: 8 },
+  oldLinkText: { color: "#ffb37a", fontSize: 15, fontWeight: "600" },
 });

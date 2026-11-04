@@ -4,7 +4,7 @@
   // the room the system's bars take, from the first paint, and the phone's OS (App.tsx passes them in the URL; the room
   // later changes by script)
   const hash = new URLSearchParams(location.hash.slice(1));
-  for (const k of ["top", "bottom"]) if (hash.has(k)) document.documentElement.style.setProperty(`--safe-${k}`, `${Number(hash.get(k))}px`);
+  for (const k of ["top", "bottom", "left", "right"]) if (hash.has(k)) document.documentElement.style.setProperty(`--safe-${k}`, `${Number(hash.get(k))}px`);
 
   const post = (m) => window.ReactNativeWebView.postMessage(JSON.stringify(m));
   const waiting = new Map(); // act id → [resolve, reject]

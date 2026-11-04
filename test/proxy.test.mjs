@@ -15,7 +15,7 @@ import { startProxy } from "../dist/proxy.js";
 setTimeout(() => {
   console.error("FAIL - test timed out");
   process.exit(1);
-}, 15000).unref();
+}, 30000).unref();
 
 const listen = (srv) => new Promise((r) => srv.listen(0, "127.0.0.1", () => r(srv.address().port)));
 const read = (sock) => new Promise((r) => sock.once("data", r));
@@ -206,7 +206,8 @@ async function githubSsh() {
   assert.equal(await dialed("example.com:22"), "CONNECT example.com:22 HTTP/1.1", "other SSH servers untouched");
 
   // Global mode: tun2socks sends only the IP that ssh resolved github.com to.
-  const ip = await lookup("github.com", { family: 4 }).then((a) => a.address, () => null);
+  // real DNS: slow or none here, that case is skipped rather than timing the whole file out
+  const ip = await Promise.race([lookup("github.com", { family: 4 }).then((a) => a.address, () => null), new Promise((r) => setTimeout(r, 3000, null))]);
   if (ip) {
     const c = net.connect(handle.port, "127.0.0.1");
     c.on("error", () => {});

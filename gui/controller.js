@@ -64,6 +64,7 @@ export class Controller extends EventEmitter {
   #proxyStale = false; // the running proxy still has the old address (changed during global mode)
   #active = null;
   #global = null;
+  #leavingGlobal = false; // whole-system mode is being taken down
   #globalCountry = null;
   #tun2socksPath = null;
   #busy = false;
@@ -232,6 +233,15 @@ export class Controller extends EventEmitter {
           await auth.getAccessToken(AbortSignal.timeout(15_000));
           return auth;
         } catch (err) {
+          // no answer (offline, a timeout): the login is fine, so try again in a while rather than the Browser Console
+          if (["TypeError", "TimeoutError", "AbortError"].includes(err.name)) {
+            const cause = err.cause?.code ?? err.cause?.message;
+            this.#auth = { stage: "offline", email: account.email, error: `Couldn't get the VPN's token: ${err.message}${cause ? ` (${cause})` : ""}` };
+            this.#changed();
+            const since = Date.now();
+            await this.#until(() => Date.now() - since > 20_000, gen);
+            continue;
+          }
           errors.push(`Couldn't get a token from your Firefox login: ${err.message}`);
         }
       }
@@ -586,7 +596,7 @@ export class Controller extends EventEmitter {
     void publicIp(proxy, 3, country === RELAY_ROW).then((ip) => {
       if (seq !== this.#netSeq) return;
       this.#ip = ip;
-      this.#ipNote = country === RELAY_ROW ? "Google's · sites can still see yours" : country ? `VPN · ${label(country)}` : "your real IP";
+      this.#ipNote = country === RELAY_ROW ? "Google's · sites can still see yours" : country ? `VPN · ${label(country)}` : "not via Foxhole";
       this.#changed();
     });
   }
@@ -791,14 +801,17 @@ export class Controller extends EventEmitter {
   async #disableGlobal() {
     if (!this.#global) return;
     this.#busy = true;
+    this.#leavingGlobal = true; // the switch stays on Whole system until the routes are really back
     this.#say("info", "restoring networking…");
+    this.#changed();
     const session = this.#global;
     this.#global = null;
-    this.#globalCountry = null;
     try {
       await session.stop();
       this.#say("info", "global off (SOCKS proxy still on)");
     } finally {
+      this.#globalCountry = null;
+      this.#leavingGlobal = false;
       this.#busy = false;
       this.#refreshNet();
     }
@@ -1172,8 +1185,8 @@ export class Controller extends EventEmitter {
       listError: this.#listError,
       selected: this.#selected,
       active: this.#active?.code ?? null,
-      global: this.#global ? (gc?.code ?? null) : null,
-      globalOn: !!this.#global,
+      global: this.#global || this.#leavingGlobal ? (gc?.code ?? null) : null,
+      globalOn: !!this.#global || this.#leavingGlobal,
       busy: this.#busy,
       connecting: this.#connecting,
       message: this.#message,

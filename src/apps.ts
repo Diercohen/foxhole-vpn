@@ -1,5 +1,5 @@
 // Split tunneling by app on a computer: which app opened a connection to the proxy, from the system's own table of
-// TCP connections and the processes holding them (macOS netstat + ps, Linux ss, Windows netstat + tasklist). In global
+// TCP connections and the processes holding them (macOS lsof + ps, Linux ss, Windows netstat + tasklist). In global
 // mode the proxy's client is tun2socks, so the app is the one whose connection goes to the same address and port.
 // Android does apps natively (its VPN leaves an app out or takes only some: FoxholeService); iOS can't tell apps apart.
 import { execFile } from "node:child_process";
@@ -28,18 +28,25 @@ export function appName(exe: string): string {
   return exe.match(/\/([^/]+)\.app\//)?.[1] ?? basename(exe.replace(/\\/g, "/")).replace(/\.exe$/i, "");
 }
 
-/** macOS `netstat -anv -p tcp` with `ps -axo pid=,comm=` (each process's executable). Pure. */
-export function parseMac(netstat: string, ps: string): TcpConn[] {
+/**
+ * macOS `lsof +c0 -nP -w -iTCP -sTCP:ESTABLISHED -Fpcn` with `ps -axo pid=,comm=` (each process's executable). Not
+ * netstat: inside Electron (macOS 27) it lists no TCP connections at all. Pure.
+ */
+export function parseLsof(lsof: string, ps: string): TcpConn[] {
   const exes = new Map<number, string>();
   for (const m of ps.matchAll(/^\s*(\d+) (.+)$/gm)) exes.set(Number(m[1]), m[2]);
-  const at = (a: string) => addr(a.slice(0, a.lastIndexOf(".")), a.slice(a.lastIndexOf(".") + 1)); // "1.2.3.4.443"
+  const at = (a: string) => addr(a.slice(0, a.lastIndexOf(":")), a.slice(a.lastIndexOf(":") + 1)); // "1.2.3.4:443", "[::1]:443"
   const out: TcpConn[] = [];
-  // proto recv send local foreign state rxbytes txbytes rhiwat shiwat process:pid (its name may have spaces)
-  for (const m of netstat.matchAll(/^tcp\S*\s+\d+\s+\d+\s+(\S+)\s+(\S+)\s+\S+\s+\d+\s+\d+\s+\d+\s+\d+\s+(.+?):(\d+)\s/gm)) {
-    if (m[2].startsWith("*")) continue; // listening
-    const pid = Number(m[4]);
-    const exe = exes.get(pid);
-    out.push({ local: at(m[1]), remote: at(m[2]), pid, app: appName(exe ?? m[3]), ...(exe ? { exe } : {}) });
+  let pid = 0;
+  let cmd = "";
+  for (const line of lsof.split("\n")) {
+    if (line[0] === "p") (pid = Number(line.slice(1))), (cmd = "");
+    else if (line[0] === "c") cmd = line.slice(1);
+    else if (line[0] === "n" && line.includes("->")) {
+      const [local, remote] = line.slice(1).split("->");
+      const exe = exes.get(pid);
+      out.push({ local: at(local), remote: at(remote), pid, app: appName(exe ?? cmd), ...(exe ? { exe } : {}) });
+    }
   }
   return out;
 }
@@ -74,7 +81,11 @@ export function parseWin(netstat: string, tasklist: string): TcpConn[] {
 const run = async (cmd: string, args: string[]) => (await exec(cmd, args, { windowsHide: true, maxBuffer: 32 << 20 })).stdout;
 
 async function readTable(): Promise<TcpConn[]> {
-  if (process.platform === "darwin") return parseMac(...(await Promise.all([run("netstat", ["-anv", "-p", "tcp"]), run("ps", ["-axo", "pid=,comm="])])));
+  if (process.platform === "darwin") {
+    // lsof exits 1 when it finds nothing: that's an empty table, not an error
+    const lsof = run("lsof", ["+c0", "-nP", "-w", "-iTCP", "-sTCP:ESTABLISHED", "-Fpcn"]).catch((e) => (e.code === 1 ? (e.stdout ?? "") : Promise.reject(e)));
+    return parseLsof(...(await Promise.all([lsof, run("ps", ["-axo", "pid=,comm="])])));
+  }
   if (process.platform === "win32") {
     const [v4, v6, tasks] = await Promise.all([run("netstat", ["-ano", "-p", "TCP"]), run("netstat", ["-ano", "-p", "TCPv6"]), run("tasklist", ["/fo", "csv", "/nh"])]);
     return parseWin(v4 + v6, tasks);

@@ -7,6 +7,7 @@ import { red, verbose } from "./ui.js";
 import { log } from "./log.js";
 import { route, splitOn, appsOn } from "./split.js";
 import { appFor } from "./apps.js";
+import { answers } from "./restore.js";
 import { nameOf, DOH_HOST } from "./dns.js";
 import { IP_HOST, TRACE_HOST } from "./netinfo.js";
 import { relayServe, fakeName, realIp, setDirectTo, setDirectDial } from "./relaymode.js";
@@ -617,12 +618,17 @@ export interface ProxyHandle {
  * Starts the local SOCKS5 + HTTP proxy. Resolves once it is listening. `login` gives the
  * username/password a client (by its address) must sign in with, or null for none.
  */
-export function startProxy(
+export async function startProxy(
   conn: Connection,
   host = "127.0.0.1",
   port = 1080,
   login: (address: string | undefined) => ProxyLogin | null = () => null,
 ): Promise<ProxyHandle> {
+  // macOS and Windows let 127.0.0.1:port be taken while another program listens on *:port, which then silently
+  // loses this computer's connections to us: refuse a port something already answers on
+  if (port && (await answers(port))) {
+    throw Object.assign(new Error(`port ${port} is already in use by another program (or another Foxhole)`), { code: "EADDRINUSE" });
+  }
   const sockets = new Set<net.Socket>();
   const server = net.createServer((socket) => {
     sockets.add(socket);

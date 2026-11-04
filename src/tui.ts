@@ -254,7 +254,7 @@ export class Tui {
     void publicIp(proxy, 3, country === RELAY_ROW).then((ip) => {
       if (seq !== this.#netSeq) return;
       this.#ip = ip;
-      this.#ipNote = country === RELAY_ROW ? "Google's · sites can still see yours" : country ? `VPN · ${flagged(country.code, countryName(country.code, country.name))}` : "your real IP";
+      this.#ipNote = country === RELAY_ROW ? "Google's · sites can still see yours" : country ? `VPN · ${flagged(country.code, countryName(country.code, country.name))}` : "not via Foxhole";
       this.#render();
     });
   }
@@ -1315,10 +1315,12 @@ export class Tui {
     const foxOn = wide ? rows - foot >= FOX_H + 9 : rows - 18 - version.length - (FOX_H + 1) >= 5;
     const tips = wide
       ? rows - foot - 3 >= (foxOn ? FOX_H + 9 : 9)
-      : foxOn ? rows - 21 - version.length - (FOX_H + 1) >= 5 : rows >= 22;
+      : rows - 21 - version.length - (foxOn ? FOX_H + 1 : 0) >= 6; // not at the cost of the list (6: its header, 5 countries)
+    // the repo's link goes too before the list gets shorter than that
+    const link = wide || rows - (tips ? 21 : 18) - version.length - (foxOn ? FOX_H + 1 : 0) >= 6;
     const room = Math.max(3, wide
       ? rows - foot - (tips ? 3 : 0) - 6 // beside the details: the window's height
-      : rows - (tips ? 21 : 18) - version.length - (foxOn ? FOX_H + 1 : 0));
+      : rows - (tips ? 21 : 18) - version.length - (foxOn ? FOX_H + 1 : 0) + (link ? 0 : 1));
     const { start, slice } = window(this.#sel, this.#countries.length, room - 1); // a line goes under the relay
     const label = (c: Country) => flagged(c.code, countryName(c.code, c.name));
     const body: (string[] | null)[] = slice.map((i) => {
@@ -1402,7 +1404,7 @@ export class Tui {
       centerIn(buttons, width),
       "",
       ...version.map((l) => centerIn(l, width)),
-      centerIn(dim(repoLink), width),
+      ...(link ? [centerIn(dim(repoLink), width)] : []),
     ];
     const popup = this.#restoring
       ? this.#restoringPopup()
@@ -1437,7 +1439,7 @@ export class Tui {
     // the fox's next frames go over this one (#animate); under a popup it waits
     this.#foxAt = foxOn && !popup ? { x: left + foxX, y: top + foxY, cols, rows } : null;
     this.#foxDrawn = foxLines;
-    const buttonsY = frame.length - version.length - 3;
+    const buttonsY = frame.length - version.length - (link ? 3 : 2);
     // as overlay() places it: centered, with a 1-cell margin; the rows follow the border and a blank line
     const setW = popup ? vw(popup[0]) : 0;
     this.#hit = {

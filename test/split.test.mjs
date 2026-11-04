@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { parseSite, parseRule, ruleFor, useSplit, route, viaOf, hits, recentSites, splitOn, splitSummary, appsOn, NO_SPLIT } from "../dist/split.js";
-import { parseMac, parseSs, parseWin, appName, appFor, desktopIcon } from "../dist/apps.js";
+import { parseLsof, parseSs, parseWin, appName, appFor, desktopIcon } from "../dist/apps.js";
 import { startProxy, sniffHost, setDirectFrom, holdDirect, onProxyWarning } from "../dist/proxy.js";
 import { questionName, answerAddrs } from "../dist/dns.js";
 import { directRoutes } from "../dist/relay.js";
@@ -88,15 +88,23 @@ assert.equal(splitSummary({ default: "direct", rules: [{ match: "app:A", via: "v
 assert.equal(appName("/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper"), "Google Chrome");
 assert.equal(appName("C:\\Program Files\\Telegram\\Telegram.exe"), "Telegram");
 assert.equal(appName("/usr/bin/curl"), "curl");
-const macNet = `Active Internet connections (including servers)
-Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)          rxbytes      txbytes  rhiwat  shiwat          process:pid    state  options
-tcp4       0      0  127.0.0.1.62868        127.0.0.1.1080         ESTABLISHED         5758         2541  131072  131768  Google Chrome He:4242  00102 00000000
-tcp4       0      0  198.18.0.1.50000       151.101.1.91.443       ESTABLISHED        22364         5580  131072  131480          firefox:66119  00102 00000000
-tcp6       0      0  ::1.50001              ::1.1080               ESTABLISHED           10           10  131072  131480              curl:7  00102 00000000
-tcp4       0      0  *.1080                 *.*                    LISTEN                 0            0  131072  131072           node:1  00102 00000000
+const macLsof = `p4242
+cGoogle Chrome Helper
+f31
+n127.0.0.1:62868->127.0.0.1:1080
+p66119
+cfirefox
+f80
+n198.18.0.1:50000->151.101.1.91:443
+p7
+ccurl
+f5
+n[::1]:50001->[::1]:1080
+f6
+n*:1080
 `;
 const macPs = "4242 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper\n66119 /Applications/Firefox.app/Contents/MacOS/firefox\n";
-assert.deepEqual(parseMac(macNet, macPs), [
+assert.deepEqual(parseLsof(macLsof, macPs), [
   { local: "127.0.0.1:62868", remote: "127.0.0.1:1080", pid: 4242, app: "Google Chrome", exe: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper" },
   { local: "198.18.0.1:50000", remote: "151.101.1.91:443", pid: 66119, app: "Firefox", exe: "/Applications/Firefox.app/Contents/MacOS/firefox" },
   { local: "::1:50001", remote: "::1:1080", pid: 7, app: "curl" },

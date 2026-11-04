@@ -15,6 +15,8 @@ import { useSplit, splitSummary, type Split } from "./split.js";
 import { runGlobal, directPriv, isPrivileged, dialHost, staleCleanupScript, parseDefaultRoute } from "./global.js";
 import { loadSettings, proxyHost, loginFor } from "./settings.js";
 import { restoreWindows, serveElevated, HELPER_CMD } from "./global-win32.js";
+import { planMacRestore, parseRouteGet } from "./global-darwin.js";
+import { freePort } from "./restore.js";
 import { Tui } from "./tui.js";
 import { envLines } from "./catrust.js";
 import { loadCa } from "./mitm.js";
@@ -407,6 +409,11 @@ async function cmdLogin(): Promise<AccountState | undefined> {
 }
 
 async function cmdProxy() {
+  const portArg = arg("port");
+  if (portArg !== undefined && !(/^\d+$/.test(portArg) && Number(portArg) >= 1 && Number(portArg) <= 65535)) {
+    console.error(red(`--port must be a number from 1 to 65535, not ${JSON.stringify(portArg ?? "")}`));
+    process.exit(1);
+  }
   const auth = await ensureAuth();
   const conn = new Connection(auth);
   const code = arg("country");
@@ -496,28 +503,42 @@ function splitNote(split: Split): void {
   if (summary) console.log(yellow(`Split tunneling: ${summary} (change it with ${bold("t")} in ${bold("foxhole")})`));
 }
 
-/** Windows: undoes what a killed `global` session left behind (DNS rule, firewall rules, tun2socks). */
+/**
+ * Puts the network back as it was before Foxhole, whatever a killed or stuck one left (global mode's routes, DNS,
+ * tun2socks), and frees the proxy's port (settings: 1080 unless changed), stopping a Foxhole that holds it.
+ */
 async function cmdRestore() {
-  if (process.platform === "linux") {
-    // What a killed global session leaves, removed in one shell so sudo asks for the password once,
-    // here; elevating itself spares `sudo foxhole`, which nvm's PATH doesn't survive.
-    const uplink = parseDefaultRoute(spawnSync("ip", ["route"]).stdout?.toString() ?? "", "foxhole0");
-    const script = staleCleanupScript(uplink);
+  const port = Number(arg("port") ?? loadSettings().port);
+  // the port first: a Foxhole asked to quit puts its own whole-system mode back as it goes
+  const portFree = await freePort(port, (line) => console.log(line));
+  let ok: boolean;
+  if (process.platform === "win32") {
+    if (!(await isPrivileged())) {
+      console.error(red("Restoring the network needs Administrator rights.") + ` Run foxhole restore in ${bold("Terminal (Admin)")}.`);
+      process.exit(1);
+    }
+    await restoreWindows(directPriv());
+    ok = true;
+  } else {
+    // What a killed global session leaves, removed in one shell so sudo asks for the password once, here;
+    // elevating itself spares `sudo foxhole`, which nvm's PATH doesn't survive.
+    const script = process.platform === "darwin" ? await macRestoreScript() : staleCleanupScript(parseDefaultRoute(spawnSync("ip", ["route"]).stdout?.toString() ?? "", "foxhole0"));
     const root = process.getuid?.() === 0;
-    const r = spawnSync(root ? "sh" : "sudo", [...(root ? [] : ["sh"]), "-c", script], { stdio: "inherit" });
-    console.log(r.status === 0 ? green("Networking restored (foxhole's tun, its routes and its IPv6 and UDP blocks removed).") : red("Not restored: sudo was refused."));
-    return;
+    if (!root) console.log(dim("sudo asks for your password: restoring the network needs it."));
+    ok = spawnSync(root ? "sh" : "sudo", [...(root ? [] : ["sh"]), "-c", script], { stdio: "inherit" }).status === 0;
   }
-  if (process.platform !== "win32") {
-    console.log(dim("Nothing to do: on macOS a reboot restores networking."));
-    return;
-  }
-  if (!(await isPrivileged())) {
-    console.error(red("restore needs Administrator rights.") + ` Run it in ${bold("Terminal (Admin)")}.`);
-    process.exit(1);
-  }
-  await restoreWindows(directPriv());
-  console.log(green("Networking restored (DNS rule, firewall rules and tun2socks removed)."));
+  console.log(ok ? green("Network restored: Foxhole's routes, DNS and tun2socks are gone.") : red("Network not restored: sudo was refused."));
+  console.log(portFree ? green(`Port ${port} is free for the proxy.`) : yellow(`Port ${port} is still taken (above).`));
+  if (!ok || !portFree) process.exit(1);
+}
+
+/** macOS: planMacRestore from the routing tables and each network service's DNS, as one shell script. */
+async function macRestoreScript(): Promise<string> {
+  const read = (cmd: string, args: string[]) => spawnSync(cmd, args).stdout?.toString() ?? "";
+  const services = read("networksetup", ["-listallnetworkservices"]).split("\n").slice(1).map((l) => l.replace(/^\*/, "").trim()).filter(Boolean);
+  const dns = Object.fromEntries(services.map((s) => [s, read("networksetup", ["-getdnsservers", s])]));
+  const plan = planMacRestore(read("netstat", ["-rn", "-f", "inet"]), read("netstat", ["-rn", "-f", "inet6"]), parseRouteGet(read("route", ["-n", "get", "default"])), dns);
+  return plan.map((argv) => `${argv.map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(" ")} 2>/dev/null`).join("; ") + "; true";
 }
 
 const WIN = process.platform === "win32";
@@ -535,8 +556,10 @@ ${bold("Commands:")}
   proxy [--country XX] [--port N] [--host H]
                        Run a local SOCKS5 + HTTP proxy through the VPN
   global [--country XX] [--force]
-                       Route ALL system traffic through the VPN (needs ${WIN ? "Administrator" : "sudo"})${WIN || process.platform === "linux" ? `
-  restore              Undo a global session that was killed (${WIN ? "Administrator" : "asks for your password"})` : ""}
+                       Route ALL system traffic through the VPN (needs ${WIN ? "Administrator" : "sudo"})
+  restore [--port N]   Put the network back as before Foxhole (routes, DNS, tun2socks)
+                       and free the proxy's port, stopping a Foxhole that holds it
+                       (${WIN ? "Administrator" : "asks for your password"})
   env                  Print settings that make terminal tools trust relay mode's
                        certificate and use the proxy: ${WIN ? "foxhole env | iex" : 'eval "$(foxhole env)"'}
   -v, --version        Show the version and whether an update is available

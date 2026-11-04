@@ -28,6 +28,44 @@ export function parseRouteGet(out: string): MacRoute | null {
   return { gw: out.match(/^\s*gateway:\s*(\S+)/m)?.[1] ?? null, dev };
 }
 
+/** A destination as `netstat -rn` writes it ("10", "172.16/12", "192.168.0/16") in full ("10.0.0.0/8"). Pure. */
+function fullNet(dest: string): string {
+  const [ip, len] = dest.split("/");
+  const o = ip.split(".");
+  while (o.length < 4) o.push("0");
+  const a = Number(o[0]);
+  return `${o.join(".")}/${len ?? (a < 128 ? 8 : a < 192 ? 16 : 24)}`; // no length: the class's
+}
+
+/**
+ * What a killed global session may have left (`foxhole restore`), from `netstat -rn -f inet` and `-f inet6`, the
+ * uplink `up` and each network service's DNS (`networksetup -getdnsservers`): tun2socks and the DNS relay (the utun's
+ * routes go with them), the IPv6 reject routes, the private ranges pinned to the uplink, and DNS still pointed at the
+ * dead relay (back to the router's). Only routes exactly as foxhole adds them, never another VPN's ::/1. The host pins
+ * (the VPN server, Guardian, direct sites) stay: routes to the real uplink, harmless. Pure.
+ */
+export function planMacRestore(inet: string, inet6: string, up: MacRoute | null, dns: Record<string, string>): string[][] {
+  const plan = [
+    ["pkill", "-f", `${UTUN.slice(0, -1)}[${UTUN.slice(-1)}]`], // the [3] keeps pkill off its own command line
+    ["pkill", "-f", `${DNS_MARK.slice(0, -1)}[${DNS_MARK.slice(-1)}]`],
+  ];
+  const rows = (table: string) => table.split("\n").map((l) => l.trim().split(/\s+/));
+  for (const [dest, gw, , dev] of rows(inet)) {
+    if ((dest === "0/1" || dest === "128.0/1") && dev === UTUN) plan.push(["route", "-n", "delete", "-net", fullNet(dest)]);
+    else if (up?.gw && gw === up.gw && dest && /^[\d.]+(\/\d+)?$/.test(dest) && PRIVATE_CIDRS.includes(fullNet(dest))) {
+      plan.push(["route", "-n", "delete", "-net", fullNet(dest), up.gw]);
+    }
+  }
+  for (const [dest, gw] of rows(inet6)) {
+    if ((dest === "::/1" || dest === "8000::/1") && gw === "::1") plan.push(["route", "-n", "delete", "-inet6", "-net", dest]);
+  }
+  for (const [service, servers] of Object.entries(dns)) {
+    if (servers.trim() === "127.0.0.1") plan.push(["networksetup", "-setdnsservers", service, "Empty"]);
+  }
+  plan.push(["killall", "-HUP", "mDNSResponder"]);
+  return plan;
+}
+
 /** Network service name ("Wi-Fi") for a device ("en0"), from `networksetup -listnetworkserviceorder`. Pure. */
 export function serviceForDevice(out: string, dev: string): string | null {
   for (const m of out.matchAll(/^\(\d+\)\s+(.+)\n\(Hardware Port: .*, Device: ([^)]+)\)/gm)) {
@@ -271,15 +309,17 @@ export class DarwinRouting implements Rerouter<MacRoute> {
   /** Restores DNS and routing, stops tun2socks and the relay. Best-effort. */
   async stop(): Promise<void> {
     const { priv } = this.#o;
+    // Traffic first: the DNS setting and the tun's routes, so everything leaves the tunnel at once
     if (this.#dnsService) await priv.run(["networksetup", "-setdnsservers", this.#dnsService, ...this.#dnsRestore], true);
+    for (const argv of this.#undo.reverse()) await priv.run(argv, true);
+    this.#undo = [];
     // The relay removes its direct routes as its stdin ends: give it the time to.
     const relay = this.#relay;
     this.#relay = null;
     if (relay && relay.exitCode === null && relay.signalCode === null) {
       await new Promise((r) => (relay.once("exit", r), relay.stdin?.end(), setTimeout(r, 10_000)));
     }
-    for (const argv of [...this.#undo.reverse(), ...this.#pinUndo.reverse()]) await priv.run(argv, true);
-    this.#undo = [];
+    for (const argv of this.#pinUndo.reverse()) await priv.run(argv, true);
     this.#pinUndo = [];
     // sudo children may outlive the signal. The [x] keeps pkill from matching its own sudo.
     const pkill = async () => {

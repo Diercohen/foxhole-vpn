@@ -1450,7 +1450,8 @@ if (TV) {
   const layer = () => [...document.querySelectorAll(LAYERS)].reduce((top, el) =>
     !top || +getComputedStyle(el).zIndex >= +getComputedStyle(top).zIndex ? el : top, null);
   // shown: closed sheets, dialogs and sign-in screens are hidden (style.css), the Locations panel beside the orb isn't
-  const shown = (el) => el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && el.getClientRects().length > 0;
+  // (WebView 111-120 know the options by their first names, checkOpacity and checkVisibilityCSS: without them, faded out counts as shown)
+  const shown = (el) => el.checkVisibility({ opacityProperty: true, visibilityProperty: true, checkOpacity: true, checkVisibilityCSS: true }) && el.getClientRects().length > 0;
   // on screen, not scrolled out of its list nor covered; a list's rows out of view are reached from within it
   const inView = (el) => {
     const q = el.getBoundingClientRect();
@@ -1460,8 +1461,29 @@ if (TV) {
     for (let p = el?.parentElement; p; p = p.parentElement) if (/auto|scroll/.test(getComputedStyle(p).overflowY)) return p;
     return null;
   };
+  // A field the remote lands on is read-only: else Android's keyboard takes the arrows, and the remote is stuck in it
+  // until Back. OK opens it for typing, and it's read-only again once the keyboard's gone (App.tsx) or it's left.
+  const FIELD = 'input:not([type="checkbox"], [type="radio"], [type="range"])'; // one typed in
+  let opening = null; // the field OK is opening
+  const typing = (el, on) => {
+    if (!el?.matches?.(FIELD) || el.dataset.tvKeys === undefined) return;
+    if (!on) return void (el.readOnly = true);
+    opening = el;
+    el.blur(); // focused again, editable: the keyboard comes up
+    el.readOnly = false;
+    el.focus();
+    opening = null;
+  };
+  window.foxholeKeyboard = (up) => up || typing(document.activeElement, false);
+  document.addEventListener("focusout", (e) => typing(e.target, false));
+  // a field focused some other way (the page's own, as a search opens) is read-only too
+  document.addEventListener("focusin", (e) => {
+    const el = e.target;
+    if (el.matches?.(FIELD) && el !== opening && !el.readOnly) (el.dataset.tvKeys = ""), (el.readOnly = true);
+  });
   const focus = (el) => {
     if (!el.matches("button, input, select")) el.tabIndex = -1; // a row or link: focusable from here
+    if (el.matches(FIELD) && !el.readOnly) (el.dataset.tvKeys = ""), (el.readOnly = true);
     el.focus({ preventScroll: true });
     el.scrollIntoView({ block: "nearest", inline: "nearest" });
   };
@@ -1480,7 +1502,9 @@ if (TV) {
       e.preventDefault();
       return focus(all.find((el) => el.matches("#orb, .primary")) ?? all[0]);
     }
-    // OK clicks (a field keeps Enter: its form's sent); not left to the WebView, which clicks only on a key's character
+    // OK on a field opens it for typing (once open, it keeps Enter: its form's sent); else OK clicks, not left to the
+    // WebView, which clicks only on a key's character
+    if (!d && at.matches(FIELD) && at.readOnly && at.dataset.tvKeys !== undefined) return e.preventDefault(), typing(at, true);
     if (!d) return !at.matches("input, select") && (e.preventDefault(), at.click());
     e.preventDefault();
     // the nearest the way pressed: the gap along it, then (twice as costly) across it

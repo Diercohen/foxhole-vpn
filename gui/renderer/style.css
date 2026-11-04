@@ -813,11 +813,12 @@ kbd { font-family: var(--mono); font-size: 12px; padding: 1px 6px; border-radius
   .status h1 { font-size: 27px; }
 }
 
-/* A phone (the Android app, mobile/): one column that scrolls, panels from the bottom. The desktop window is never
-   this narrow. --safe-top and --safe-bottom: the room the system's bars take, as the app passes it (App.tsx). */
-@media (max-width: 760px) {
+/* A phone (the Android app, mobile/): one column that scrolls, panels from the bottom. Also a phone on its side or a
+   small tablet (short, by touch): the desktop window is never this narrow nor this short (main.js), a TV has no touch.
+   --safe-*: the room the system's bars and a camera's cutout take, as the app passes it (App.tsx). */
+@media (max-width: 760px), (max-height: 600px) and (pointer: coarse) {
   html, body { height: auto; min-height: 100%; }
-  body { display: block; overflow: hidden auto; padding: var(--safe-top, 0px) 0 var(--safe-bottom, 0px); }
+  body { display: block; overflow: hidden auto; padding: var(--safe-top, 0px) var(--safe-right, 0px) var(--safe-bottom, 0px) var(--safe-left, 0px); }
   /* the status bar over the page as it scrolls: glass */
   body::before { content: ""; position: fixed; z-index: 30; top: 0; left: 0; right: 0; height: var(--safe-top, 0px);
     background: rgba(7, 6, 12, 0.72); -webkit-backdrop-filter: blur(18px) saturate(140%); backdrop-filter: blur(18px) saturate(140%); }
@@ -846,7 +847,7 @@ kbd { font-family: var(--mono); font-size: 12px; padding: 1px 6px; border-radius
   #c-loc { display: flex; }
   #c-loc .flag { width: 40px; height: 40px; }
   .locations { position: fixed; z-index: 50; left: 0; right: 0; bottom: 0; height: calc(100% - var(--safe-top, 0px) - 12px);
-    padding: 18px 8px calc(var(--safe-bottom, 0px) + 10px); border-radius: 26px 26px 0 0; animation: none;
+    padding: 18px calc(var(--safe-right, 0px) + 8px) calc(var(--safe-bottom, 0px) + 10px) calc(var(--safe-left, 0px) + 8px); border-radius: 26px 26px 0 0; animation: none;
     background: linear-gradient(160deg, rgba(34, 27, 50, 0.86), rgba(16, 13, 26, 0.9)); -webkit-backdrop-filter: blur(40px) saturate(160%); backdrop-filter: blur(40px) saturate(160%);
     transform: translateY(calc(100% + 40px)); opacity: 0; visibility: hidden; transition: transform 0.65s var(--out), opacity 0.45s, visibility 0s 0.65s; }
   .locations.on { transform: none; opacity: 1; visibility: visible; transition-delay: 0s; }
@@ -855,7 +856,7 @@ kbd { font-family: var(--mono); font-size: 12px; padding: 1px 6px; border-radius
   .loc-head .close { display: inline-flex; }
   .toast { top: 12px; max-width: calc(100% - 24px); }
   .sheet, .sheet.wide { top: auto; left: 0; right: 0; bottom: 0; width: 100%; height: calc(100% - var(--safe-top, 0px) - 12px);
-    padding-bottom: var(--safe-bottom, 0px); border-radius: 26px 26px 0 0; transform: translateY(calc(100% + 40px)); }
+    padding: 0 var(--safe-right, 0px) var(--safe-bottom, 0px) var(--safe-left, 0px); border-radius: 26px 26px 0 0; transform: translateY(calc(100% + 40px)); }
   .sheet.on { transform: none; } /* after .sheet.wide above, or the Logs (wide) would stay below the screen */
   .sheet > header { gap: 12px; padding: 18px 16px 14px; }
   .sheet header p { font-size: 12px; }
