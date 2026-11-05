@@ -16,6 +16,7 @@ export interface Settings {
   // in this file or given via FOXHOLE_RELAY_ID/KEY; not shown or edited in the UI. The authKey is a shared secret.
   relay?: { deploymentId: string; authKey: string };
   noHelper?: boolean; // whole-system mode asks for the password each time, no network helper (helper.ts)
+  proxyOnly?: boolean; // connecting doesn't go on to whole-system mode, the default: the mode last picked (TUI, desktop app)
 }
 
 export const DEFAULTS: Settings = { share: false, port: 1080, username: "", password: "", split: NO_SPLIT };
@@ -63,6 +64,7 @@ export function parseSettings(json: string): Settings {
     // kept so a hand-added relay survives the next save; no key at all when unset, to keep the file clean
     ...(parseRelay(o.relay) ? { relay: parseRelay(o.relay) } : {}),
     ...(o.noHelper === true ? { noHelper: true } : {}),
+    ...(o.proxyOnly === true ? { proxyOnly: true } : {}),
   };
 }
 

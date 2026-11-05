@@ -128,8 +128,8 @@ export class Controller extends EventEmitter {
   #network = () => (this.#android?.network ?? network)();
   #caTrusted = () => (this.#android?.caTrusted ?? caTrusted)();
 
-  /** global: turn whole-system mode on once connected (the restart into an update, when it was on). */
-  async start({ global = false } = {}) {
+  /** connect: to the last location, on a start at login or a restart (opened by hand, it waits for the user); global: going on to whole-system mode. */
+  async start({ connect = false, global = false } = {}) {
     useRelay(this.#relay()); // where vpn.mozilla.org is blocked, relay Guardian's control calls (httprelay.ts)
     useSplit(() => this.#settings.split); // live: a change applies to the next connection
     onLog(() => this.emit("log", logLines[logLines.length - 1]));
@@ -150,8 +150,7 @@ export class Controller extends EventEmitter {
     }, 5000).unref();
     await this.#resignIn();
     await list;
-    // Connects at once to the last country used; a first run waits for a pick.
-    if (this.#rows().some((c) => c.code === loadLastCountry())) void this.connect(loadLastCountry()).then(() => global && this.#active && this.toggleGlobal());
+    if (connect && this.#rows().some((c) => c.code === loadLastCountry())) void this.connect(loadLastCountry()).then(() => global && this.#active && this.toggleGlobal());
     setInterval(() => (this.#refreshUsage(), this.#entitled === false && this.#checkEntitled(false)), 3 * 60_000).unref();
   }
 
@@ -691,7 +690,34 @@ export class Controller extends EventEmitter {
 
   /** The power button: on to the selected country, or off. */
   power() {
-    return this.#active ? this.disconnect() : this.connect();
+    return this.#active ? this.disconnect() : this.pick();
+  }
+
+  /** A location picked or the power button (the desktop's: a phone has its own, mobile/node/main.mjs): while off, connects in the mode last picked. */
+  async pick(code) {
+    const off = !this.#active;
+    await this.connect(code);
+    if (!off || !this.#active || this.#settings.proxyOnly || this.#global) return;
+    // relay mode's certificate first: its question and the password's would come up together
+    if (this.#conn?.relay && !(await this.#caTrusted())) return;
+    await this.toggleGlobal();
+  }
+
+  /** The desktop's Proxy only / Whole system: while off, only remembered for the next connect; while on, switches too. */
+  async setMode() {
+    if (this.#busy) return;
+    const whole = !(this.#active ? this.#global : !this.#settings.proxyOnly);
+    const { proxyOnly: _, ...rest } = this.#settings;
+    this.#settings = whole ? rest : { ...rest, proxyOnly: true };
+    saveSettings(this.#settings);
+    this.#changed();
+    if (this.#active && whole !== !!this.#global) await this.toggleGlobal();
+  }
+
+  /** At a start at login: whether whole-system mode can come on with nothing to ask. */
+  async wholeWithoutAsking() {
+    if (this.#settings.proxyOnly) return false;
+    return (process.platform === "win32" && helperInstalled() && !this.#settings.noHelper) || (await helperReady()) || (await isPrivileged());
   }
 
   /** Whole-system routing on or off (asks for the administrator password). */
@@ -831,6 +857,7 @@ export class Controller extends EventEmitter {
 
   /** Settings' switch for the network helper (helper.ts). Off also takes it out; on, the next whole-system mode asks once to put it in. */
   async setHelper(on) {
+    if (on !== true && this.#global) return this.#note("settings", "error", "Turn whole-system mode off first: it's using the network helper.");
     if (on !== true) await removeHelper().catch((err) => this.#note("settings", "error", `Couldn't remove the network helper: ${err.message}`));
     const { noHelper: _, ...rest } = this.#settings;
     this.#settings = on === true ? rest : { ...rest, noHelper: true };
@@ -1223,6 +1250,7 @@ export class Controller extends EventEmitter {
       splitSummary: splitSummary(sp),
       // the relay's auth key stays in the main process, out of the window; the id (it's in a URL) and whether a key is set are shown
       helper: ["linux", "darwin", "win32"].includes(process.platform) ? helperInstalled() : null, // null: no network helper here
+      wantGlobal: !this.#settings.proxyOnly, // the mode shown while off
       settings: { ...this.#settings, relay: this.#settings.relay ? { deploymentId: this.#settings.relay.deploymentId, set: true } : null },
       lanIp: lanIp(),
       fwHint: this.#fwHint,

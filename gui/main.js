@@ -76,7 +76,7 @@ function autostartItem() {
 const autostart = autostartItem();
 const startHidden = process.argv.includes(AUTOSTART_FLAG);
 // a restart (an update, Full Disk Access) is one the user asked for: with the window
-const restartArgs = () => process.argv.slice(1).filter((a) => a !== AUTOSTART_FLAG && a !== "--whole-system");
+const restartArgs = () => process.argv.slice(1).filter((a) => a !== AUTOSTART_FLAG && a !== "--whole-system" && a !== "--reconnect");
 
 const updater = new Updater({ dir: join(app.getPath("userData"), "update"), downloads: app.getPath("downloads"), target: updateTarget(), via: () => controller.via(), changed: () => controller.emit("change") });
 const controller = new Controller({
@@ -215,9 +215,9 @@ app.whenReady().then(() => {
   const tray = createTray(
     controller,
     {
-      connect: (code) => controller.connect(code),
+      connect: (code) => controller.pick(code),
       disconnect: () => controller.disconnect(),
-      toggleGlobal: () => controller.toggleGlobal(),
+      toggleGlobal: () => controller.setMode(),
       show,
       update: restartToUpdate,
       getUpdate: () => (show(), void updater.update()),
@@ -263,7 +263,9 @@ app.whenReady().then(() => {
     // the downloaded update, to install by hand
     if (name === "installUpdateFile") return void (updater.installByHand() && app.quit()); // opened once the app has quit
     if (name === "showUpdateFile") return updater.file() && void shell.showItemInFolder(updater.file());
-    if (name === "relaunch") return void (app.relaunch({ execPath: process.env.APPIMAGE ?? process.execPath, args: restartArgs() }), app.quit()); // macOS applies Full Disk Access to a new process
+    if (name === "relaunch") return void (app.relaunch({ execPath: process.env.APPIMAGE ?? process.execPath, args: [...restartArgs(), ...(controller.state().active ? ["--reconnect"] : [])] }), app.quit()); // macOS applies Full Disk Access to a new process
+    if (name === "connect") return controller.pick(...args);
+    if (name === "toggleGlobal") return controller.setMode();
     return name === "restartToUpdate" ? restartToUpdate() : controller[name](...args);
   });
   ipcMain.handle("open", (e, which) => e.sender === win.webContents && LINKS[which] && shell.openExternal(LINKS[which]));
@@ -274,7 +276,10 @@ app.whenReady().then(() => {
     app.quit();
   });
 
-  controller.start({ global: process.argv.includes("--whole-system") }).catch((err) => {
+  // opened by hand it waits for the user; at login, or a restart it was connected before, it connects
+  const whole = process.argv.includes("--whole-system");
+  const connect = startHidden || whole || process.argv.includes("--reconnect");
+  (startHidden ? controller.wholeWithoutAsking() : Promise.resolve(whole)).then((global) => controller.start({ connect, global })).catch((err) => {
     dialog.showErrorBox("Foxhole couldn't start", err.message);
     app.quit();
   });
@@ -288,12 +293,12 @@ app.on("before-quit", (e) => {
   e.preventDefault();
   if (quitting) return;
   quitting = true;
-  const whole = controller.state().globalOn;
+  const whole = controller.state().globalOn, active = controller.state().active;
   if (whole) show(); // the window says what's happening meanwhile
   void controller.shutdown().finally(() => {
     done = true;
     // the restart into it turns whole-system mode back on if it was
-    const args = [...restartArgs(), ...(whole ? ["--whole-system"] : [])];
+    const args = [...restartArgs(), ...(whole ? ["--whole-system"] : active ? ["--reconnect"] : [])];
     // a downloaded version goes in (Windows: only on a restart, its installer then starts it)
     const started = updater.install({ relaunch, args });
     // an AppImage from its file: the folder it runs from goes away with it

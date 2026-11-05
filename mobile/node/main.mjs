@@ -167,7 +167,7 @@ let wantGlobal = process.platform === "android" && (() => {
   try {
     return readFileSync(MODE, "utf8") === "global";
   } catch {
-    return false;
+    return true; // nothing picked yet
   }
 })();
 function saveMode(global) {
@@ -191,14 +191,11 @@ async function connect(code) {
   if (device.tv && controller.state().active && !controller.state().globalOn) await controller.disconnect();
 }
 
-/** The window's Proxy only / Whole system: switched while on; while off, connects in the other one. Remembered either way. A TV has no switch. */
+/** The window's Proxy only / Whole system: switched while on; while off, only remembered for the next connect. A TV has no switch. */
 async function setMode() {
   if (device.tv) return;
-  if (controller.state().active) await controller.toggleGlobal();
-  else {
-    saveMode(!wantGlobal);
-    await connect();
-  }
+  if (!controller.state().active) return saveMode(!wantGlobal);
+  await controller.toggleGlobal();
   const s = controller.state();
   if (s.active) saveMode(s.globalOn); // what it is now: Android's VPN refused leaves the proxy
 }
@@ -324,5 +321,5 @@ process.on("unhandledRejection", (err) => {
   log(`error: ${err?.stack ?? err}`);
 });
 
-void deviceKnown.then(() => controller.start({ global: global() })).catch((err) => log(`couldn't start: ${err.stack ?? err.message}`));
+void deviceKnown.then(() => controller.start()).catch((err) => log(`couldn't start: ${err.stack ?? err.message}`));
 updater.start();

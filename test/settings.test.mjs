@@ -22,6 +22,8 @@ assert.deepEqual(parseSettings('{"share":"yes","port":70000}'), DEFAULTS, "bad v
 assert.deepEqual(parseSettings('{"relay":{"deploymentId":"DID","authKey":"KEY"}}'), { ...DEFAULTS, relay: { deploymentId: "DID", authKey: "KEY" } }, "valid relay kept");
 assert.deepEqual(parseSettings('{"relay":{"deploymentId":"DID"}}'), DEFAULTS, "half a relay dropped (no key)");
 assert.ok(!("relay" in parseSettings("{}")), "no relay key when unset");
+assert.equal(parseSettings('{"proxyOnly":true}').proxyOnly, true, "Proxy only / Global TUN unticked is kept");
+assert.ok(!("proxyOnly" in parseSettings('{"proxyOnly":"yes"}')), "else nothing saved: whole-system mode, the default");
 assert.deepEqual(parseSettings('{"port":2080}'), { ...DEFAULTS, port: 2080 }, "missing keys default");
 assert.ok(validPort(1) && validPort(65535) && !validPort(0) && !validPort(65536) && !validPort(80.5) && !validPort("80"));
 assert.equal(proxyHost({ ...DEFAULTS, share: true }), "0.0.0.0");

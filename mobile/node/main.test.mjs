@@ -149,6 +149,14 @@ try {
   await settle();
   assert.equal(notes.at(-1), "off");
 
+  // The mode picked while off: only remembered, nothing connects
+  from = notes.length;
+  await act("toggleGlobal");
+  await settle();
+  assert.equal((await act("state")).active, null);
+  assert.equal((await act("state")).wantGlobal, false);
+  assert.equal(notes.length, from);
+
   // Paused in proxy-only mode, resumed in the app, then disconnected there: Paused doesn't come back
   await act("connect", "DE");
   out({ t: "pause" });

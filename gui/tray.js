@@ -45,7 +45,7 @@ export function trayView(s, act) {
       s.active
         ? { label: "Disconnect", enabled: ready, click: () => act.disconnect() }
         : { label: here ? `Connect to ${named(s, here)}` : "Connect", enabled: ready && !!here, click: () => act.connect(), ...flagIcon(here) },
-      { label: "Whole system", type: "checkbox", checked: s.globalOn, enabled: ready, click: () => act.toggleGlobal() },
+      { label: "Whole system", type: "checkbox", checked: s.active ? s.globalOn : s.wantGlobal, enabled: ready, click: () => act.toggleGlobal() },
       {
         label: "Location",
         enabled: ready && s.countries.length > 0,
