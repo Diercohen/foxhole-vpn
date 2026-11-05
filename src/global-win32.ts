@@ -334,7 +334,8 @@ export class WindowsRouting implements Rerouter<WinWatch> {
 
     this.#t2s = priv.spawn([this.#o.tun2socksPath, "--device", TUN, "--proxy", `socks5://${proxyHost}:${proxyPort}`]);
     this.#t2s.on("exit", onExit);
-    await waitFor(`the ${TUN} adapter to appear`, () => psOut(`Get-NetAdapter -Name '${TUN}' -ErrorAction Stop`));
+    // 30 s: an antivirus may hold a tun2socks.exe it hasn't seen, as with the helper's new copy on its first run
+    await waitFor(`the ${TUN} adapter to appear`, () => psOut(`Get-NetAdapter -Name '${TUN}' -ErrorAction Stop`), 30_000);
     await priv.run(["netsh", "interface", "ipv4", "set", "address", `name=${TUN}`, "source=static", `address=${TUN_ADDR}`, `mask=${TUN_MASK}`]);
     await priv.run(["netsh", "interface", "ipv4", "set", "interface", `interface=${TUN}`, "metric=1"], true);
 
