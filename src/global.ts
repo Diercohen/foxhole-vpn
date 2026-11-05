@@ -401,6 +401,8 @@ export interface Priv {
   close?(): void;
   /** The root shell that undoes a killed session, where a shell can't be asked for (helper.ts). */
   guard?(orig: DefaultRoute): ReturnType<typeof spawn>;
+  /** macOS's DNS relay without root (helper.ts): how to start it, and what its route commands go through. */
+  relay?: { spawn(argv: string[]): ReturnType<typeof spawn>; via: string[] };
 }
 
 /**

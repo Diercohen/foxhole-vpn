@@ -60,10 +60,14 @@ export function directRoutes(via: string[], run: (argv: string[]) => Promise<boo
  * ("rules <json>") and a moved uplink ("via <json>") on stdin; when stdin ends (foxhole stopped
  * global mode, or is gone) it removes its routes and exits.
  */
-export async function relayMain(o: { dns: DnsForwarderOptions; split: Split; via: string[] }): Promise<void> {
+export async function relayMain(o: { dns: DnsForwarderOptions; split: Split; via: string[]; prefix?: string[] }): Promise<void> {
   let split = o.split;
   useSplit(() => split);
-  const run = (argv: string[]) => new Promise<boolean>((r) => execFile(argv[0], argv.slice(1), { timeout: 5000 }, (err) => r(!err)));
+  // prefix: without root, the commands go through the network helper (helper.ts)
+  const run = (argv: string[]) => new Promise<boolean>((r) => {
+    const [cmd, ...args] = [...(o.prefix ?? []), ...argv];
+    execFile(cmd, args, { timeout: 5000 }, (err) => r(!err));
+  });
   const routes = directRoutes(o.via, run);
   const quit = () => void routes.clear().finally(() => process.exit(0));
   let rest = "";

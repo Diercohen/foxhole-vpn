@@ -5,13 +5,15 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { helperScript, installScript } from "../dist/helper.js";
+import { directRoutes } from "../dist/relay.js";
+import { useSplit } from "../dist/split.js";
 import { PRIVATE_CIDRS, pinCmd, planDirect, planDirectTeardown, planSetup, planStaleCleanup, planTeardown } from "../dist/global.js";
 
 const T2S = "/usr/local/libexec/foxhole/tun2socks";
-const script = helperScript()
+const script = helperScript("linux")
   .replace(`run() { exec "$@"; }`, `run() { echo "RUN $*"; exit 0; }`)
   .replace(`try() { "$@" 2>/dev/null; }`, `try() { echo "$*"; }`);
-assert.notEqual(script, helperScript(), "the test's run and try went in");
+assert.notEqual(script, helperScript("linux"), "the test's run and try went in");
 const dir = mkdtempSync(join(tmpdir(), "foxhole-helper-"));
 const file = join(dir, "net");
 writeFileSync(file, script);
@@ -56,11 +58,53 @@ for (const argv of [
 }
 
 // The installer: a bad rule never counts, the tun2socks path is quoted, the rule names this one script.
-const inst = installScript(1000, "/home/o'brien/.cache/tun2socks");
+const inst = installScript(1000, "/home/o'brien/.cache/tun2socks", "linux");
 assert.ok(inst.includes(`cp '/home/o'\\''brien/.cache/tun2socks' `), "the path quoted for the shell");
 assert.ok(inst.includes(`echo '#1000 ALL=(root) NOPASSWD: /usr/local/libexec/foxhole/net' > /etc/sudoers.d/foxhole-1000.new`), "a rule for this uid and script");
 assert.ok(inst.indexOf("visudo -cf") < inst.indexOf("mv -f /etc/sudoers.d/foxhole-1000.new"), "checked before it counts");
 assert.equal(spawnSync("sh", ["-n", "-c", inst]).status, 0, "the installer parses");
+
+// macOS: what global-darwin.ts and relay.ts run
+const M = "/Library/PrivilegedHelperTools/foxhole";
+const macFile = join(dir, "mac");
+writeFileSync(macFile, helperScript("darwin").replace(`run() { exec "$@"; }`, `run() { echo "RUN $*"; exit 0; }`));
+const mac = (argv) => spawnSync("sh", [macFile, ...argv], { encoding: "utf8" });
+const relayRoutes = [];
+const routes = directRoutes(["192.168.1.1"], async (argv) => (relayRoutes.push(argv), true));
+useSplit(() => ({ default: "direct", rules: [] }));
+await routes.answer("example.com", ["93.184.216.34"]);
+await routes.move(["-interface", "en0"]);
+await routes.clear();
+assert.equal(relayRoutes.length, 3, "the relay added, moved and removed its route");
+for (const argv of [
+  ...relayRoutes,
+  ...["0.0.0.0/1", "128.0.0.0/1"].flatMap((h) => [["route", "-n", "add", "-net", h, "198.18.0.1"], ["route", "-n", "delete", "-net", h]]),
+  ...["::/1", "8000::/1"].flatMap((h) => [["route", "-n", "add", "-inet6", "-net", h, "::1", "-reject"], ["route", "-n", "delete", "-inet6", "-net", h]]),
+  ...PRIVATE_CIDRS.flatMap((c) => [["route", "-n", "add", "-net", c, "192.168.1.1"], ["route", "-n", "add", "-net", c, "-interface", "en0"], ["route", "-n", "delete", "-net", c]]),
+  ["route", "-n", "add", "-host", "151.101.1.1", "192.168.1.1"], ["route", "-n", "add", "-host", "151.101.1.1", "-interface", "utun4"], ["route", "-n", "delete", "-host", "151.101.1.1"],
+  ["ifconfig", "utun123", "198.18.0.1", "198.18.0.1", "up"], [`${M}/tun2socks`, "--device", "utun123", "--proxy", "socks5://127.0.0.1:1080"],
+  ["networksetup", "-setdnsservers", "Wi-Fi", "127.0.0.1"], ["networksetup", "-setdnsservers", "USB 10/100/1000 LAN", "Empty"], ["networksetup", "-setdnsservers", "Wi-Fi", "192.168.1.1", "fe80::1"],
+  ["killall", "-HUP", "mDNSResponder"], ["pkill", "-f", "utun12[3]"], ["pkill", "-f", "foxhole-dn[s]"],
+]) {
+  const r = mac(argv);
+  assert.equal(r.stdout, `RUN ${argv.join(" ")}\n`, `${argv.join(" ")}: ${r.stderr}`);
+}
+for (const argv of [
+  [], ["id"], ["sh", "-c", "id"], ["env", "ELECTRON_RUN_AS_NODE=1", "/Applications/Foxhole.app/Contents/MacOS/Foxhole", "-e", "1"], ["/usr/bin/node", "-e", "1"],
+  ["route", "-n", "add", "-net", "0.0.0.0/0", "1.2.3.4"], ["route", "-n", "add", "-net", "1.2.3.0/24", "1.2.3.4"], ["route", "add", "-host", "1.2.3.4", "1.1.1.1"], ["route", "-n", "flush"], ["route", "-n", "delete", "default"],
+  ["route", "-n", "add", "-host", "1.2.3.4"], ["route", "-n", "add", "-host", "1.2.3.4", "1.1.1.1", "-ifscope", "en0"], ["route", "-n", "add", "-host", "1.2.3.4", "-interface", "-x"],
+  ["networksetup", "-setairportpower", "en0", "off"], ["networksetup", "-setdnsservers", "Wi-Fi"], ["networksetup", "-setdnsservers", "-x", "1.1.1.1"], ["networksetup", "-setdnsservers", "Wi-Fi", "$(id)"], ["networksetup", "-setdnsservers", "Wi-Fi", "1.1.1.1; id"],
+  ["ifconfig", "en0", "down"], ["ifconfig", "utun123", "1.2.3.4", "1.2.3.4", "up"], ["killall", "Finder"], ["pkill", "-f", "."],
+  [`${M}/tun2socks`, "--device", "utun123", "--proxy", "socks5://1.2.3.4:1080"], [`${M}/tun2socks`, "--device", "utun123", "--proxy", "socks5://127.0.0.1:1", "--tun-post-up", "id"], ["/Users/me/tun2socks", "--device", "utun123", "--proxy", "socks5://127.0.0.1:1"],
+  ["guard", "-", "en0"], ["version"], ["version", "0"],
+]) {
+  const r = mac(argv);
+  assert.ok(!r.stdout.startsWith("RUN"), `ran: ${argv.join(" ")}`);
+  assert.notEqual(r.status, 0, `allowed: ${argv.join(" ")}`);
+}
+const macInst = installScript(501, "/Users/me/.cache/foxhole-vpn/tun2socks", "darwin");
+assert.ok(macInst.includes(`echo '#501 ALL=(root) NOPASSWD: ${M}/net' > /etc/sudoers.d/foxhole-501.new`), "macOS: a rule for this uid and script");
+assert.equal(spawnSync("sh", ["-n", "-c", macInst]).status, 0, "macOS: the installer parses");
 
 rmSync(dir, { recursive: true });
 console.log("ok - network helper");

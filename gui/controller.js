@@ -1221,7 +1221,7 @@ export class Controller extends EventEmitter {
       proxy: this.#active ? { addr: this.#proxyAddr(), shared: this.#host === "0.0.0.0" } : null,
       splitSummary: splitSummary(sp),
       // the relay's auth key stays in the main process, out of the window; the id (it's in a URL) and whether a key is set are shown
-      helper: process.platform === "linux" ? helperInstalled() : null, // null: only Linux has the helper so far
+      helper: ["linux", "darwin"].includes(process.platform) ? helperInstalled() : null, // null: no network helper here
       settings: { ...this.#settings, relay: this.#settings.relay ? { deploymentId: this.#settings.relay.deploymentId, set: true } : null },
       lanIp: lanIp(),
       fwHint: this.#fwHint,

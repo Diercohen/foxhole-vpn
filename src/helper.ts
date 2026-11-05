@@ -1,26 +1,31 @@
-// Whole-system mode without a password each time (Linux): how Windscribe and others do it, in one script. The password
-// is asked once; with it, a root-owned script and a sudoers rule for it go in, and from then on sudo runs that script
-// with no password. No daemon: nothing runs until whole-system mode does.
+// Whole-system mode without a password each time (Linux, macOS): how Windscribe and others do it, in one script. The
+// password is asked once; with it, a root-owned script and a sudoers rule for it go in, and from then on sudo runs that
+// script with no password. No daemon: nothing runs until whole-system mode does.
 //
 // The script is what makes this safe, not a detail: sudo gives any program of this user the script as root, so it only
-// runs the exact commands a session needs (global.ts's plans, kept in step by test/helper.test.mjs), never a command or
-// a tun2socks of the caller's. What's left to a program of this user: sending this computer's traffic through a SOCKS
-// proxy on this computer, and adding host routes. Nothing that reaches a root shell.
+// runs the exact commands a session needs (global.ts's and global-darwin.ts's, kept in step by test/helper.test.mjs),
+// never a command or a tun2socks of the caller's. What's left to a program of this user: sending this computer's traffic
+// through a SOCKS proxy on this computer, adding host routes, and (macOS) choosing the DNS server. Nothing that reaches a
+// root shell. On macOS no JavaScript runs as root with it either: the DNS relay stays the user's (global-darwin.ts).
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { basename } from "node:path";
 import { sudoPriv, type Priv } from "./global.js";
-import { log } from "./log.js";
+import { log, logStream } from "./log.js";
 
-const DIR = "/usr/local/libexec/foxhole";
-const NET = `${DIR}/net`;
-const T2S = `${DIR}/tun2socks`;
+// macOS: /usr/local can be the user's own there (Homebrew), and a folder in a user's folder could be swapped
+const dirOf = (platform: string) => (platform === "darwin" ? "/Library/PrivilegedHelperTools/foxhole" : "/usr/local/libexec/foxhole");
+const NET = `${dirOf(process.platform)}/net`;
+const T2S = `${dirOf(process.platform)}/tun2socks`;
 const VERSION = "1"; // raised when the script changes: the next whole-system mode asks once, to put the new one in
+const SUPPORTED = process.platform === "linux" || process.platform === "darwin";
 
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
-/** The root script. Each argument is checked before anything runs; refused: exit 126. `run` and `try` are replaced in its test. */
-export const helperScript = () => `#!/bin/sh
+/** What every platform's root script starts with. Each argument is checked before anything runs; refused: exit 126. `run` and `try` are replaced in its test. */
+const preamble = (net: string) => `#!/bin/sh
 # Foxhole's network helper: what whole-system mode runs as root, with no password. Only the commands below.
-# Off: Foxhole's Settings, or: sudo ${NET} uninstall
+# Off: Foxhole's Settings, or: sudo ${net} uninstall
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 IFS=' '
@@ -33,7 +38,12 @@ dev() { case "$1" in ""|-*|*[!A-Za-z0-9._@-]*) return 1;; esac; }
 num() { case "$1" in ""|*[!0-9]*) return 1;; esac; }
 # $1 is $2, then a port
 port() { case "$1" in "$2"*) num "\${1#"$2"}" ;; *) return 1 ;; esac; }
+private() { case "$1" in 10.0.0.0/8|172.16.0.0/12|192.168.0.0/16|100.64.0.0/10) return 0;; esac; return 1; }
+`;
 
+const linuxScript = () => {
+  const dir = dirOf("linux"), NET = `${dir}/net`, T2S = `${dir}/tun2socks`;
+  return `${preamble(NET)}
 # [via GW] dev DEV, then exactly $1
 uplink() {
   want=$1; shift
@@ -72,7 +82,7 @@ cleanup() {
 
 case "$*" in
   "version ${VERSION}") [ -x ${T2S} ]; exit $? ;;
-  uninstall) rm -f /etc/sudoers.d/foxhole-*; rm -rf ${DIR}; exit 0 ;;
+  uninstall) rm -f /etc/sudoers.d/foxhole-*; rm -rf ${dir}; exit 0 ;;
   "pkill -f -- --device foxhole[0]" | \\
   "ip addr add 198.18.0.1/15 dev foxhole0" | \\
   "ip link set dev foxhole0 up" | \\
@@ -118,21 +128,80 @@ case "$1" in
 esac
 no
 `;
+};
+
+/** macOS's: global-darwin.ts's commands, and relay.ts's direct-site routes. Linux's guard has no match here: a killed session is `foxhole restore`'s. */
+const darwinScript = () => {
+  const dir = dirOf("darwin"), NET = `${dir}/net`, T2S = `${dir}/tun2socks`;
+  return `${preamble(NET)}
+# route's way out the uplink: a gateway, or -interface DEV
+out() { if [ "$1" = -interface ]; then [ $# = 2 ] && dev "$2"; else [ $# = 1 ] && ip4 "$1"; fi; }
+
+case "$*" in
+  "version ${VERSION}") [ -x ${T2S} ]; exit $? ;;
+  uninstall) rm -f /etc/sudoers.d/foxhole-*; rm -rf ${dir}; exit 0 ;;
+  "pkill -f utun12[3]" | \\
+  "pkill -f foxhole-dn[s]" | \\
+  "killall -HUP mDNSResponder" | \\
+  "ifconfig utun123 198.18.0.1 198.18.0.1 up" | \\
+  "route -n add -net 0.0.0.0/1 198.18.0.1" | \\
+  "route -n add -net 128.0.0.0/1 198.18.0.1" | \\
+  "route -n delete -net 0.0.0.0/1" | \\
+  "route -n delete -net 128.0.0.0/1" | \\
+  "route -n add -inet6 -net ::/1 ::1 -reject" | \\
+  "route -n add -inet6 -net 8000::/1 ::1 -reject" | \\
+  "route -n delete -inet6 -net ::/1" | \\
+  "route -n delete -inet6 -net 8000::/1")
+    run "$@" ;;
+esac
+
+# A network service's name can be anything ("USB 10/100 LAN"); it's only ever an argument.
+if [ "$1 $2" = "networksetup -setdnsservers" ]; then
+  case "$3" in ""|-*) no ;; esac
+  (shift 3; [ $# -ge 1 ] || exit 1; for a; do case "$a" in Empty) ;; ""|*[!0-9a-fA-F:.]*) exit 1 ;; esac; done) || no
+  run "$@"
+fi
+
+for a; do case "$a" in ""|*[!A-Za-z0-9._:/@-]*) no ;; esac; done
+
+case "$1" in
+  ${T2S})
+    [ $# = 5 ] && [ "$2" = --device ] && [ "$3" = utun123 ] && [ "$4" = --proxy ] && port "$5" socks5://127.0.0.1: || no
+    run "$@" ;;
+  route)
+    [ "$2" = -n ] || no
+    case "$3 $4" in
+      "add -host"|"change -host") ip4 "$5" && (shift 5; out "$@") || no ;;
+      "delete -host") [ $# = 5 ] && ip4 "$5" || no ;;
+      "add -net") private "$5" && (shift 5; out "$@") || no ;;
+      "delete -net") [ $# = 5 ] && private "$5" || no ;;
+      *) no ;;
+    esac
+    run "$@" ;;
+esac
+no
+`;
+};
+
+/** The root script for a platform. */
+export const helperScript = (platform: string = process.platform) => (platform === "darwin" ? darwinScript() : linuxScript());
 
 /** A root shell's script putting the helper in, for this user. sudoers files with a "." are skipped, and a bad one goes before it can count. */
-export const installScript = (uid: number, tun2socks: string) => {
+export const installScript = (uid: number, tun2socks: string, platform: string = process.platform) => {
+  const dir = dirOf(platform), net = `${dir}/net`, t2s = `${dir}/tun2socks`;
   const rule = `/etc/sudoers.d/foxhole-${uid}`;
   return `set -e
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask 022
-mkdir -p ${DIR}
-cat > ${NET}.new <<'FOXHOLE_EOF'
-${helperScript()}FOXHOLE_EOF
-cp ${q(tun2socks)} ${T2S}.new
-chown 0:0 ${DIR} ${NET}.new ${T2S}.new
-chmod 755 ${DIR} ${NET}.new ${T2S}.new
-mv -f ${NET}.new ${NET}
-mv -f ${T2S}.new ${T2S}
-echo '#${uid} ALL=(root) NOPASSWD: ${NET}' > ${rule}.new
+mkdir -p ${dir}
+cat > ${net}.new <<'FOXHOLE_EOF'
+${helperScript(platform)}FOXHOLE_EOF
+cp ${q(tun2socks)} ${t2s}.new
+chown 0:0 ${dir} ${net}.new ${t2s}.new
+chmod 755 ${dir} ${net}.new ${t2s}.new
+mv -f ${net}.new ${net}
+mv -f ${t2s}.new ${t2s}
+echo '#${uid} ALL=(root) NOPASSWD: ${net}' > ${rule}.new
 chmod 440 ${rule}.new
 visudo -cf ${rule}.new >/dev/null || { rm -f ${rule}.new; exit 1; }
 mv -f ${rule}.new ${rule}
@@ -142,10 +211,22 @@ mv -f ${rule}.new ${rule}
 /** The session's commands through the helper: its own script and tun2socks, no password. */
 export function helperPriv(): Priv {
   const priv = sudoPriv("", ["-n", NET]);
-  return { ...priv, guard: (orig) => priv.spawn(["guard", orig.gw ?? "-", orig.dev], true) };
+  return {
+    ...priv,
+    guard: (orig) => priv.spawn(["guard", orig.gw ?? "-", orig.dev], true),
+    // macOS's DNS relay, as this user: its routes through the helper
+    relay: {
+      via: ["sudo", "-n", NET],
+      spawn: (argv) => {
+        const p = spawn(argv[0], argv.slice(1), { stdio: ["pipe", "ignore", "pipe"] });
+        logStream(basename(argv[0]), p.stderr);
+        return p;
+      },
+    },
+  };
 }
 
-export const helperInstalled = () => process.platform === "linux" && existsSync(NET);
+export const helperInstalled = () => SUPPORTED && existsSync(NET);
 
 /** The helper's in, the version this Foxhole expects, and sudo lets this user run it. */
 export const helperReady = async (): Promise<boolean> =>
@@ -160,9 +241,9 @@ export const removeHelper = async (): Promise<void> => {
  * again after this) puts it in. Null: as before, sudo with the password. `off`: the user turned it off in Settings.
  */
 export async function helperFor(password: string | null, tun2socks: () => Promise<string>, off = false): Promise<{ priv: Priv; tun2socksPath: string } | null> {
-  if (process.platform !== "linux" || password === null) return null;
+  if (!SUPPORTED || password === null) return null;
   if (!(await helperReady())) {
-    if (off || !password) return null;
+    if (off) return null; // "" as the password: Touch ID just let sudo through (macOS)
     try {
       await sudoPriv(password).run(["sh", "-c", installScript(process.getuid!(), await tun2socks())]);
     } catch (err) {
