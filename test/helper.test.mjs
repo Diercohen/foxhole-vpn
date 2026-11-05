@@ -4,7 +4,8 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { helperScript, installScript } from "../dist/helper.js";
+import { WIN_ALLOWED, helperScript, installScript, winInstall, winScript, winScripts } from "../dist/helper.js";
+import { DNS_FLUSH, NRPT_ADD, pinRoute, planStaleCleanup as winStale, ps } from "../dist/global-win32.js";
 import { directRoutes } from "../dist/relay.js";
 import { useSplit } from "../dist/split.js";
 import { PRIVATE_CIDRS, pinCmd, planDirect, planDirectTeardown, planSetup, planStaleCleanup, planTeardown } from "../dist/global.js";
@@ -105,6 +106,32 @@ for (const argv of [
 const macInst = installScript(501, "/Users/me/.cache/foxhole-vpn/tun2socks", "darwin");
 assert.ok(macInst.includes(`echo '#501 ALL=(root) NOPASSWD: ${M}/net' > /etc/sudoers.d/foxhole-501.new`), "macOS: a rule for this uid and script");
 assert.equal(spawnSync("sh", ["-n", "-c", macInst]).status, 0, "macOS: the installer parses");
+
+// Windows: the helper's checks are .NET regexes in PowerShell; these patterns mean the same to JavaScript, with \z as $.
+const winPatterns = WIN_ALLOWED.map((r) => new RegExp(r.replaceAll("\\z", "$")));
+const winOk = (argv) => argv.every((a) => /^[A-Za-z0-9.\/:=_-]+$/.test(a)) && winPatterns.some((r) => r.test(argv.join(" ")));
+const up = { ifIndex: 12, gw: "192.168.1.1" };
+for (const argv of [
+  pinRoute("add", "151.101.1.1", up), pinRoute("delete", "151.101.1.1", up), pinRoute("add", "10.0.0.0/8", up), pinRoute("delete", "100.64.0.0/10", up), pinRoute("add", "9.9.9.9", { ifIndex: 3, gw: null }),
+  ...["0.0.0.0/1", "128.0.0.0/1"].flatMap((h) => [["netsh", "interface", "ipv4", "add", "route", `prefix=${h}`, "interface=foxhole0", "metric=1", "store=active"], ["netsh", "interface", "ipv4", "delete", "route", `prefix=${h}`, "interface=foxhole0", "store=active"]]),
+  ["netsh", "interface", "ipv4", "set", "address", "name=foxhole0", "source=static", "address=198.18.0.1", "mask=255.254.0.0"], ["netsh", "interface", "ipv4", "set", "interface", "interface=foxhole0", "metric=1"],
+  ["netsh", "advfirewall", "firewall", "add", "rule", "name=foxhole-vpn", "dir=out", "action=block", "protocol=any", "remoteip=2000::/3"], ["netsh", "advfirewall", "firewall", "add", "rule", "name=foxhole-vpn", "dir=out", "action=block", "protocol=UDP", "remoteport=443"],
+  winStale()[1], ["taskkill", "/F", "/IM", "tun2socks.exe"],
+]) assert.ok(winOk(argv), `refused: ${argv.join(" ")}`);
+for (const argv of [
+  ["cmd", "/c", "whoami"], ["powershell.exe", "-c", "id"], ["netsh", "interface", "ipv4", "add", "route", "prefix=0.0.0.0/0", "interface=12", "store=active"], ["netsh", "interface", "ipv4", "add", "route", "prefix=1.2.3.0/24", "interface=12", "store=active"],
+  ["netsh", "advfirewall", "set", "allprofiles", "state", "off"], ["netsh", "advfirewall", "firewall", "delete", "rule", "name=all"], ["netsh", "advfirewall", "firewall", "add", "rule", "name=x", "dir=in", "action=allow"],
+  ["netsh", "interface", "ipv4", "set", "address", "name=Ethernet", "source=dhcp"], ["taskkill", "/F", "/IM", "explorer.exe"],
+  ["netsh", "interface", "ipv4", "add", "route", "prefix=1.2.3.4/32", "interface=12", "store=active", "&", "whoami"], ["netsh", "interface", "ipv4", "add", "route", "prefix=1.2.3.4/32", "interface=12", "store=active\n"],
+]) assert.ok(!winOk(argv), `allowed: ${argv.join(" ")}`);
+for (const line of [ps(NRPT_ADD), winStale()[0], ps(DNS_FLUSH)]) assert.ok(winScripts().includes(line.at(-1)), `not in the helper: ${line.at(-1)}`);
+const sid = "S-1-5-21-1-2-3-1001";
+const winFull = winInstall(sid, "C:\\Users\\o'brien\\.cache\\foxhole-vpn\\tun2socks.exe");
+assert.ok(!winFull.includes('"foxhole"') && winFull.includes("C:\\Users\\o''brien"), "the install's path quoted for PowerShell");
+assert.ok(winFull.includes(`(A;;GRGX;;;${sid})`), "only this user may start the task");
+const winNet = winScript("foxhole-net-x");
+for (const r of ["'^[A-Za-z0-9./:=_-]+\\z'", "-match '\\s'", "'^socks5://127\\.0\\.0\\.1:\\d+\\z'"]) assert.ok(winNet.includes(r), `in the script as a regex: ${r}`);
+assert.ok(winFull.length < 32_000, `the install fits a command line: ${winFull.length}`);
 
 rmSync(dir, { recursive: true });
 console.log("ok - network helper");

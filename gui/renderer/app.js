@@ -483,11 +483,18 @@ function renderSettings() {
     $("#helper-group").hidden = S.helper === null || S.helper === undefined;
     $("#helper").classList.toggle("on", on);
     $("#helper").setAttribute("aria-checked", String(on));
+    const win = fh.platform === "win32";
+    if (win) {
+      $("#helper-label").textContent = "Whole-system mode without Windows' admin prompt";
+      $("#helper").setAttribute("aria-label", "Whole-system mode without Windows' admin prompt");
+    }
     $("#helper-hint").textContent = !on
-      ? "Foxhole asks for your password each time you turn it on."
+      ? win ? "Windows asks you to allow it each time you turn it on." : "Foxhole asks for your password each time you turn it on."
       : S.helper
-        ? "Foxhole's network helper is set up: there's no password to type. It can only change Foxhole's own network routes."
-        : "Foxhole asks for your password once, the next time you turn it on, to set up its network helper. Then never again.";
+        ? `Foxhole's network helper is set up: ${win ? "Windows won't ask" : "there's no password to type"}. It can only change Foxhole's own network routes.`
+        : win
+          ? "Windows asks you to allow it once, the next time you turn it on, to set up Foxhole's network helper. Then never again."
+          : "Foxhole asks for your password once, the next time you turn it on, to set up its network helper. Then never again.";
   });
   section("settings", [S.settings.share, S.settings.port, S.settings.username, S.settings.password, S.settings.relay, S.lanIp, S.fwHint, S.caOk], () => {
     const s = S.settings;

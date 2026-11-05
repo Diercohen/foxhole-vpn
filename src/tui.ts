@@ -797,6 +797,10 @@ export class Tui {
       // a download goes through the VPN (GitHub can be slow or blocked), its progress in the status line
       const via = { host: dialHost(this.#host), port: this.#proxy.port };
       const tun2socks = async () => (this.#tun2socksPath ??= await ensureTun2socks({ proxy: via, say: (msg) => ((this.#message = dim(msg)), this.#render()) }));
+      if (process.platform === "win32") {
+        this.#message = dim("going global… if Windows asks, allow PowerShell");
+        this.#render();
+      }
       const helper = await helperFor(password, tun2socks, this.#settings.noHelper);
       if (!helper) await tun2socks();
       this.#message = dim(process.platform === "win32" ? "going global… if Windows asks, allow PowerShell" : "going global…");

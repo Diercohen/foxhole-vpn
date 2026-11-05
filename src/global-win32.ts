@@ -124,6 +124,9 @@ export function pinRoute(op: "add" | "delete", prefix: string, up: { ifIndex: nu
   ];
 }
 
+export const NRPT_ADD = `Add-DnsClientNrptRule -Namespace '.' -NameServers '127.0.0.1' -Comment '${TAG}'; Clear-DnsClientCache`;
+export const DNS_FLUSH = "Clear-DnsClientCache";
+
 /** netsh/PowerShell argv that remove everything a crashed session may have left behind. Pure. */
 export function planStaleCleanup(): string[][] {
   return [
@@ -163,12 +166,8 @@ export const HELPER_CMD = "elevated-helper";
  * is declined. The helper exits with close() (the session's stop()), or as the app goes.
  */
 export async function uacPriv(): Promise<Priv> {
-  const pipe = `\\\\.\\pipe\\foxhole-vpn-${randomBytes(16).toString("hex")}`; // only the helper is told it
-  let take!: (sock: Socket) => void;
-  const connected = new Promise<Socket>((resolve) => (take = resolve));
-  const server = net.createServer((sock) => (server.close(), take(sock))); // the first one only
-  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(pipe, resolve));
-  try {
+  // only the helper is told the pipe's name
+  return viaPipe(`\\\\.\\pipe\\foxhole-vpn-${randomBytes(16).toString("hex")}`, async (pipe) => {
     // An elevated process doesn't inherit the environment, so an elevated PowerShell sets the variable that
     // has the desktop app's Electron run as plain Node (as on macOS), then starts the helper.
     const q = (s: string) => `'${s.replaceAll("'", "''")}'`;
@@ -183,12 +182,34 @@ export async function uacPriv(): Promise<Priv> {
     await exec(cmd, rest, { windowsHide: true }).catch((err: { code?: number; stdout?: string; message: string }) => {
       throw new Error(err.code === 2 ? "not allowed in Windows' admin prompt" : `Windows' admin prompt: ${err.stdout?.trim() || err.message}`);
     });
+  });
+}
+
+/** Listens on `pipe`, has `start` start a helper, and gives what talks to the first one that connects. */
+async function viaPipe(pipe: string, start: (pipe: string) => Promise<unknown>): Promise<Priv> {
+  let take!: (sock: Socket) => void;
+  const connected = new Promise<Socket>((resolve) => (take = resolve));
+  const server = net.createServer((sock) => (server.close(), take(sock))); // the first one only
+  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(pipe, resolve));
+  try {
+    await start(pipe);
     const late = new Promise<never>((_, reject) => setTimeout(reject, 30_000, new Error("the admin helper didn't start")).unref());
     return pipePriv(await Promise.race([connected, late]));
   } finally {
     server.close();
   }
 }
+
+/** The network helper's scheduled task (helper.ts), on its pipe: no prompt. */
+export const taskPriv = (task: string): Promise<Priv> =>
+  viaPipe(`\\\\.\\pipe\\${task}`, () => exec("schtasks", ["/run", "/tn", task], { windowsHide: true }));
+
+/** This user's SID: what names the helper's task and pipe. */
+export const windowsSid = (): Promise<string> => psOut("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value");
+
+/** Whether `task` is there for this user to start. */
+export const taskExists = (task: string): Promise<boolean> =>
+  exec("schtasks", ["/query", "/tn", task], { windowsHide: true }).then(() => true, () => false);
 
 type Exit = [code: number | null, signal: NodeJS.Signals | null];
 type Kid = EventEmitter & { exitCode: number | null; signalCode: NodeJS.Signals | null; stderr: PassThrough; kill(): boolean };
@@ -404,7 +425,7 @@ export class WindowsRouting implements Rerouter<WinWatch> {
     await this.#pin(up);
     if (this.#directDns) await this.#pinResolvers(up);
     this.#orig = up;
-    await priv.run(ps("Clear-DnsClientCache"), true); // drop failures cached while offline
+    await priv.run(ps(DNS_FLUSH), true); // drop failures cached while offline
   }
 
   label({ up }: WinWatch): string {
@@ -416,7 +437,7 @@ export class WindowsRouting implements Rerouter<WinWatch> {
     const { priv, proxyHost, proxyPort } = this.#o;
     this.#dns = await startDnsForwarder({ socksHost: proxyHost, socksPort: proxyPort, dohHost: DOH_HOST, host: "127.0.0.1", port: 53, connections: 8 });
     try {
-      await priv.run(ps(`Add-DnsClientNrptRule -Namespace '.' -NameServers '127.0.0.1' -Comment '${TAG}'; Clear-DnsClientCache`));
+      await priv.run(ps(NRPT_ADD));
       this.#undo.push(planStaleCleanup()[0]);
       // Prove the system resolver now answers through the tunnel; else fall back.
       await Promise.race([

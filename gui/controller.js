@@ -757,6 +757,7 @@ export class Controller extends EventEmitter {
         this.#say("info", "preparing tun2socks…");
         // a download goes through the VPN, its progress in the status line
         const tun2socks = async () => (this.#tun2socksPath ??= await ensureTun2socks({ proxy: this.via(), say: (msg) => this.#say("info", msg) }));
+        if (process.platform === "win32") this.#say("info", "going global… if Windows asks, allow PowerShell (Foxhole's network helper)");
         const helper = await helperFor(password, tun2socks, this.#settings.noHelper);
         if (!helper) await tun2socks();
         this.#say("info", process.platform === "win32" ? "going global… if Windows asks, allow PowerShell (Foxhole's network helper)" : "going global…");
@@ -1221,7 +1222,7 @@ export class Controller extends EventEmitter {
       proxy: this.#active ? { addr: this.#proxyAddr(), shared: this.#host === "0.0.0.0" } : null,
       splitSummary: splitSummary(sp),
       // the relay's auth key stays in the main process, out of the window; the id (it's in a URL) and whether a key is set are shown
-      helper: ["linux", "darwin"].includes(process.platform) ? helperInstalled() : null, // null: no network helper here
+      helper: ["linux", "darwin", "win32"].includes(process.platform) ? helperInstalled() : null, // null: no network helper here
       settings: { ...this.#settings, relay: this.#settings.relay ? { deploymentId: this.#settings.relay.deploymentId, set: true } : null },
       lanIp: lanIp(),
       fwHint: this.#fwHint,

@@ -66,7 +66,10 @@ foxhole restore             # undo whole-system routing if foxhole was killed
 In the TUI: pick a country, **`g`** toggles whole-system mode (asks for your
 password in-app), **`t`** split tunneling, **`l`** logs, **`s`** settings.
 On Windows, whole-system mode asks for administrator rights in Windows' own
-prompt: allow **Windows PowerShell**.
+prompt, once: allow **Windows PowerShell**. With it Foxhole sets up its network helper,
+a scheduled task running a PowerShell script in `C:\Program Files\Foxhole Helper`, and
+Windows doesn't ask again. It only runs the commands whole-system mode needs, and only
+you may start it. Turn it off in **Settings** (the app), which also removes it.
 
 On Linux and macOS the password is asked **once**: with it Foxhole sets up a small
 network helper, as other VPN apps do, and whole-system mode needs no password after
