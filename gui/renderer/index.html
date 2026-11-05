@@ -182,6 +182,12 @@
 <section class="sheet glass" id="sheet-settings" aria-label="Settings">
   <header><span class="badge"><svg class="i"><use href="#i-sliders"/></svg></span><div><h2>Settings</h2><p>The proxy, sharing it, and your account.</p></div><button class="icon-btn close" data-close><svg class="i"><use href="#i-close"/></svg></button></header>
   <div class="scroll">
+    <div class="group desktop-only" id="autostart-group" hidden>
+      <div class="row-line">
+        <div><div class="label"><svg class="i"><use href="#i-power"/></svg>Start when you log in</div><div class="hint" id="autostart-hint"></div></div>
+        <button class="switch" id="autostart" role="switch" aria-checked="false" aria-label="Start when you log in"></button>
+      </div>
+    </div>
     <div class="group">
       <div class="row-line">
         <div><div class="label"><svg class="i"><use href="#i-phone"/></svg>Share with devices on this network</div><div class="hint" id="share-hint"></div></div>

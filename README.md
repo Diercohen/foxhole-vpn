@@ -34,7 +34,7 @@ routing**, on Linux, macOS and Windows. A desktop app or a terminal app.
 - **Windows:** the `.exe`. SmartScreen: **More info → Run anyway**.
 - **Linux:** the `.deb` (preferred) or `.AppImage`.
 
-It updates itself and lives in the tray / menu bar.
+It updates itself and lives in the tray / menu bar; **Settings → Start when you log in** starts it there, connected to your last location.
 
 **Terminal app** (Node.js 18.18+):
 

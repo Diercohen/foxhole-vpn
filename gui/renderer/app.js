@@ -949,12 +949,21 @@ async function wifiAsk(btn) {
 
 let openSheet = null;
 
+/** Settings' switch, as the system has it: read each time the sheet opens, as it can be changed there too. Null: this copy can't (main.js). */
+function drawAutostart(on) {
+  $("#autostart-group").hidden = on === null;
+  $("#autostart").classList.toggle("on", !!on);
+  $("#autostart").setAttribute("aria-checked", String(!!on));
+  $("#autostart-hint").textContent = `Foxhole opens in the ${fh.platform === "darwin" ? "menu bar" : "tray"} and connects to your last location.`;
+}
+
 // .locations: a sheet on a phone (style.css), the side panel elsewhere
 function showSheet(name) {
   for (const el of document.querySelectorAll(".sheet, .locations")) el.classList.toggle("on", el.id === `sheet-${name}`);
   openSheet = name;
   $("#scrim").classList.add("on");
   if (name === "settings") act("openSettings");
+  if (name === "settings" && !PHONE) void act("autostart").then(drawAutostart);
   if (name === "split") act("openSplit");
   if (name === "logs") void act("logs").then((lines) => ((logBuf = lines.slice(-1000)), drawLogs(true)));
 }
@@ -1169,6 +1178,7 @@ document.addEventListener("click", async (e) => {
     case "open-logs": return showSheet("logs");
     case "copy-logs": return (await act("copyLogs")) && flash(t, `${icon("check")}Copied`);
     case "share": return act("setShare", !S.settings.share);
+    case "autostart": return drawAutostart(await act("autostart", !t.classList.contains("on")));
     case "reveal": {
       const pw = $("#password");
       pw.type = pw.type === "password" ? "text" : "password";

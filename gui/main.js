@@ -9,6 +9,7 @@ import { Controller } from "./controller.js";
 import { createTray } from "./tray.js";
 import { createBadge } from "./badge.js";
 import { Updater } from "./updater.js";
+import { AUTOSTART_FLAG, loginItem } from "./autostart.js";
 import { REPO_URL } from "./dist/ui.js";
 import { FULL_DISK_ACCESS } from "./dist/profile.js";
 import { useFastlyFallback } from "./dist/dns.js";
@@ -65,6 +66,17 @@ function updateTarget() {
   }
   return null;
 }
+
+/** Starting at login, for a copy that stays where it is: not in development, nor from the Mac's disk image. */
+function autostartItem() {
+  if (!app.isPackaged || (process.platform === "darwin" && /^\/Volumes\/|\/AppTranslocation\//.test(process.execPath))) return null;
+  // an AppImage from its file, the way it was started: Ubuntu 24.04 may only run it with --no-sandbox
+  return loginItem(process.env.APPIMAGE ?? process.execPath, { electron: app, args: process.argv.filter((a) => a === "--no-sandbox") });
+}
+const autostart = autostartItem();
+const startHidden = process.argv.includes(AUTOSTART_FLAG);
+// a restart (an update, Full Disk Access) is one the user asked for: with the window
+const restartArgs = () => process.argv.slice(1).filter((a) => a !== AUTOSTART_FLAG && a !== "--whole-system");
 
 const updater = new Updater({ dir: join(app.getPath("userData"), "update"), downloads: app.getPath("downloads"), target: updateTarget(), via: () => controller.via(), changed: () => controller.emit("change") });
 const controller = new Controller({
@@ -161,11 +173,12 @@ ipcMain.on("signin", (e, json) => {
   }
 });
 
-app.on("second-instance", show);
+app.on("second-instance", (_e, argv) => argv.includes(AUTOSTART_FLAG) || show());
 app.on("activate", show); // macOS: a click on the Dock icon
 
 app.whenReady().then(() => {
   nativeTheme.themeSource = "dark"; // the window frame and scrollbars on Windows and Linux
+  if (autostart?.on()) autostart.set(true); // a moved AppImage or app: at its new path from now on
   win = new BrowserWindow({
     width: 1120,
     height: 740,
@@ -178,11 +191,13 @@ app.whenReady().then(() => {
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     trafficLightPosition: { x: 20, y: 20 },
     icon: here("build/icon.png"),
+    // started hidden, the window's animations mustn't run: by default a window that hasn't been shown yet counts as visible
+    paintWhenInitiallyHidden: !startHidden,
     webPreferences: { preload: here("preload.cjs"), sandbox: true, contextIsolation: true },
   });
   const badge = createBadge(win, here("build/icon.png")); // the app's icon, with a dot while connected
   badge.update(controller.state());
-  win.once("ready-to-show", () => win.show());
+  if (!startHidden) win.once("ready-to-show", () => win.show());
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (e) => e.preventDefault());
   // Closing the window leaves Foxhole running in the tray; it quits from there (or Cmd+Q).
@@ -241,12 +256,14 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle("act", (e, name, ...args) => {
-    if (e.sender !== win.webContents || !(ACTIONS.has(name) || ["restartToUpdate", "relaunch", "update", "installUpdateFile", "showUpdateFile"].includes(name))) throw new Error(`no such action: ${name}`);
+    if (e.sender !== win.webContents || !(ACTIONS.has(name) || ["restartToUpdate", "relaunch", "update", "installUpdateFile", "showUpdateFile", "autostart"].includes(name))) throw new Error(`no such action: ${name}`);
+    // with no argument, only asks; null: this copy can't
+    if (name === "autostart") return autostart && (args.length && autostart.set(args[0] === true), autostart.on());
     if (name === "update") return updater.update(); // resolves once the new version is ready (true) or the try failed
     // the downloaded update, to install by hand
     if (name === "installUpdateFile") return void (updater.installByHand() && app.quit()); // opened once the app has quit
     if (name === "showUpdateFile") return updater.file() && void shell.showItemInFolder(updater.file());
-    if (name === "relaunch") return void (app.relaunch({ execPath: process.env.APPIMAGE ?? process.execPath }), app.quit()); // macOS applies Full Disk Access to a new process
+    if (name === "relaunch") return void (app.relaunch({ execPath: process.env.APPIMAGE ?? process.execPath, args: restartArgs() }), app.quit()); // macOS applies Full Disk Access to a new process
     return name === "restartToUpdate" ? restartToUpdate() : controller[name](...args);
   });
   ipcMain.handle("open", (e, which) => e.sender === win.webContents && LINKS[which] && shell.openExternal(LINKS[which]));
@@ -276,7 +293,7 @@ app.on("before-quit", (e) => {
   void controller.shutdown().finally(() => {
     done = true;
     // the restart into it turns whole-system mode back on if it was
-    const args = [...process.argv.slice(1).filter((a) => a !== "--whole-system"), ...(whole ? ["--whole-system"] : [])];
+    const args = [...restartArgs(), ...(whole ? ["--whole-system"] : [])];
     // a downloaded version goes in (Windows: only on a restart, its installer then starts it)
     const started = updater.install({ relaunch, args });
     // an AppImage from its file: the folder it runs from goes away with it
