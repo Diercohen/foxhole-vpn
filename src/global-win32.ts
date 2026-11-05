@@ -186,23 +186,37 @@ export async function uacPriv(): Promise<Priv> {
 }
 
 /** Listens on `pipe`, has `start` start a helper, and gives what talks to the first one that connects. */
-async function viaPipe(pipe: string, start: (pipe: string) => Promise<unknown>): Promise<Priv> {
+async function viaPipe(pipe: string, start: (pipe: string) => Promise<unknown>, again = 0): Promise<Priv> {
   let take!: (sock: Socket) => void;
   const connected = new Promise<Socket>((resolve) => (take = resolve));
   const server = net.createServer((sock) => (server.close(), take(sock))); // the first one only
   await new Promise<void>((resolve, reject) => server.once("error", reject).listen(pipe, resolve));
+  let repeat: NodeJS.Timeout | undefined;
   try {
     await start(pipe);
-    const late = new Promise<never>((_, reject) => setTimeout(reject, 30_000, new Error("the admin helper didn't start")).unref());
+    if (again) repeat = setInterval(() => void start(pipe).catch(() => {}), again);
+    // 90 s: PowerShell can take over 30 s to start on a busy computer (seen with a big copy, its files being scanned)
+    const late = new Promise<never>((_, reject) => setTimeout(reject, 90_000, new Error("the admin helper didn't start")).unref());
     return pipePriv(await Promise.race([connected, late]));
   } finally {
+    clearInterval(repeat);
     server.close();
   }
 }
 
 /** The network helper's scheduled task (helper.ts), on its pipe: no prompt. */
-export const taskPriv = (task: string): Promise<Priv> =>
-  viaPipe(`\\\\.\\pipe\\${task}`, () => exec("schtasks", ["/run", "/tn", task], { windowsHide: true }));
+export async function taskPriv(task: string): Promise<Priv> {
+  for (let tries = 30; ; tries--) {
+    try {
+      // /run says SUCCESS but does nothing while Windows still counts the last run, so again until it connects (one runs at a time)
+      return await viaPipe(`\\\\.\\pipe\\${task}`, () => exec("schtasks", ["/run", "/tn", task], { windowsHide: true }), 5000);
+    } catch (err) {
+      // the last session's helper hasn't gone yet (its pipe's name stays taken until then): a stop and start, or a crash
+      if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE" || !tries) throw err;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+}
 
 /** This user's SID: what names the helper's task and pipe. */
 export const windowsSid = (): Promise<string> => psOut("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value");
@@ -334,8 +348,8 @@ export class WindowsRouting implements Rerouter<WinWatch> {
 
     this.#t2s = priv.spawn([this.#o.tun2socksPath, "--device", TUN, "--proxy", `socks5://${proxyHost}:${proxyPort}`]);
     this.#t2s.on("exit", onExit);
-    // 30 s: an antivirus may hold a tun2socks.exe it hasn't seen, as with the helper's new copy on its first run
-    await waitFor(`the ${TUN} adapter to appear`, () => psOut(`Get-NetAdapter -Name '${TUN}' -ErrorAction Stop`), 30_000);
+    // 60 s: Windows took 4 to 32 s to create it on a busy 4 GB VM
+    await waitFor(`the ${TUN} adapter to appear`, () => psOut(`Get-NetAdapter -Name '${TUN}' -ErrorAction Stop`), 60_000);
     await priv.run(["netsh", "interface", "ipv4", "set", "address", `name=${TUN}`, "source=static", `address=${TUN_ADDR}`, `mask=${TUN_MASK}`]);
     await priv.run(["netsh", "interface", "ipv4", "set", "interface", `interface=${TUN}`, "metric=1"], true);
 
