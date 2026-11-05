@@ -478,6 +478,17 @@ $("#apps-modal").addEventListener("keydown", (e) => {
 // ── Settings ───────────────────────────────────────────────────────────────────────────────
 
 function renderSettings() {
+  section("helper", [S.helper, S.settings.noHelper], () => {
+    const on = !S.settings.noHelper;
+    $("#helper-group").hidden = S.helper === null || S.helper === undefined;
+    $("#helper").classList.toggle("on", on);
+    $("#helper").setAttribute("aria-checked", String(on));
+    $("#helper-hint").textContent = !on
+      ? "Foxhole asks for your password each time you turn it on."
+      : S.helper
+        ? "Foxhole's network helper is set up: there's no password to type. It can only change Foxhole's own network routes."
+        : "Foxhole asks for your password once, the next time you turn it on, to set up its network helper. Then never again.";
+  });
   section("settings", [S.settings.share, S.settings.port, S.settings.username, S.settings.password, S.settings.relay, S.lanIp, S.fwHint, S.caOk], () => {
     const s = S.settings;
     const share = $("#share");
@@ -528,7 +539,7 @@ function renderPassword() {
     const input = $("#pw-input");
     input.disabled = S.pw.checking;
     const f = S.pw.for ?? "global"; // what it's for: whole-system mode, or relay mode's certificate
-    $("#pw-why").innerHTML = `${f === "global" ? "Whole-system mode routes all of this computer's traffic through the VPN, which needs" : `${f === "trust" ? "Trusting" : "Removing"} Foxhole's certificate for the system and its browsers needs`} administrator rights. Enter your <b>login password</b> (used by sudo):`;
+    $("#pw-why").innerHTML = `${f === "global" ? "Whole-system mode routes all of this computer's traffic through the VPN, which needs" : `${f === "trust" ? "Trusting" : "Removing"} Foxhole's certificate for the system and its browsers needs`} administrator rights. Enter your <b>login password</b> (used by sudo)${f === "global" && S.helper === false && !S.settings.noHelper ? ", once: Foxhole sets up a small network helper with it, so it won't ask again" : ""}:`;
     $("#pw-ok").innerHTML = S.pw.checking ? '<span class="spin"></span><span>Checking…</span>' : `<span>${{ global: "Go whole system", trust: "Trust it", untrust: "Remove it" }[f]}</span>`;
     $("#pw-ok").disabled = S.pw.checking;
     const note = $("#pw-note");
@@ -1178,6 +1189,7 @@ document.addEventListener("click", async (e) => {
     case "open-logs": return showSheet("logs");
     case "copy-logs": return (await act("copyLogs")) && flash(t, `${icon("check")}Copied`);
     case "share": return act("setShare", !S.settings.share);
+    case "helper": return act("setHelper", !!S.settings.noHelper);
     case "autostart": return drawAutostart(await act("autostart", !t.classList.contains("on")));
     case "reveal": {
       const pw = $("#password");

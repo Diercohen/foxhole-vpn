@@ -68,6 +68,15 @@ password in-app), **`t`** split tunneling, **`l`** logs, **`s`** settings.
 On Windows, whole-system mode asks for administrator rights in Windows' own
 prompt: allow **Windows PowerShell**.
 
+On Linux the password is asked **once**: with it Foxhole sets up a small network
+helper, as other VPN apps do, and whole-system mode needs no password after that.
+The helper is a root-owned script (`/usr/local/libexec/foxhole/net`) and one sudoers
+rule (`/etc/sudoers.d/foxhole-<uid>`) for your user, no background service. It only
+runs the exact commands whole-system mode needs, so a program of yours could use it
+to send this computer's traffic through a proxy on this computer, but not to get a
+root shell. Turn it off in **Settings** (the app), which also removes it, or run
+`sudo /usr/local/libexec/foxhole/net uninstall`.
+
 Point an app at the proxy:
 
 ```sh

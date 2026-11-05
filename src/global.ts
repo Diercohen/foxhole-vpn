@@ -399,6 +399,8 @@ export interface Priv {
   spawn(argv: string[], lifeline?: boolean): ReturnType<typeof spawn>;
   /** The session is done with it: Windows' elevated helper (uacPriv) exits. */
   close?(): void;
+  /** The root shell that undoes a killed session, where a shell can't be asked for (helper.ts). */
+  guard?(orig: DefaultRoute): ReturnType<typeof spawn>;
 }
 
 /**
@@ -469,13 +471,14 @@ export function sudoUsesTouchId(): boolean {
 export const touchIdSudo = (): Promise<boolean> => sudoOk(["-v"], "");
 
 /** Elevates each command with `sudo -S`, feeding the password on stdin ("" after Touch ID: sudo uses what it cached). */
-export function sudoPriv(password: string): Priv {
+/** `prefix`: sudo's own options and the command each one goes through (helper.ts). */
+export function sudoPriv(password: string, prefix: string[] = []): Priv {
   // Nothing at all without a password: an empty line would count as a wrong attempt.
   const feed = (p: ReturnType<typeof spawn>) => p.stdin!.end(password && password + "\n");
   return {
     run: (argv, quiet = false) =>
       new Promise<void>((resolve, reject) => {
-        const p = spawn("sudo", ["-S", "-p", "", ...argv], { stdio: ["pipe", "ignore", "pipe"], ...SUDO_SESSION });
+        const p = spawn("sudo", ["-S", "-p", "", ...prefix, ...argv], { stdio: ["pipe", "ignore", "pipe"], ...SUDO_SESSION });
         let err = "";
         p.stderr!.on("data", (d) => (err += d));
         p.on("error", reject);
@@ -487,7 +490,7 @@ export function sudoPriv(password: string): Priv {
     spawn: (argv, lifeline = false) => {
       // stderr goes to the in-app log (the TUI's Logs popup), not the terminal: it would
       // corrupt the screen. Always read, so a chatty child never blocks on a full pipe.
-      const p = spawn("sudo", ["-S", "-p", "", ...argv], { stdio: ["pipe", "ignore", "pipe"], ...SUDO_SESSION });
+      const p = spawn("sudo", ["-S", "-p", "", ...prefix, ...argv], { stdio: ["pipe", "ignore", "pipe"], ...SUDO_SESSION });
       logStream(argv.includes("--input-type=module") ? "dns relay" : basename(argv[0]), p.stderr!);
       if (lifeline) p.stdin!.write(password && password + "\n");
       else feed(p);
@@ -590,7 +593,7 @@ export class GlobalSession {
     for (const step of planStaleCleanup(orig)) await priv.run(step, true); // a killed earlier session must not stack under this one
     // If foxhole itself is killed (kill -9, the OOM killer), the kernel closes its end of this root
     // shell's stdin, and the shell undoes the session as `foxhole restore` would.
-    this.#guard = priv.spawn(["sh", "-c", `cat >/dev/null; ${staleCleanupScript(orig)}`], true);
+    this.#guard = priv.guard?.(orig) ?? priv.spawn(["sh", "-c", `cat >/dev/null; ${staleCleanupScript(orig)}`], true);
 
     if (!existsSync("/dev/net/tun")) {
       throw new Error(

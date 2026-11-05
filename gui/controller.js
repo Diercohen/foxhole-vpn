@@ -15,6 +15,7 @@ import { GuardianError, GuardianBlocked, useRelay } from "./dist/guardian.js";
 import { loadRelay, relayUrl } from "./dist/httprelay.js";
 import { STEPS, KEY_PLACEHOLDER, relayTemplate, highlightJs, deploymentId } from "./dist/relaysetup.js";
 import { network, publicIp, lanIp, firewallHint, wifiAccess } from "./dist/netinfo.js";
+import { helperFor, helperInstalled, helperReady, removeHelper } from "./dist/helper.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor } from "./dist/settings.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenProblem } from "./dist/tokenserver.js";
 import { startProxy, onProxyWarning } from "./dist/proxy.js";
@@ -705,6 +706,7 @@ export class Controller extends EventEmitter {
     // Already root: nothing to ask. Windows has no sudo either: its own admin prompt (UAC) comes up
     // as whole-system mode starts, unless Foxhole runs as Administrator.
     if (this.#android || process.platform === "win32" || (await isPrivileged())) return this.#enableGlobal(null);
+    if (await helperReady()) return this.#enableGlobal(""); // the network helper needs no password (helper.ts)
     let note = null;
     if (sudoUsesTouchId()) {
       // sudo takes the fingerprint here, so a typed password would go unused
@@ -754,14 +756,16 @@ export class Controller extends EventEmitter {
       } else {
         this.#say("info", "preparing tun2socks…");
         // a download goes through the VPN, its progress in the status line
-        this.#tun2socksPath ??= await ensureTun2socks({ proxy: this.via(), say: (msg) => this.#say("info", msg) });
+        const tun2socks = async () => (this.#tun2socksPath ??= await ensureTun2socks({ proxy: this.via(), say: (msg) => this.#say("info", msg) }));
+        const helper = await helperFor(password, tun2socks, this.#settings.noHelper);
+        if (!helper) await tun2socks();
         this.#say("info", process.platform === "win32" ? "going global… if Windows asks, allow PowerShell (Foxhole's network helper)" : "going global…");
         session = new GlobalSession({
-          priv: password === null ? await adminPriv(true) : sudoPriv(password),
+          priv: helper?.priv ?? (password === null ? await adminPriv(true) : sudoPriv(password)),
           server,
           proxyHost: this.#host,
           proxyPort: this.#proxy.port,
-          tun2socksPath: this.#tun2socksPath,
+          tun2socksPath: helper?.tun2socksPath ?? this.#tun2socksPath,
           force: false,
         });
       }
@@ -822,6 +826,15 @@ export class Controller extends EventEmitter {
   #proxyAddr() {
     const host = this.#host === "0.0.0.0" ? (lanIp() ?? this.#host) : this.#host;
     return `${host}:${this.#proxy?.port ?? this.#port}`;
+  }
+
+  /** Settings' switch for the network helper (helper.ts). Off also takes it out; on, the next whole-system mode asks once to put it in. */
+  async setHelper(on) {
+    if (on !== true) await removeHelper().catch((err) => this.#note("settings", "error", `Couldn't remove the network helper: ${err.message}`));
+    const { noHelper: _, ...rest } = this.#settings;
+    this.#settings = on === true ? rest : { ...rest, noHelper: true };
+    saveSettings(this.#settings);
+    this.#changed();
   }
 
   setShare(on) {
@@ -1208,6 +1221,7 @@ export class Controller extends EventEmitter {
       proxy: this.#active ? { addr: this.#proxyAddr(), shared: this.#host === "0.0.0.0" } : null,
       splitSummary: splitSummary(sp),
       // the relay's auth key stays in the main process, out of the window; the id (it's in a URL) and whether a key is set are shown
+      helper: process.platform === "linux" ? helperInstalled() : null, // null: only Linux has the helper so far
       settings: { ...this.#settings, relay: this.#settings.relay ? { deploymentId: this.#settings.relay.deploymentId, set: true } : null },
       lanIp: lanIp(),
       fwHint: this.#fwHint,

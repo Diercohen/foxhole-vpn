@@ -15,6 +15,7 @@ import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { logLines, onLog } from "./log.js";
 import { useSplit, splitOn, splitSummary, parseRule, appOf, hits, recentSites, type Split, type Via } from "./split.js";
 import { listApps } from "./apps.js";
+import { helperFor, helperReady } from "./helper.js";
 import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost, type Priv } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, restart, versionLines, UPDATE_COMMAND } from "./update.js";
 import { bold, dim, under, strike, green, red, yellow, cyan, lit, unlit, purple, litPurple, flag, EMOJI, emoji, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
@@ -722,6 +723,7 @@ export class Tui {
     // Already root (e.g. in the Docker sandbox, which has no sudo): nothing to ask. Windows has no sudo
     // either: its own admin prompt (UAC) comes up as global mode starts, unless foxhole runs as Administrator.
     if (process.platform === "win32" || (await isPrivileged())) return void this.#enableGlobal(null);
+    if (await helperReady()) return void this.#enableGlobal(""); // the network helper needs no password (helper.ts)
     let note = "";
     if (sudoUsesTouchId()) {
       // sudo takes the fingerprint here, so a password typed in the popup would go unused
@@ -794,15 +796,17 @@ export class Tui {
     try {
       // a download goes through the VPN (GitHub can be slow or blocked), its progress in the status line
       const via = { host: dialHost(this.#host), port: this.#proxy.port };
-      this.#tun2socksPath ??= await ensureTun2socks({ proxy: via, say: (msg) => ((this.#message = dim(msg)), this.#render()) });
+      const tun2socks = async () => (this.#tun2socksPath ??= await ensureTun2socks({ proxy: via, say: (msg) => ((this.#message = dim(msg)), this.#render()) }));
+      const helper = await helperFor(password, tun2socks, this.#settings.noHelper);
+      if (!helper) await tun2socks();
       this.#message = dim(process.platform === "win32" ? "going global… if Windows asks, allow PowerShell" : "going global…");
       this.#render();
       session = new GlobalSession({
-        priv: password === null ? await adminPriv(true) : sudoPriv(password),
+        priv: helper?.priv ?? (password === null ? await adminPriv(true) : sudoPriv(password)),
         server,
         proxyHost: this.#host,
         proxyPort: this.#proxy.port,
-        tun2socksPath: this.#tun2socksPath,
+        tun2socksPath: helper?.tun2socksPath ?? this.#tun2socksPath!,
         force: false,
       });
       session.onExit((code) => {
