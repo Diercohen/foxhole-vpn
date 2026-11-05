@@ -304,7 +304,7 @@ function Run([string[]]$a) {
 }
 function Send($m) { try { $w.WriteLine(($m | ConvertTo-Json -Compress)) } catch {} }
 
-$pipe = New-Object IO.Pipes.NamedPipeClientStream('.', '${task}', [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::Asynchronous)
+$pipe = New-Object IO.Pipes.NamedPipeClientStream('.', '${task}', [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::Asynchronous, [Security.Principal.TokenImpersonationLevel]::Anonymous) # the other end must not act as SYSTEM
 $pipe.Connect(20000)
 $utf8 = New-Object Text.UTF8Encoding($false)
 $r = New-Object IO.StreamReader($pipe, $utf8)

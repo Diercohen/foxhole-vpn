@@ -131,6 +131,7 @@ assert.ok(!winFull.includes('"foxhole"') && winFull.includes("C:\\Users\\o''brie
 assert.ok(winFull.includes(`(A;;GRGX;;;${sid})`), "only this user may start the task");
 const winNet = winScript("foxhole-net-x");
 for (const r of ["'^[A-Za-z0-9./:=_-]+\\z'", "-match '\\s'", "'^socks5://127\\.0\\.0\\.1:\\d+\\z'"]) assert.ok(winNet.includes(r), `in the script as a regex: ${r}`);
+assert.ok(winNet.includes("TokenImpersonationLevel]::Anonymous"), "the app's end of the pipe can't impersonate SYSTEM");
 assert.ok(winFull.length < 32_000, `the install fits a command line: ${winFull.length}`);
 
 rmSync(dir, { recursive: true });
