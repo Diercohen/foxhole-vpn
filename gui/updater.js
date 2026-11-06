@@ -118,8 +118,11 @@ export const ASSET = {
   win: (v) => `Foxhole-${v}-setup.exe`, // x64: Windows on Arm runs it too
   appimage: (v) => `Foxhole-${v}.AppImage`, // x64
   deb: (v) => `foxhole-desktop_${v}_amd64.deb`,
-  apk: (v) => `phone-and-TV-android-${v}.apk`, // every phone's and TV's (.github/workflows/release.yml)
+  apk: (v) => `phone-and-TV-android-foxhole-${v}.apk`, // every phone's and TV's (.github/workflows/release.yml)
 };
+// The names before: a release has its APK by this one too (release.yml), for Foxhole 1.0.0 to update itself, and a
+// download by that one is cleared once its version is in
+const LEGACY = { apk: (v) => `phone-and-TV-android-${v}.apk` };
 
 /** The versions of this kind's file in `dir`: { version, name } for each complete one (not a .part). */
 function downloaded(dir, kind) {
@@ -165,7 +168,7 @@ export class Updater {
     const done = (v) => SEMVER.test(v) && !newer(v, VERSION);
     const t = this.#target;
     const got = readdirSync(this.#dir).filter((f) => f.startsWith("got-")).map((f) => f.slice(4)).filter((v) => SEMVER.test(v));
-    if (t) for (const v of got.filter(done)) for (const f of [this.#file(v), `${this.#file(v)}.part`]) rmSync(f, { force: true });
+    if (t) for (const v of got.filter(done)) for (const n of [ASSET[t.kind](v), LEGACY[t.kind]?.(v)].filter(Boolean)) for (const f of [n, `${n}.part`]) rmSync(join(this.#downloads, f), { force: true });
     for (const f of readdirSync(this.#dir)) if (f === "old.app" || done(f) || done(f.replace(/^(tried|got)-/, ""))) rmSync(join(this.#dir, f), { recursive: true, force: true });
     if (!t) return this.#schedule();
     // one downloaded before: ready at once (it goes in even on a quit before the first look), or installed by hand

@@ -28,7 +28,7 @@ let cut = true; // the first download breaks off halfway
 const gh = https.createServer({ key: readFileSync(key), cert: readFileSync(cert) }, (req, res) => {
   const base = `https://127.0.0.1:${gh.address().port}`;
   if (req.url === "/releases/latest") return res.writeHead(302, { location: `${base}/releases/tag/v9.9.9` }).end();
-  if (req.url === "/releases/download/v9.9.9/app.dmg" || req.url === "/releases/download/v9.9.9/Foxhole-9.9.9.AppImage" || req.url === "/releases/download/v9.9.9/phone-and-TV-android-9.9.9.apk") return res.writeHead(302, { location: "/cdn/app.dmg" }).end(); // GitHub sends files from elsewhere
+  if (req.url === "/releases/download/v9.9.9/app.dmg" || req.url === "/releases/download/v9.9.9/Foxhole-9.9.9.AppImage" || req.url === "/releases/download/v9.9.9/phone-and-TV-android-foxhole-9.9.9.apk") return res.writeHead(302, { location: "/cdn/app.dmg" }).end(); // GitHub sends files from elsewhere
   if (req.url === "/releases.atom") return res.writeHead(200).end(`<feed><entry><link href="${base}/releases/tag/v9.9.9"/><content type="html">&lt;ul&gt;&lt;li&gt;New&lt;/li&gt;&lt;/ul&gt;</content></entry></feed>`);
   if (req.url !== "/cdn/app.dmg") return res.writeHead(404).end();
   ranges.push(req.headers.range ?? null);
@@ -144,11 +144,16 @@ assert.equal(a.state().file, null, "one that doesn't check out goes");
 bad = null;
 assert.equal(await a.update(), true);
 assert.deepEqual(checked, ["9.9.9", "9.9.9"]);
-const apkFile = path.join(dir, "apk", "phone-and-TV-android-9.9.9.apk");
+const apkFile = path.join(dir, "apk", "phone-and-TV-android-foxhole-9.9.9.apk");
 assert.equal(a.install(), true, "Android's installer takes it from here");
 assert.equal(a.install(), true, "and again, after a no there");
 assert.deepEqual(opened, [apkFile, apkFile]);
 assert.equal(a.state().ready, true, "still ready");
+// a version downloaded by Foxhole 1.0.0, by the APK's old name: cleared once that version's in
+writeFileSync(path.join(dir, "apk", "phone-and-TV-android-0.0.2.apk"), "old");
+writeFileSync(path.join(dir, "upd-apk", "got-0.0.2"), "");
+new Updater({ dir: path.join(dir, "upd-apk"), downloads: path.join(dir, "apk"), target: apk, via: () => null, changed: () => {} }).start();
+assert.ok(!existsSync(path.join(dir, "apk", "phone-and-TV-android-0.0.2.apk")) && existsSync(apkFile), "the old name's file goes, the new version's stays");
 
 gh.close();
 proxy.close();
