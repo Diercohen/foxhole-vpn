@@ -319,6 +319,19 @@
   </div>
 </div>
 
+<!-- A new version: what's new in it, before it's downloaded (app.js showNotes) -->
+<div class="modal backdrop" id="notes-modal" role="dialog" aria-modal="true" aria-labelledby="notes-title">
+  <div class="box glass">
+    <div class="lock-orb"><svg class="i"><use href="#i-up"/></svg></div>
+    <h2 id="notes-title"></h2>
+    <div class="notes" id="notes-body" tabindex="0"></div>
+    <div class="actions">
+      <button class="btn" type="button" id="notes-later">Later</button>
+      <button class="btn primary" type="button" id="notes-update"></button>
+    </div>
+  </div>
+</div>
+
 <div class="modal backdrop" id="update-modal">
   <div class="box glass">
     <div class="lock-orb"><svg class="i"><use href="#i-up"/></svg></div>

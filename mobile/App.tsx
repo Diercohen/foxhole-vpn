@@ -169,7 +169,8 @@ function Main() {
   const fromWindow = (e: WebViewMessageEvent) => {
     const m = JSON.parse(e.nativeEvent.data);
     if (m.t === "act") Core.send(e.nativeEvent.data); // the core checks it's one the window may ask for
-    else if (m.t === "open" && LINKS[m.which]) void Linking.openURL(LINKS[m.which]);
+    // a named link, or a page of the repo (the update's notes link its pull requests), as gui/main.js
+    else if (m.t === "open" && (LINKS[m.which] || m.which?.startsWith?.(`${REPO}/`))) void Linking.openURL(LINKS[m.which] ?? m.which);
     else if (m.t === "back") Core.moveToBack();
   };
 

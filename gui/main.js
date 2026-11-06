@@ -220,7 +220,8 @@ app.whenReady().then(() => {
       toggleGlobal: () => controller.setMode(),
       show,
       update: restartToUpdate,
-      getUpdate: () => (show(), void updater.update()),
+      // the window's Update button: what's new, then its button downloads it
+      getUpdate: () => (show(), void win?.webContents.executeJavaScript('document.getElementById("update").click()')),
       releases: () => shell.openExternal(LINKS.releases),
       quit: () => app.quit(),
     },
@@ -268,7 +269,9 @@ app.whenReady().then(() => {
     if (name === "toggleGlobal") return controller.setMode();
     return name === "restartToUpdate" ? restartToUpdate() : controller[name](...args);
   });
-  ipcMain.handle("open", (e, which) => e.sender === win.webContents && LINKS[which] && shell.openExternal(LINKS[which]));
+  // a named link, or a page of the repo (the update's notes link its pull requests)
+  const link = (which) => LINKS[which] ?? (typeof which === "string" && which.startsWith(`${REPO_URL}/`) ? which : null);
+  ipcMain.handle("open", (e, which) => e.sender === win.webContents && link(which) && shell.openExternal(link(which)));
 
   // Shutting down or restarting with global mode on: hold it until the routes and DNS are back (Linux, macOS)
   powerMonitor.on("shutdown", (e) => {

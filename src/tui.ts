@@ -17,8 +17,8 @@ import { useSplit, splitOn, splitSummary, parseRule, appOf, hits, recentSites, t
 import { listApps } from "./apps.js";
 import { helperFor, helperInstalled, helperReady, removeHelper } from "./helper.js";
 import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost, type Priv } from "./global.js";
-import { checkUpdate, canUpdate, runUpdate, restart, versionLines, UPDATE_COMMAND } from "./update.js";
-import { bold, dim, under, strike, green, red, yellow, cyan, lit, unlit, purple, litPurple, flag, EMOJI, emoji, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
+import { checkUpdate, canUpdate, runUpdate, restart, versionLines, latestVersion, fetchNotes, UPDATE_COMMAND, type Notes, type Block, type Span } from "./update.js";
+import { bold, dim, under, italic, strike, green, red, yellow, cyan, lit, unlit, purple, litPurple, flag, EMOJI, emoji, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
 import { fox, FOX_W, FOX_H, type Mood } from "./fox.js";
 import { loadRelay } from "./httprelay.js";
 import { newAuthKey } from "./relaysetup.js";
@@ -108,6 +108,38 @@ export function order(list: Country[]): Country[] {
   });
 }
 
+/** A block of the update's notes (update.ts Block) as lines, set as GitHub set it (bold, italic, code, links), wrapped to `width`. */
+function noteLines(b: Block, width: number): string[] {
+  const set = (s: Span, w: string) => {
+    if (s.s) w = strike(w); // before the colors: its marks go on letters, not on their codes
+    if (s.code || b.kind === "pre") w = cyan(w);
+    if (s.b || b.kind === "h") w = bold(w);
+    if (s.i) w = italic(w);
+    return s.href ? under(w) : w;
+  };
+  const pad = " ".repeat(b.kind === "li" ? (b.depth - 1) * 2 : b.depth * 2);
+  if (b.kind === "pre") return b.spans.map((s) => s.text).join("").split("\n").map((l) => `${pad}  ${set(b.spans[0], fit(l, width - pad.length - 2))}`);
+  // words, each set on its own (a style can't run across the line break); runs without a space between are one word
+  const words: string[] = [];
+  let glued = false;
+  for (const s of b.spans) {
+    s.text.split(" ").forEach((part, i) => {
+      const w = part && set(s, part);
+      if (i === 0 && glued && words.length) words[words.length - 1] += w;
+      else words.push(w);
+    });
+    glued = !s.text.endsWith(" ");
+  }
+  const lead = pad + (b.mark ? `${b.mark} ` : "");
+  const lines: string[] = [];
+  let line = lead;
+  for (const w of words.filter(Boolean)) {
+    if (line.length > lead.length && vw(line) + 1 + vw(w) > width) (lines.push(line), (line = " ".repeat(vw(lead)) + w));
+    else line += (line.length > lead.length ? " " : "") + w;
+  }
+  return [...(b.kind === "h" ? [""] : []), ...lines, line];
+}
+
 export class Tui {
   readonly #conn: Connection;
   #host: string;
@@ -173,6 +205,9 @@ export class Tui {
   #removeAsk: string | null = null; // the account x was pressed on once: again signs it out
   #others = new Map<string, { usage: Usage | null; error: string | null }>(); // data left of those not in use
   #lowOpen = false; // the popup saying the account in use is low on data
+  #notesOpen = false; // the popup with what's new in the update ('u'), whose Enter updates
+  #notes: Notes | null | undefined; // what's new, from GitHub: undefined while it's asked, null when it didn't answer
+  #notesTop = 0; // the first line shown: ↑↓ scroll a long one
   #lowSeen = ""; // the account and month it was shown for
   #quit: (action?: "update" | "logout") => Promise<void> = async () => {};
   readonly #firefoxEmail = this.#accounts.firefox ? findAccount()?.email ?? null : peekFirefox(); // read at the start: cli.ts may just have
@@ -372,6 +407,32 @@ export class Tui {
     this.#render();
   }
 
+  /** What's new in the update, newest first, with Enter to update; ↑↓ scroll it when it's taller than the window. */
+  #notesPopup(width: number, frameHeight: number): string[] {
+    const inner = Math.min(70, width - 6); // box border + padding (4) and the overlay's margin (2)
+    const notes = this.#notes;
+    const body = notes === undefined ? [dim("Getting what's new…")]
+      : !notes?.some((n) => n.blocks.length) ? [dim("What's new is on the releases page:"), dim(`${REPO_URL}/releases`)]
+      : notes.flatMap((n, i) => [
+        ...(notes.length > 1 ? [...(i ? [""] : []), bold(n.version)] : []),
+        ...n.blocks.flatMap((b) => noteLines(b, inner)),
+      ]);
+    const room = Math.max(3, frameHeight - 10); // the box's border, the blank lines, the buttons, the command, the margin
+    this.#notesTop = Math.min(this.#notesTop, Math.max(0, body.length - room));
+    const shown = body.slice(this.#notesTop, this.#notesTop + room);
+    const more = body.length > room ? dim(`  ↑↓ ${this.#notesTop + shown.length} of ${body.length} lines`) : "";
+    return box(
+      [
+        "",
+        ...shown,
+        "",
+        `${bold(green("[⏎ Update and restart]"))}   ${dim("[esc Not now]")}${more}`,
+        dim(`runs ${UPDATE_COMMAND}`),
+      ],
+      { title: bold(green(`Foxhole ${latestVersion()} is out`)), width: inner },
+    );
+  }
+
   #lowPopup(): string[] {
     const u = this.#conn.usage;
     return box(
@@ -552,6 +613,13 @@ export class Tui {
           return;
         }
         if (this.#lowOpen) return this.#lowKey(key);
+        if (this.#notesOpen) {
+          if (key.name === "return") return void quit("update");
+          if (key.name === "escape" || key.name === "u") this.#notesOpen = false;
+          else if (key.name === "up" || key.name === "k") this.#notesTop = Math.max(0, this.#notesTop - 1);
+          else if (key.name === "down" || key.name === "j") this.#notesTop++; // #notesPopup keeps it in range
+          return this.#render();
+        }
         if (this.#acctOpen) return this.#acctKey(s, key);
         if (this.#settingsOpen) return this.#settingsKey(s, key);
         if (this.#splitOpen) return this.#splitKey(s, key);
@@ -596,7 +664,10 @@ export class Tui {
             void this.#connectInMode();
             return;
           case "u":
-            if (canUpdate()) return void quit("update");
+            // what's new first: its Enter updates
+            if (!canUpdate()) break;
+            [this.#notesOpen, this.#notesTop] = [true, 0];
+            if (this.#notes === undefined) void fetchNotes(latestVersion()!).then((n) => ((this.#notes = n), this.#render()));
             break;
           case "a":
           case "o": // where logging out was
@@ -614,7 +685,7 @@ export class Tui {
    */
   #mouse(b: number, x: number, y: number, press: (name: string) => void): void {
     if (b === 64 || b === 65) return press(b === 64 ? "up" : "down");
-    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#restoring || this.#wizard || this.#blocked || this.#relayIntro || this.#trustAsk || this.#acctOpen || this.#lowOpen) return;
+    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#restoring || this.#wizard || this.#blocked || this.#relayIntro || this.#trustAsk || this.#acctOpen || this.#lowOpen || this.#notesOpen) return;
     const h = this.#hit;
     const fx = x - h.left, fy = y - h.top;
     if (this.#settingsOpen) {
@@ -1474,6 +1545,8 @@ export class Tui {
           ? this.#trustPopup()
           : this.#lowOpen
           ? this.#lowPopup()
+          : this.#notesOpen
+          ? this.#notesPopup(width, frame.length)
           : this.#acctOpen
           ? this.#accountsPopup()
           : this.#settingsOpen

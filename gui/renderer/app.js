@@ -1015,6 +1015,41 @@ function showManual(up) {
 }
 $("#manual-later").addEventListener("click", () => $("#manual-modal").classList.remove("on"));
 
+/** A run of the notes' text, set as GitHub set it (update.ts Span); a link into the repo opens it. */
+const noteSpan = (s) => {
+  let h = esc(s.text);
+  for (const [k, tag] of [["code", "code"], ["b", "b"], ["i", "i"], ["s", "s"]]) if (s[k]) h = `<${tag}>${h}</${tag}>`;
+  return s.href ? `<span class="link" data-open="${esc(s.href)}">${h}</span>` : h;
+};
+/** A heading, paragraph, list item or code block of the notes (update.ts Block). */
+const noteBlock = (b) => {
+  const body = b.spans.map(noteSpan).join("");
+  return b.kind === "h" ? `<h4>${body}</h4>`
+    : b.kind === "pre" ? `<pre>${body}</pre>`
+    : b.kind === "li" ? `<div class="li" style="--d:${b.depth}"><span class="m">${esc(b.mark)}</span><span>${body}</span></div>`
+    : `<p style="--d:${b.depth}">${body}</p>`;
+};
+
+/** A new version's changelog (updater.js notes: each version's, newest first), with the button that gets it. */
+function showNotes(up) {
+  const many = up.notes?.length > 1;
+  $("#notes-title").textContent = `Foxhole ${up.version} is out`;
+  $("#notes-body").innerHTML = up.notes?.some((n) => n.blocks.length)
+    ? up.notes.map((n) => (many ? `<h3>${esc(n.version)}</h3>` : "") + n.blocks.map(noteBlock).join("")).join("")
+    : `<p>See what's new on the <span class="link" data-open="releases">download page</span>.</p>`;
+  $("#notes-body").scrollTop = 0;
+  $("#notes-update").textContent = up.auto ? "Update now" : "Download";
+  $("#notes-modal").classList.add("on");
+  setTimeout(() => $("#notes-update").focus({ preventScroll: true }), 60); // a TV's remote and the keyboard start on it
+}
+
+/** Downloads and installs the new version; once it's ready, asks to restart; failed with the file there, offers it by hand. */
+async function startUpdate() {
+  if (await act("update")) return $("#update-modal").classList.add("on");
+  const now = (await act("state")).update;
+  if (now?.file) showManual(now);
+}
+
 // ── The relay's setup, step by step ────────────────────────────────────────────────────────
 
 const wz = { step: 0, shot: 0, key: "", id: "", setup: null }; // setup: the steps and the script's tokens (controller.relaySetup); shot: a step of several clicks' line shown
@@ -1247,20 +1282,21 @@ document.addEventListener("click", async (e) => {
     case "open-repo": return fh.open("repo");
     case "update": case "get-update": {
       const up = S.update;
-      if (!up?.auto) return fh.open("releases");
+      if (!up) return fh.open("releases");
       if (up.phase) return;
+      if (!up.auto || (!up.ready && !up.error)) return showNotes(up); // what's new first; its button gets it
       if (up.error && up.file && !PHONE) return showManual(up); // it didn't go in by itself: install it by hand (a phone's ready one tries Android's installer again)
       if (up.ready) {
         // a phone's last try at Android's installer failed: why, in the dialog (a TV has no tooltip to show it)
         if (PHONE) $("#update-modal p").textContent = up.error ? `It didn't install: ${up.error}.` : PHONE_UPDATE;
         return $("#update-modal").classList.add("on");
       }
-      // downloads and installs; once it's ready, asks to restart; failed with the file there, offers it by hand
-      if (await act("update")) return $("#update-modal").classList.add("on");
-      const now = (await act("state")).update;
-      if (now?.file) showManual(now);
-      return;
+      return startUpdate(); // failed before: tries again
     }
+    case "notes-later": return $("#notes-modal").classList.remove("on");
+    case "notes-update":
+      $("#notes-modal").classList.remove("on");
+      return S.update?.auto ? startUpdate() : fh.open("releases");
     case "manual-show": return act("showUpdateFile");
     case "manual-install":
       t.disabled = true;
@@ -1382,6 +1418,7 @@ document.addEventListener("keydown", (e) => {
     if (S?.trustAsk) return void act("dismissTrust");
     if ($("#wizard").classList.contains("on")) return closeWizard();
     if ($("#update-modal").classList.contains("on")) return $("#update-modal").classList.remove("on");
+    if ($("#notes-modal").classList.contains("on")) return $("#notes-modal").classList.remove("on");
     if ($("#blocked-modal").classList.contains("on")) return $("#blocked-modal").classList.remove("on");
     if ($("#relay-modal").classList.contains("on")) return $("#relay-modal").classList.remove("on");
     if ($("#manual-modal").classList.contains("on")) return $("#manual-modal").classList.remove("on");

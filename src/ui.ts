@@ -7,6 +7,7 @@ const wrap = (code: string) => (s: string) => (useColor ? `\x1b[${code}m${s}\x1b
 export const bold = wrap("1");
 export const dim = wrap("2");
 export const under = wrap("4");
+export const italic = wrap("3");
 // U+0336 over each letter: drawn by the font, so it works where SGR 9 strikethrough doesn't
 export const strike = (s: string) => [...s].map((ch) => ch + "\u0336").join("");
 export const red = wrap("31");

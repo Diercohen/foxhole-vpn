@@ -17,7 +17,7 @@ import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import { httpsGet } from "./dist/global.js";
 import { log } from "./dist/log.js";
-import { newer, VERSION } from "./dist/update.js";
+import { newer, releaseNotes, VERSION } from "./dist/update.js";
 import { REPO_URL } from "./dist/ui.js";
 
 const exec = promisify(execFile);
@@ -31,6 +31,19 @@ export async function latest(proxy) {
   const res = await httpsGet(`${RELEASES}/latest`, proxy);
   res.resume();
   return /\/releases\/tag\/v?(\d+\.\d+\.\d+)$/.exec(res.headers.location ?? "")?.[1] ?? null;
+}
+
+/** What's new in the releases after this one, up to `to`, from the releases' feed (update.ts releaseNotes). */
+export async function notes(proxy, to) {
+  const res = await httpsGet(`${RELEASES}.atom`, proxy);
+  if (res.statusCode !== 200) {
+    res.resume();
+    throw httpError(res.statusCode);
+  }
+  let atom = "";
+  res.setEncoding("utf8");
+  for await (const c of res) atom += c;
+  return releaseNotes(atom, VERSION, to);
 }
 
 /** Downloads `url` to `file`, carrying on from what an earlier try left there; `progress(percent)` as it goes. */
@@ -131,6 +144,7 @@ export class Updater {
   #via; // () => the VPN's proxy when connected
   #changed;
   #version = null; // a newer release
+  #notes = null; // what's new in it (and any between), once GitHub's answered: update.ts Notes
   #phase = null; // null, "downloading" or "installing"
   #progress = null; // the download, in percent
   #ready = null; // the new version, waiting to go in: the app (macOS) or the file (Windows, AppImage); true once installed (.deb)
@@ -190,7 +204,7 @@ export class Updater {
   state() {
     return this.#version && {
       version: this.#version, auto: !!this.#target, kind: this.#target?.kind ?? null,
-      phase: this.#phase, progress: this.#progress, ready: !!this.#ready, error: this.#error, file: this.file(),
+      phase: this.#phase, progress: this.#progress, ready: !!this.#ready, error: this.#error, file: this.file(), notes: this.#notes,
     };
   }
 
@@ -198,9 +212,19 @@ export class Updater {
   async check() {
     try {
       const v = await this.#try((proxy) => latest(proxy));
-      if (!v || !newer(v, VERSION) || v === this.#version || this.#phase) return;
-      [this.#version, this.#ready, this.#error] = [v, null, null];
-      this.#changed();
+      if (v && newer(v, VERSION) && v !== this.#version && !this.#phase) {
+        [this.#version, this.#ready, this.#error, this.#notes] = [v, null, null, null];
+        this.#changed();
+      }
+      // the update dialog's changelog: asked again at the next look if GitHub didn't answer
+      const to = this.#version;
+      if (to && !this.#notes) {
+        const n = await this.#try((proxy) => notes(proxy, to));
+        if (to === this.#version) {
+          this.#notes = n;
+          this.#changed();
+        }
+      }
     } catch (err) {
       log(`update: ${err.message}`);
     }

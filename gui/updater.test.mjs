@@ -29,6 +29,7 @@ const gh = https.createServer({ key: readFileSync(key), cert: readFileSync(cert)
   const base = `https://127.0.0.1:${gh.address().port}`;
   if (req.url === "/releases/latest") return res.writeHead(302, { location: `${base}/releases/tag/v9.9.9` }).end();
   if (req.url === "/releases/download/v9.9.9/app.dmg" || req.url === "/releases/download/v9.9.9/Foxhole-9.9.9.AppImage" || req.url === "/releases/download/v9.9.9/phone-and-TV-android-9.9.9.apk") return res.writeHead(302, { location: "/cdn/app.dmg" }).end(); // GitHub sends files from elsewhere
+  if (req.url === "/releases.atom") return res.writeHead(200).end(`<feed><entry><link href="${base}/releases/tag/v9.9.9"/><content type="html">&lt;ul&gt;&lt;li&gt;New&lt;/li&gt;&lt;/ul&gt;</content></entry></feed>`);
   if (req.url !== "/cdn/app.dmg") return res.writeHead(404).end();
   ranges.push(req.headers.range ?? null);
   const from = Number(/^bytes=(\d+)-$/.exec(req.headers.range ?? "")?.[1] ?? 0);
@@ -84,7 +85,7 @@ const target = { kind: "appimage", file: appImage };
 const u = new Updater({ dir: upd, downloads, target, via: () => via, changed: () => phases.push(u.state()?.phase) });
 u.start();
 await u.check();
-assert.deepEqual(u.state(), { version: "9.9.9", auto: true, kind: "appimage", phase: null, progress: null, ready: false, error: null, file: null }, "a newer release is offered");
+assert.deepEqual(u.state(), { version: "9.9.9", auto: true, kind: "appimage", phase: null, progress: null, ready: false, error: null, file: null, notes: [{ version: "9.9.9", blocks: [{ kind: "li", depth: 1, mark: "•", spans: [{ text: "New" }] }] }] }, "a newer release is offered, with what's new in it");
 assert.equal(await u.update(), true, "the button's download ends ready");
 assert.ok(phases.includes("downloading") && phases.includes("installing"), "the window sees it download, then install");
 const saved = path.join(downloads, "Foxhole-9.9.9.AppImage");
