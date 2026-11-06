@@ -15,7 +15,7 @@ import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
 import { logLines, onLog } from "./log.js";
 import { useSplit, splitOn, splitSummary, parseRule, appOf, hits, recentSites, type Split, type Via } from "./split.js";
 import { listApps } from "./apps.js";
-import { helperFor, helperInstalled, helperReady, removeHelper } from "./helper.js";
+import { helperFor, helperInstalled, helperReady } from "./helper.js";
 import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost, type Priv } from "./global.js";
 import { checkUpdate, canUpdate, runUpdate, restart, versionLines, latestVersion, fetchNotes, UPDATE_COMMAND, type Notes, type Block, type Span } from "./update.js";
 import { bold, dim, under, italic, strike, green, red, yellow, cyan, lit, unlit, purple, litPurple, flag, EMOJI, emoji, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
@@ -56,7 +56,6 @@ const SETTINGS = [
   { key: "port", label: "Proxy port" },
   { key: "username", label: "Username" },
   { key: "password", label: "Password" },
-  { key: "helper", label: process.platform === "win32" ? "Global mode without admin prompt" : "Global mode without a password" },
   { key: "relaySetup", label: "Set up" }, // these last ones in the VPN relay box
   { key: "relayId", label: "Deployment ID" },
   { key: "relayKey", label: "Auth key" },
@@ -816,7 +815,7 @@ export class Tui {
     if (sudoUsesTouchId()) {
       // sudo takes the fingerprint here, so a password typed in the popup would go unused
       this.#busy = true;
-      this.#message = yellow(this.#settings.noHelper ? "confirm with Touch ID to go global…" : "Touch ID once: sets up the network helper"); // what fits the status line
+      this.#message = yellow("Touch ID once: sets up the network helper"); // what fits the status line
       this.#render();
       const ok = await touchIdSudo();
       this.#busy = false;
@@ -886,10 +885,10 @@ export class Tui {
       const via = { host: dialHost(this.#host), port: this.#proxy.port };
       const tun2socks = async () => (this.#tun2socksPath ??= await ensureTun2socks({ proxy: via, say: (msg) => ((this.#message = dim(msg)), this.#render()) }));
       if (process.platform === "win32") {
-        this.#message = dim(helperInstalled() || this.#settings.noHelper ? "going global… if Windows asks, allow PowerShell" : "Allow PowerShell once: sets up a helper"); // what fits the status line
+        this.#message = dim(helperInstalled() ? "going global… if Windows asks, allow PowerShell" : "Allow PowerShell once: sets up a helper"); // what fits the status line
         this.#render();
       }
-      const helper = await helperFor(password, tun2socks, this.#settings.noHelper);
+      const helper = await helperFor(password, tun2socks);
       if (!helper) await tun2socks();
       this.#message = dim(process.platform === "win32" ? "going global… if Windows asks, allow PowerShell" : "going global…");
       this.#render();
@@ -1012,7 +1011,6 @@ export class Tui {
       case "space": {
         const item = SETTINGS[this.#setSel].key;
         if (item === "share") return void this.#changeSetting({ share: !this.#settings.share });
-        if (item === "helper") return void this.#setHelper();
         if (item === "relaySetup") return void ((this.#wizard = new RelayWizard(() => this.#render())), this.#render());
         if (item === "relayCert") return void this.#trust(!this.#caOk);
         if (item === "relayCheck") return void this.#checkRelay();
@@ -1022,27 +1020,6 @@ export class Tui {
       }
     }
     this.#render();
-  }
-
-  /** Settings' switch for the network helper (helper.ts): off removes it, so not while a session needs it to stop. */
-  async #setHelper(): Promise<void> {
-    if (this.#busy) return;
-    const on = !!this.#settings.noHelper;
-    if (!on && this.#global) return void ((this.#settingsNote = yellow("Turn global mode off first: it's using the helper.")), this.#render());
-    if (!on) {
-      this.#busy = true;
-      this.#settingsNote = dim("removing the network helper…");
-      this.#render();
-      try {
-        await removeHelper();
-      } catch (err) {
-        return void (this.#settingsNote = red(`Couldn't remove the network helper: ${(err as Error).message}`));
-      } finally {
-        this.#busy = false;
-        this.#render();
-      }
-    }
-    await this.#changeSetting({ noHelper: on ? undefined : true });
   }
 
   /** Settings' check of the relay (relayVerdict): its deployment ID and auth key, and its script's code. */
@@ -1298,7 +1275,6 @@ export class Tui {
       e?.key === "port" ? e.text + cursor : String(s.port),
       e?.key === "username" ? e.text + cursor : s.username || dim("optional"),
       e?.key === "password" ? "•".repeat(e.text.length) + cursor : s.password ? "••••••••" : dim("optional"),
-      onOff(!s.noHelper),
       (s.relay ? green("on") : dim("off")) + dim("  ⏎ step by step"),
       relayVal(e?.key === "relayId" ? e.text : s.relay?.deploymentId ?? "", e?.key === "relayId", false),
       relayVal(e?.key === "relayKey" ? e.text : s.relay?.authKey ?? "", e?.key === "relayKey", true),
@@ -1335,11 +1311,6 @@ export class Tui {
         : [dim("One port serves SOCKS5 and HTTP. Default 1080.")],
       username: loginHelp("username"),
       password: loginHelp("password"),
-      helper: s.noHelper
-        ? [dim(`${process.platform === "win32" ? "Windows asks you to allow it" : "Foxhole asks for your password"} each time you turn it on.`)]
-        : helperInstalled()
-          ? [dim("Foxhole's network helper is set up, so nothing is asked. It can"), dim("only change Foxhole's own network routes. Off removes it.")]
-          : [dim(`${process.platform === "win32" ? "Windows asks you to allow it" : "Foxhole asks for your password"} once, to set up its network`), dim("helper. It can only change Foxhole's own network routes.")],
       relaySetup: s.relay ? relayOn : relayGuide,
       relayId: e?.key === "relayId"
         ? [dim("Paste your Apps Script deployment id · enter save · esc cancel")]
@@ -1821,7 +1792,7 @@ export class Tui {
       [
         "",
         ...(this.#pwFor === "global"
-          ? ["Global mode routes all of this computer's", "traffic through the VPN, which needs", "administrator rights.", ...(this.#settings.noHelper ? [] : ["", "Once: foxhole sets up a small network", "helper with it, so it won't ask again.", dim("Settings (s) removes it.")])]
+          ? ["Global mode routes all of this computer's", "traffic through the VPN, which needs", "administrator rights.", "", "Once: foxhole sets up a small network", "helper with it, so it won't ask again."]
           : [`${this.#pwFor === "trust" ? "Trusting" : "Removing"} foxhole's certificate for`, "the system and its browsers needs", "administrator rights."]),
         "",
         `Enter your ${bold("login password")} (used by sudo):`,

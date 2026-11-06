@@ -71,7 +71,8 @@ On Windows, whole-system mode asks for administrator rights in Windows' own
 prompt, once: allow **Windows PowerShell**. With it Foxhole sets up its network helper,
 a scheduled task running a PowerShell script in `C:\Program Files\Foxhole Helper`, and
 Windows doesn't ask again. It only runs the commands whole-system mode needs, and only
-you may start it. Turn it off in **Settings** (`s` in the TUI), which also removes it.
+you may start it. To remove it, in an administrator PowerShell:
+`Get-ScheduledTask foxhole-net-* | Unregister-ScheduledTask -Confirm:$false; Remove-Item -Recurse "$env:ProgramFiles\Foxhole Helper"`.
 
 On Linux and macOS the password is asked **once**: with it Foxhole sets up a small
 network helper, as other VPN apps do, and whole-system mode needs no password after
@@ -79,8 +80,8 @@ that. The helper is a root-owned script (`net`, in `/usr/local/libexec/foxhole` 
 `/Library/PrivilegedHelperTools/foxhole` on macOS) and one sudoers rule
 (`/etc/sudoers.d/foxhole-<uid>`) for your user, no background service. It only runs the
 exact commands whole-system mode needs, so a program of yours could use it to send this
-computer's traffic through a proxy on this computer, but not to get a root shell. Turn it
-off in **Settings** (`s` in the TUI), which also removes it, or run `sudo <that folder>/net uninstall`.
+computer's traffic through a proxy on this computer, but not to get a root shell. To remove
+it, run `sudo <that folder>/net uninstall`.
 
 Point an app at the proxy:
 

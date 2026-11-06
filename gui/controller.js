@@ -15,7 +15,7 @@ import { GuardianError, GuardianBlocked, useRelay } from "./dist/guardian.js";
 import { loadRelay, relayUrl } from "./dist/httprelay.js";
 import { STEPS, KEY_PLACEHOLDER, relayTemplate, highlightJs, deploymentId } from "./dist/relaysetup.js";
 import { network, publicIp, lanIp, firewallHint, wifiAccess } from "./dist/netinfo.js";
-import { helperFor, helperInstalled, helperReady, removeHelper } from "./dist/helper.js";
+import { helperFor, helperInstalled, helperReady } from "./dist/helper.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor } from "./dist/settings.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenProblem } from "./dist/tokenserver.js";
 import { startProxy, onProxyWarning } from "./dist/proxy.js";
@@ -717,7 +717,7 @@ export class Controller extends EventEmitter {
   /** At a start at login: whether whole-system mode can come on with nothing to ask. */
   async wholeWithoutAsking() {
     if (this.#settings.proxyOnly) return false;
-    return (process.platform === "win32" && helperInstalled() && !this.#settings.noHelper) || (await helperReady()) || (await isPrivileged());
+    return (process.platform === "win32" && helperInstalled()) || (await helperReady()) || (await isPrivileged());
   }
 
   /** Whole-system routing on or off (asks for the administrator password). */
@@ -784,7 +784,7 @@ export class Controller extends EventEmitter {
         // a download goes through the VPN, its progress in the status line
         const tun2socks = async () => (this.#tun2socksPath ??= await ensureTun2socks({ proxy: this.via(), say: (msg) => this.#say("info", msg) }));
         if (process.platform === "win32") this.#say("info", "going global… if Windows asks, allow PowerShell (Foxhole's network helper)");
-        const helper = await helperFor(password, tun2socks, this.#settings.noHelper);
+        const helper = await helperFor(password, tun2socks);
         if (!helper) await tun2socks();
         this.#say("info", process.platform === "win32" ? "going global… if Windows asks, allow PowerShell (Foxhole's network helper)" : "going global…");
         session = new GlobalSession({
@@ -853,16 +853,6 @@ export class Controller extends EventEmitter {
   #proxyAddr() {
     const host = this.#host === "0.0.0.0" ? (lanIp() ?? this.#host) : this.#host;
     return `${host}:${this.#proxy?.port ?? this.#port}`;
-  }
-
-  /** Settings' switch for the network helper (helper.ts). Off also takes it out; on, the next whole-system mode asks once to put it in. */
-  async setHelper(on) {
-    if (on !== true && this.#global) return this.#note("settings", "error", "Turn whole-system mode off first: it's using the network helper.");
-    if (on !== true) await removeHelper().catch((err) => this.#note("settings", "error", `Couldn't remove the network helper: ${err.message}`));
-    const { noHelper: _, ...rest } = this.#settings;
-    this.#settings = on === true ? rest : { ...rest, noHelper: true };
-    saveSettings(this.#settings);
-    this.#changed();
   }
 
   setShare(on) {

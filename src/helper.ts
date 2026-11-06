@@ -31,7 +31,7 @@ const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 /** What every platform's root script starts with. Each argument is checked before anything runs; refused: exit 126. `run` and `try` are replaced in its test. */
 const preamble = (net: string) => `#!/bin/sh
 # Foxhole's network helper: what whole-system mode runs as root, with no password. Only the commands below.
-# Off: Foxhole's Settings, or: sudo ${net} uninstall
+# To remove it: sudo ${net} uninstall
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 IFS=' '
@@ -238,14 +238,6 @@ export const helperInstalled = () => (IS_WIN ? existsSync(WIN_NET) : SUPPORTED &
 export const helperReady = async (): Promise<boolean> =>
   helperInstalled() && !IS_WIN && helperPriv().run(["version", VERSION]).then(() => true, () => false);
 
-export const removeHelper = async (): Promise<void> => {
-  if (!helperInstalled()) return;
-  if (!IS_WIN) return helperPriv().run(["uninstall"]);
-  const priv = await taskPriv(taskName(await windowsSid()));
-  await priv.run(["uninstall"]);
-  priv.close?.();
-};
-
 // ── Windows: PowerShell is the one runtime here that only administrators can change, so it runs the helper. The app's
 // end is pipePriv (global-win32.ts), the same messages as the admin prompt's helper, but only the commands below.
 
@@ -384,7 +376,7 @@ export const winInstall = (sid: string, tun2socks: string) => {
 };
 
 /** Windows: the task if it's in; else the admin prompt puts it in. A refused prompt fails the session, as it always did. */
-async function winHelper(tun2socks: () => Promise<string>, off: boolean): Promise<{ priv: Priv; tun2socksPath: string } | null> {
+async function winHelper(tun2socks: () => Promise<string>): Promise<{ priv: Priv; tun2socksPath: string } | null> {
   if (await isWindowsAdmin()) return null; // nothing to ask, so nothing to spare
   const sid = await windowsSid();
   const task = taskName(sid);
@@ -395,7 +387,6 @@ async function winHelper(tun2socks: () => Promise<string>, off: boolean): Promis
       log(`network helper: didn't start: ${(err as Error).message}`);
     }
   }
-  if (off) return null;
   const path = await tun2socks();
   const elevated = await uacPriv();
   try {
@@ -412,13 +403,12 @@ async function winHelper(tun2socks: () => Promise<string>, off: boolean): Promis
 
 /**
  * What a whole-system session runs through, if the helper can: it's in, or `password` (not asked for
- * again after this) puts it in. Null: as before, sudo with the password. `off`: the user turned it off in Settings.
+ * again after this) puts it in. Null: as before, sudo with the password.
  */
-export async function helperFor(password: string | null, tun2socks: () => Promise<string>, off = false): Promise<{ priv: Priv; tun2socksPath: string } | null> {
-  if (IS_WIN) return winHelper(tun2socks, off);
+export async function helperFor(password: string | null, tun2socks: () => Promise<string>): Promise<{ priv: Priv; tun2socksPath: string } | null> {
+  if (IS_WIN) return winHelper(tun2socks);
   if (!SUPPORTED || password === null) return null;
   if (!(await helperReady())) {
-    if (off) return null; // "" as the password: Touch ID just let sudo through (macOS)
     try {
       await sudoPriv(password).run(["sh", "-c", installScript(process.getuid!(), await tun2socks())]);
     } catch (err) {
