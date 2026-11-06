@@ -5,6 +5,7 @@ const IOS = fh.platform === "ios"; // its VPN Android's; iOS has none (Apple's n
 // iOS 16 and older (or a version not found): no animations, transitions or 3D fox; they stop its WebKit painting (style.css)
 const STILL = IOS && !(+/OS (\d+)_/.exec(navigator.userAgent)?.[1] > 16);
 const TV = !!fh.tv; // Android TV (phone.js): signs in from a phone or computer on its network, driven by a remote
+let remoteUsed = false; // a TV: until its first key or click, the power button keeps the focus
 const DEVICE = TV ? "TV" : PHONE ? "phone" : "computer";
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -142,9 +143,9 @@ function renderHero(ph) {
   else if (ph === "global") [title, sub, label] = ["Fully protected", `${where} · all of this ${DEVICE}'s traffic`, "Disconnect"];
   else if (ph === "on") [title, sub, label] = ["Connected", `${where} · apps set to use the proxy`, "Disconnect"];
   // paused from Android's notification (mobile/node/main.mjs): the orb resumes, whole-system mode too
-  else if (S.paused) [title, sub, label] = ["Paused", `Tap to resume · ${where}${S.paused.global ? " · whole system" : ""}`, "Resume"];
+  else if (S.paused) [title, sub, label] = ["Paused", `${TV ? "Press OK" : "Tap"} to resume · ${where}${S.paused.global ? " · whole system" : ""}`, "Resume"];
   else if (S.entitled === false) [title, sub, label] = ["VPN not turned on", "Turn it on in Firefox, for this account", "Connect"];
-  else [title, sub, label] = ["Not connected", c ? `Tap to connect · ${where}` : "Pick a location to connect", "Connect"];
+  else [title, sub, label] = ["Not connected", c ? `${TV ? "Press OK" : "Tap"} to connect · ${where}` : "Pick a location to connect", "Connect"];
   const t = $("#status-title");
   if (t.textContent !== title) {
     t.textContent = title;
@@ -154,6 +155,8 @@ function renderHero(ph) {
   $("#orb-label").textContent = label;
   $("#orb").setAttribute("aria-label", label);
   $("#orb").disabled = ph === "busy" || S.auth.stage !== "ready";
+  // the remote's next OK connects or disconnects: on opening, and once connecting's over (a disabled button loses its focus)
+  if (TV && !$("#orb").disabled && (!remoteUsed || document.activeElement === document.body)) $("#orb").focus({ preventScroll: true });
   const mode = $("#mode");
   mode.dataset.v = globalMode() ? "1" : "0";
   for (const b of mode.querySelectorAll("button")) b.setAttribute("aria-pressed", String((b.dataset.mode === "global") === globalMode()));
@@ -1505,6 +1508,9 @@ if (TV) {
   };
   window.foxholeKeyboard = (up) => up || typing(document.activeElement, false);
   document.addEventListener("focusout", (e) => typing(e.target, false));
+  // Android's first focus (App.tsx) goes to the page's first control, not to the power button
+  for (const type of ["keydown", "pointerdown"]) document.addEventListener(type, () => (remoteUsed = true), true);
+  document.addEventListener("focusin", () => remoteUsed || $("#orb").disabled || $("#orb").focus({ preventScroll: true }));
   // a field focused some other way (the page's own, as a search opens) is read-only too
   document.addEventListener("focusin", (e) => {
     const el = e.target;

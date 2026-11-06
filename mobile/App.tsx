@@ -201,6 +201,7 @@ function Main() {
         onMessage={fromWindow}
         onLoadEnd={() => {
           web.current?.injectJavaScript(insetsJs);
+          if (Platform.isTV) web.current?.requestFocus(); // nothing has Android's focus on opening: OK wouldn't reach the page
           loaded.current = true;
           giveTvLink();
         }}

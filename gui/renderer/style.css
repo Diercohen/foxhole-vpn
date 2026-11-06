@@ -242,7 +242,7 @@ body:not([data-phase="busy"]) .ticks { animation: none; }
 body:not([data-phase="busy"]) .ring { display: none; }
 @keyframes spin { to { transform: rotate(1turn); } }
 
-.orb { position: absolute; inset: 0; border-radius: 50%; border: 0; padding: 0; overflow: hidden; color: #fff;
+.orb { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 50%; /* a button's width doesn't follow inset */ border: 0; padding: 0; overflow: hidden; color: #fff;
   display: grid; place-items: center; isolation: isolate;
   background:
     radial-gradient(circle at 32% 24%, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.08) 26%, transparent 50%),
