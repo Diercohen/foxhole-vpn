@@ -92,6 +92,7 @@ export function createBadge(win, file) {
   const once = (id, make) => (made.has(id) ? made.get(id) : made.set(id, make()).get(id));
   let key = null, f = 0, pin = false, timer = null;
   const apply = () => {
+    if (win.isDestroyed()) return clearInterval(timer); // quit while busy (whole-system mode being undone): the next frame's error would hold the quit in its dialog
     // The Dock draws up to 256 px: its frames at that, quick to swap 3 times a second (at 1024 px, one takes 80 ms)
     if (process.platform === "darwin") return app.dock?.setIcon(once(`dock ${key} ${f}`, () => badgedIcon(icon, key, f, FRAMES[key] ? 256 : 512)));
     const shown = pin ? "off" : key; // pinned, the window's icon goes unseen: the overlay shows the state
