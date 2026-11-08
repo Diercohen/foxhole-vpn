@@ -743,6 +743,10 @@ function renderDisguise() {
   });
 }
 
+/** Telegram's QR code for this proxy, for another device; nothing unless sharing is on. */
+const tgShare = () => S.shareTg ? t`<div class="tg-share"><svg class="tg-qr" viewBox="0 0 ${S.shareTg.qr.size} ${S.shareTg.qr.size}" role="img" aria-label="Telegram's QR code for this proxy"><rect width="100%" height="100%" fill="#fff"/><path d="${S.shareTg.qr.path}"/></svg>
+           <div><b>${icon("telegram")}Telegram on ${PHONE ? t`another phone` : t`your phone`}</b><span>Scan this with its camera: Telegram asks to use this proxy, with its sign-in.</span><button class="mini" data-copy="${esc(S.shareTg.link)}" title="Copy the link">${icon("copy")}</button></div></div>` : "";
+
 function renderSettings() {
   section("settings", [S.settings.share, S.settings.port, S.settings.username, S.settings.password, S.settings.relay, S.lanIp, S.fwHint, S.caOk, S.shareTg?.link, S.settings.smartDns, S.smartDns, !!S.active], () => {
     const s = S.settings;
@@ -755,8 +759,7 @@ function renderSettings() {
       ? t`<div class="hint">Set ${PHONE ? t`the other device's` : t`your phone's`} Wi-Fi proxy to</div>
          <div class="addr"><span class="mono">${esc(addr)}</span><button class="mini" data-copy="${esc(addr)}" title="Copy">${icon("copy")}</button></div>
          ${s.username || s.password ? t`<div class="hint">Devices sign in with the username and password below.</div>` : t`<div class="warn-line">No password: anyone on this network can use it. Set one below.</div>`}
-         ${S.shareTg ? t`<div class="tg-share"><svg class="tg-qr" viewBox="0 0 ${S.shareTg.qr.size} ${S.shareTg.qr.size}" role="img" aria-label="Telegram's QR code for this proxy"><rect width="100%" height="100%" fill="#fff"/><path d="${S.shareTg.qr.path}"/></svg>
-           <div><b>${icon("telegram")}Telegram on ${PHONE ? t`another phone` : t`your phone`}</b><span>Scan this with its camera: Telegram asks to use this proxy, with its sign-in.</span><button class="mini" data-copy="${esc(S.shareTg.link)}" title="Copy the link">${icon("copy")}</button></div></div>` : ""}
+         ${tgShare()}
          ${S.fwHint ? t`<div class="hint">If they can't connect, open the port in the firewall:</div>${S.fwHint.map((c) => `<div class="cmd"><span class="mono">${esc(c)}</span><button class="mini" data-copy="${esc(c)}" title="Copy">${icon("copy")}</button></div>`).join("")}` : ""}`
       : t`<div class="hint">Turn on to use the VPN from ${PHONE ? t`a computer or another phone` : t`your phone`}, on the same Wi-Fi.</div>`;
     drawSmartDns();
@@ -806,7 +809,8 @@ function drawSmartDns() {
     : t`<div class="hint">On the device, in its network settings, set DNS by hand to</div>
        <div class="addr"><span class="mono">${esc(ip)}</span><button class="mini" data-copy="${esc(ip)}" title="Copy">${icon("copy")}</button></div>
        ${S.active ? "" : t`<div class="warn-line">Not connected: until you connect, it gets the network's own answers, blocked sites included.</div>`}
-       <div class="hint">Only the web and WhatsApp's messages go through, not games or calls. An iPhone's Private Relay, and a browser's secure DNS, skip it. When this ${DEVICE} is off, set the device's DNS back to automatic.</div>`;
+       <div class="hint">Only the web and WhatsApp's messages go through, not games or calls. An iPhone's Private Relay, and a browser's secure DNS, skip it. When this ${DEVICE} is off, set the device's DNS back to automatic.</div>`
+      + (tgShare() || t`<div class="hint">Telegram doesn't use DNS: turn on Share with devices on this network for its QR code.</div>`);
 }
 
 // ── The administrator password ─────────────────────────────────────────────────────────────
