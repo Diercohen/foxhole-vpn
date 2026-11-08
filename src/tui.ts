@@ -1569,6 +1569,7 @@ export class Tui {
               `Set the TV's or console's DNS to ${bold(cyan(lanIp() ?? "this computer's IP"))}.`,
               dim("Sites Iran blocks, and those refusing Iran, then use the VPN."),
               this.#active ? dim("Only the web and WhatsApp's messages: not games or calls.") : yellow("Connect first: till then it gets the network's own answers."),
+              dim("Telegram doesn't use DNS: its QR code is in the row above."),
             ],
       give: [dim("Your relay and split tunneling, for the family's other devices:"), dim("a QR code for a phone to scan, or a link to send.")],
       take: e?.key === "take"
