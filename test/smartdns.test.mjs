@@ -20,6 +20,7 @@ for (const [f, text] of [["iran-domains.txt", "digikala.com\n"], ["iran-ips.txt"
 
 const { questionOf, answerWith, filterAnswer, homeAddress, startSmartDns } = await import("../dist/smartdns.js");
 const { useSplit } = await import("../dist/split.js");
+const { filteredByName } = await import("../dist/proxy.js");
 const { knownBlocked } = await import("../dist/smart.js");
 
 /** A query for `name` of `type` (1 A, 28 AAAA), asking for recursion, with an EDNS record as browsers send. */
@@ -89,7 +90,13 @@ const conn = { server: { hostname: "127.0.0.1", port: vpn.address().port }, rela
 let connected = true;
 let rules = { default: "vpn", rules: [{ match: "ruled.example", via: "vpn" }, { match: "mine.sanctioned.example", via: "direct" }] };
 useSplit(() => rules);
-const srv = await startSmartDns(conn, { host: "127.0.0.1", self: () => "192.168.9.9", vpn: () => connected, ports: { dns: 0, https: 0, http: 0 } });
+// the sites' port 443, as the filter leaves it: the handshake of a name it stops gets silence
+const certs = { key: readFileSync(path.join(dir, "k.pem")), cert: readFileSync(path.join(dir, "c.pem")) };
+const sites = tls.createServer({ ...certs, SNICallback: (name, cb) => name !== "cdn.stopped.example" && cb(null, tls.createSecureContext(certs)) }, (s) => s.on("error", () => {}).end());
+sites.on("tlsClientError", () => {});
+await new Promise((res) => sites.listen(0, "127.0.0.1", res));
+const sitesAt = { host: "127.0.0.1", port: sites.address().port };
+const srv = await startSmartDns(conn, { host: "127.0.0.1", self: () => "192.168.9.9", vpn: () => connected, ports: { dns: 0, https: 0, http: 0, chat: 0 }, sites: sitesAt });
 
 /** Asks the smart DNS: its answer's address, null for none. */
 async function ask(name, type = 1) {
@@ -107,6 +114,14 @@ assert.equal(await ask("www.sanctioned.example", 28), 0, "and no IPv6 address, s
 assert.equal(await ask("filtered.example"), "192.168.9.9", "a name the network answers with the filter's address: this computer");
 assert.ok(knownBlocked("filtered.example"), "learned as blocked");
 assert.equal(await ask("ruled.example"), "192.168.9.9", "a site the rules send through the VPN");
+assert.equal(await ask("cdn.stopped.example"), "192.168.9.9", "a name with a real DNS answer whose handshake the filter stops: this computer");
+assert.ok(knownBlocked("other.stopped.example"), "its whole site learned as blocked");
+assert.equal(await ask("cdn.stopped.example", 28), 0, "and no IPv6 address");
+assert.equal(await filteredByName("x.example", { host: "127.0.0.1", port: 1 }), false, "nothing listening (a game's server): says nothing");
+const resets = net.createServer((s) => s.once("data", () => s.resetAndDestroy()));
+await new Promise((res) => resets.listen(0, "127.0.0.1", res));
+assert.equal(await filteredByName("x.example", { host: "127.0.0.1", port: resets.address().port }), true, "a hello that's reset: the filter's");
+resets.close();
 assert.equal(await ask("mine.sanctioned.example"), "93.184.216.34", "one they send direct, sanctioned or not");
 connected = false;
 assert.equal(await ask("www.sanctioned.example"), "93.184.216.34", "not connected: the network's answers, so the rest still works");
@@ -124,7 +139,28 @@ t.on("error", () => {});
 await new Promise((res) => t.once("close", res));
 assert.deepEqual(tunnels, ["www.sanctioned.example:80", "video.sanctioned.example:443"], "HTTPS by its SNI, to the site's own port");
 
+
+// WhatsApp's chat names no site: by its header, on 5222 or 443, through the VPN to its server's 443
+tunnels.length = 0;
+for (const [at, hello] of [[srv.ports.chat, "WA\x06\x03rest"], [srv.ports.https, "ED\x00\x01rest"]]) {
+  const c = net.connect(at, "127.0.0.1");
+  c.write(Buffer.from(hello, "latin1"));
+  let back = "";
+  const began = Date.now();
+  c.on("data", (d) => (back += d.toString("latin1")));
+  await new Promise((res) => c.once("close", res));
+  assert.equal(back, `vpn:${hello}`, "its first bytes, through the VPN");
+  assert.ok(Date.now() - began < 1500, "without waiting for an HTTP head");
+}
+assert.deepEqual(tunnels, ["g.whatsapp.net:443", "g.whatsapp.net:443"]);
+const other = net.connect(srv.ports.chat, "127.0.0.1");
+other.write("<stream:stream>");
+other.on("error", () => {});
+await new Promise((res) => other.once("close", res));
+assert.deepEqual(tunnels, ["g.whatsapp.net:443", "g.whatsapp.net:443"], "anything else on 5222 goes nowhere");
+
 srv.close();
+sites.close();
 net53.close();
 vpn.close();
 console.log("ok - smart DNS: blocked and sanctioned sites answered with this computer and carried through the VPN; the rest, and all when off, the network's");

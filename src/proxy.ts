@@ -72,7 +72,7 @@ const ATYP_IPV4 = 0x01;
 const ATYP_DOMAIN = 0x03;
 const ATYP_IPV6 = 0x04;
 
-interface Target {
+export interface Target {
   host: string;
   port: number;
   udp?: boolean; // a SOCKS5 UDP ASSOCIATE: host and port are where the client sends from (or zeros)
@@ -428,6 +428,9 @@ export function sniffHost(b: Buffer): string | null {
   }
 }
 
+/** True for the start of WhatsApp's chat: its own protocol, "WA" and its version, maybe after an "ED" routing header. Pure. */
+export const whatsappChat = (b: Buffer): boolean => /^(WA[\x00-\x1f]|ED\x00\x01)/.test(b.toString("latin1", 0, 4));
+
 /** A client's first bytes: enough to name the site (a whole ClientHello or HTTP head, maybe over several reads), or what came in `ms`. Leaves the socket paused. */
 function firstBytes(socket: net.Socket, ms = 2000): Promise<Buffer> {
   return new Promise((resolve) => {
@@ -441,7 +444,7 @@ function firstBytes(socket: net.Socket, ms = 2000): Promise<Buffer> {
     };
     // TLS: the record's length says; HTTP (a method in capitals): the blank line; else nothing to wait for
     const whole = () =>
-      buf[0] === 0x16 ? buf.length >= 5 && buf.length >= 5 + buf.readUInt16BE(3) : buf[0] >= 0x41 && buf[0] <= 0x5a ? buf.includes("\r\n\r\n") : true;
+      buf[0] === 0x16 ? buf.length >= 5 && buf.length >= 5 + buf.readUInt16BE(3) : buf[0] >= 0x41 && buf[0] <= 0x5a && !whatsappChat(buf) ? buf.includes("\r\n\r\n") : true;
     const onData = (d: Buffer) => {
       buf = Buffer.concat([buf, d]);
       if (whole() || buf.length >= 16384) done();
@@ -560,9 +563,10 @@ async function probe(conn: Connection, target: Target, site: string | undefined,
 export async function serveByName(socket: net.Socket, conn: Connection, port: number): Promise<void> {
   socket.on("error", () => socket.destroy());
   const hello = await firstBytes(socket);
-  const name = sniffHost(hello);
+  const chat = whatsappChat(hello); // names no site, and its servers take it on 443 as on 5222
+  const name = chat ? "g.whatsapp.net" : sniffHost(hello);
   // the relay can't: it reads the web with foxhole's own certificate, which a TV doesn't trust
-  const up = name && !socket.destroyed && !conn.relay ? sent(await dial(conn, { host: name, port }), name, "vpn", hello) : null;
+  const up = name && !socket.destroyed && !conn.relay ? sent(await dial(conn, { host: name, port: chat ? 443 : port }), name, "vpn", hello) : null;
   if (!up) return void socket.destroy();
   splice(socket, up);
 }
@@ -598,6 +602,29 @@ async function tryDirect(name: string): Promise<Try | null> {
   if (filterAddress(ip)) return { fail: "filter" };
   const s = await dialDirect({ host: ip, port: 443 }, CHECK_MS);
   return s ? pageOver(s, name) : { fail: "silent" };
+}
+
+/**
+ * True when the filter stops `name` at the name in its TLS hello, seen from a connection to `target` that opens and
+ * whose handshake is then cut or met with silence. Nothing listening there (a game's server, a call's) says nothing.
+ */
+export async function filteredByName(name: string, target: Target): Promise<boolean> {
+  if (pinDirect || !directOk) return false; // global mode: direct can't be tried
+  const s = await dialDirect(target, PROBE_MS);
+  if (!s) return false;
+  return new Promise((resolve) => {
+    const t = tls.connect({ socket: s, servername: name, rejectUnauthorized: false }); // only whether it gets through
+    const done = (filtered: boolean) => {
+      clearTimeout(timer);
+      t.destroy();
+      s.destroy();
+      resolve(filtered);
+    };
+    const timer = setTimeout(() => done(true), PROBE_MS);
+    t.once("secureConnect", () => done(false));
+    t.once("error", (e: NodeJS.ErrnoException) => done(e.code === "ECONNRESET" || e.code === "EPIPE"));
+    t.once("close", () => done(true));
+  });
 }
 
 /** `name` tried through the VPN, a few KB of its data. */

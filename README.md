@@ -127,7 +127,7 @@ On a Mac, Save data works in Proxy only mode.
 **Settings → Smart DNS for a TV or console** (desktop app and TUI) makes your computer the DNS server of
 the home's other devices: a smart TV, a PlayStation or Xbox, an iPhone. On the device, set DNS by hand to the
 address Foxhole shows. While Foxhole is connected, a site Iran blocks (the network's DNS answers with the filter's
-address) or one that refuses Iran ([sanctioned](https://github.com/Chocolate4U/Iran-v2ray-rules)) is answered
+address, or stops a test handshake with it) or one that refuses Iran ([sanctioned](https://github.com/Chocolate4U/Iran-v2ray-rules)) is answered
 with your computer's address: the device's connection comes to Foxhole on port 443 or 80, and goes on through
 the VPN to the site its TLS SNI or HTTP Host names. Every other site gets the network's own answer and goes direct.
 Only the web goes through: games' and calls' traffic doesn't. An iPhone's iCloud Private Relay and a browser's

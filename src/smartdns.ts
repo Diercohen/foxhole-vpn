@@ -1,19 +1,21 @@
 // Smart DNS: this computer as the DNS server of the home's other devices (a TV, a game console, an iPhone), which then
 // need no app. A site that needs the VPN is answered with this computer's address: Iran's filter blocks it (the
-// network's DNS answers with the filter's address, or this computer found it blocked), it refuses Iran (the sanctioned
-// list), or a rule sends it through the VPN. The device then connects here, on 443 or 80, and the site its first bytes
+// network's DNS answers with the filter's address, this computer found it blocked, or a handshake with it just now was
+// stopped, as a blocked site's CDN's is, whose DNS answers are real), it refuses Iran (the sanctioned list), or a rule
+// sends it through the VPN. The device then connects here, on 443 or 80, and the site its first bytes
 // name goes through the VPN (proxy.ts serveByName). Every other name gets the network's own answer and goes direct, on
-// Iran's cheaper data. Only the web comes here: a game's or a call's traffic doesn't.
+// Iran's cheaper data. Only the web and WhatsApp's chat (on 5222 too) come here: a game's or a call's traffic doesn't.
 import dgram from "node:dgram";
 import dns from "node:dns";
 import net from "node:net";
 import type { Connection } from "./connection.js";
-import { serveByName } from "./proxy.js";
+import { filteredByName, serveByName, type Target } from "./proxy.js";
 import { currentSplit, ruleFor } from "./split.js";
-import { filterAddress, knownBlocked, learnBlocked, refreshLists, sanctioned } from "./smart.js";
+import { filterAddress, iranian, knownBlocked, learnBlocked, refreshLists, sanctioned } from "./smart.js";
 import { log } from "./log.js";
 
 const TTL = 60; // seconds: a device asks again soon after connecting or disconnecting
+const TRIED_MS = 3600_000; // a name's handshake isn't tried again for this long
 const A = 1;
 const AAAA = 28;
 
@@ -52,8 +54,9 @@ function pastName(m: Buffer, p: number): number {
   }
 }
 
-/** True when `r`, the network's DNS's answer, gives Iran's filter's address: the name is blocked. Pure. */
-export function filterAnswer(r: Buffer): boolean {
+/** The addresses in `r`, a DNS answer, as far as it isn't cut off. Pure. */
+function addressesIn(r: Buffer): string[] {
+  const out: string[] = [];
   try {
     let p = pastName(r, 12) + 4;
     for (let i = r.readUInt16BE(6); i > 0; i--) {
@@ -61,23 +64,37 @@ export function filterAnswer(r: Buffer): boolean {
       const type = r.readUInt16BE(p);
       const len = r.readUInt16BE(p + 8);
       const data = r.subarray(p + 10, p + 10 + len);
-      if (type === A && len === 4 && filterAddress(data.join("."))) return true;
-      if (type === AAAA && len === 16 && filterAddress(Array.from({ length: 8 }, (_, j) => data.readUInt16BE(j * 2).toString(16)).join(":"))) return true;
+      if (type === A && len === 4) out.push(data.join("."));
+      if (type === AAAA && len === 16) out.push(Array.from({ length: 8 }, (_, j) => data.readUInt16BE(j * 2).toString(16)).join(":"));
       p += 10 + len;
     }
   } catch {
-    /* cut off: not the filter's */
+    /* cut off: what came before */
   }
-  return false;
+  return out;
+}
+
+/** True when `r`, the network's DNS's answer, gives Iran's filter's address: the name is blocked. Pure. */
+export const filterAnswer = (r: Buffer): boolean => addressesIn(r).some(filterAddress);
+
+/** Query `m` (its question ending at `end`) as an A question, without its EDNS. Pure. */
+function askingA(m: Buffer, end: number): Buffer {
+  const a = Buffer.from(m.subarray(0, end));
+  a.writeUInt16BE(A, end - 4);
+  a.writeUInt16BE(0, 10);
+  return a;
 }
 
 /** A device of this network's (private, link-local, CGNAT, loopback addresses): the only ones served, so this isn't an open resolver. Pure. */
 export const homeAddress = (a = ""): boolean =>
   /^(::ffff:)?(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(a) || a === "::1" || /^f[c-e][0-9a-f]{2}:/i.test(a);
 
+/** A name that isn't on the internet. Pure. */
+const onlyHere = (name: string): boolean => !name.includes(".") || /\.(local|lan|home\.arpa|arpa)$/.test(name);
+
 /** Whether a device looking up `name` is answered with this computer, without asking the network: a rule, or a list, says it needs the VPN. */
 function needsVpn(name: string): boolean {
-  if (!name.includes(".") || /\.(local|lan|home\.arpa|arpa)$/.test(name)) return false;
+  if (onlyHere(name)) return false;
   const rule = ruleFor(currentSplit(), name);
   return rule ? rule.via === "vpn" : sanctioned(name) || knownBlocked(name);
 }
@@ -126,7 +143,7 @@ export function smartDnsProblem(err: NodeJS.ErrnoException & { port?: number }):
 }
 
 export interface SmartDns {
-  ports: { dns: number; https: number; http: number }; // where it listens (tests ask for any)
+  ports: { dns: number; https: number; http: number; chat: number }; // where it listens (tests ask for any)
   close(): void;
 }
 
@@ -137,9 +154,24 @@ export interface SmartDns {
  */
 export async function startSmartDns(
   conn: Connection,
-  o: { host: string; self: () => string | null; vpn: () => boolean; ports?: { dns: number; https: number; http: number } },
+  o: { host: string; self: () => string | null; vpn: () => boolean; ports?: { dns: number; https: number; http: number; chat: number }; sites?: Target },
 ): Promise<SmartDns> {
-  const want = o.ports ?? { dns: 53, https: 443, http: 80 };
+  const want = o.ports ?? { dns: 53, https: 443, http: 80, chat: 5222 };
+  const tried = new Map<string, { until: number; stopped: Promise<boolean> }>();
+  /** Whether the filter stops `name` at its handshake. Once for a device's A, AAAA and HTTPS questions, which come together. */
+  const stopped = (name: string, m: Buffer, end: number, to: { host: string; port: number }): Promise<boolean> => {
+    if (onlyHere(name) || ruleFor(currentSplit(), name) || iranian(name)) return Promise.resolve(false);
+    const had = tried.get(name);
+    if (had && had.until > Date.now()) return had.stopped;
+    if (tried.size >= 5000) tried.clear();
+    const verdict = forward(askingA(m, end), to).then((r) => {
+      const ip = r && addressesIn(r)[0];
+      if (!ip || iranian(name, ip)) return false;
+      return filterAddress(ip) || (!homeAddress(ip) && filteredByName(name, o.sites ?? { host: ip, port: 443 }));
+    });
+    tried.set(name, { until: Date.now() + TRIED_MS, stopped: verdict });
+    return verdict;
+  };
   const reply = async (m: Buffer): Promise<Buffer | null> => {
     const q = questionOf(m);
     if (!q) return null;
@@ -148,7 +180,7 @@ export async function startSmartDns(
     if (self && needsVpn(q.name)) return answerWith(m, q.end, q.type, self);
     const to = upstream(ours);
     const r = to && (await forward(m, to));
-    if (r && self && filterAnswer(r)) {
+    if (r && to && self && (filterAnswer(r) || (await stopped(q.name, m, q.end, to)))) {
       learnBlocked(q.name); // this computer's own connections skip trying it too (save data)
       return answerWith(m, q.end, q.type, self);
     }
@@ -162,7 +194,7 @@ export async function startSmartDns(
     if (homeAddress(from.address)) void reply(m).then((r) => r && udp.send(r, from.port, from.address), () => {});
   });
   const sockets = new Set<net.Socket>();
-  const web = ([[want.https, 443], [want.http, 80]] as const).map(([at, port]) => ({
+  const web = ([[want.https, 443], [want.http, 80], [want.chat, 5222]] as const).map(([at, port]) => ({
     at,
     srv: net.createServer((s) => {
       if (!homeAddress(s.remoteAddress)) return void s.destroy();
@@ -188,7 +220,7 @@ export async function startSmartDns(
     throw err;
   }
   udp.on("error", (err) => log(`smart dns: ${err.message}`));
-  const ports = { dns: udp.address().port, https: (web[0].srv.address() as net.AddressInfo).port, http: (web[1].srv.address() as net.AddressInfo).port };
-  log(`smart dns: on ${o.host}, DNS on ${ports.dns}, the web on ${ports.https} and ${ports.http}`);
+  const ports = { dns: udp.address().port, https: (web[0].srv.address() as net.AddressInfo).port, http: (web[1].srv.address() as net.AddressInfo).port, chat: (web[2].srv.address() as net.AddressInfo).port };
+  log(`smart dns: on ${o.host}, DNS on ${ports.dns}, the web on ${ports.https} and ${ports.http}, WhatsApp's chat on ${ports.chat}`);
   return { ports, close };
 }
