@@ -806,7 +806,7 @@ function drawSmartDns() {
     : t`<div class="hint">On the device, in its network settings, set DNS by hand to</div>
        <div class="addr"><span class="mono">${esc(ip)}</span><button class="mini" data-copy="${esc(ip)}" title="Copy">${icon("copy")}</button></div>
        ${S.active ? "" : t`<div class="warn-line">Not connected: until you connect, it gets the network's own answers, blocked sites included.</div>`}
-       <div class="hint">Only the web goes through, not games or calls. An iPhone's Private Relay, and a browser's secure DNS, skip it. When this ${DEVICE} is off, set the device's DNS back to automatic.</div>`;
+       <div class="hint">Only the web and WhatsApp's messages go through, not games or calls. An iPhone's Private Relay, and a browser's secure DNS, skip it. When this ${DEVICE} is off, set the device's DNS back to automatic.</div>`;
 }
 
 // ── The administrator password ─────────────────────────────────────────────────────────────

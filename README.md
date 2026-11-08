@@ -130,7 +130,7 @@ address Foxhole shows. While Foxhole is connected, a site Iran blocks (the netwo
 address, or stops a test handshake with it) or one that refuses Iran ([sanctioned](https://github.com/Chocolate4U/Iran-v2ray-rules)) is answered
 with your computer's address: the device's connection comes to Foxhole on port 443 or 80, and goes on through
 the VPN to the site its TLS SNI or HTTP Host names. Every other site gets the network's own answer and goes direct.
-Only the web goes through: games' and calls' traffic doesn't. An iPhone's iCloud Private Relay and a browser's
+Only the web and WhatsApp's messages go through: games' and calls' traffic doesn't. An iPhone's iCloud Private Relay and a browser's
 secure DNS skip it. When the computer is off, set the device's DNS back to automatic. Linux keeps ports 53, 80
 and 443 for root: `sudo sysctl -w net.ipv4.ip_unprivileged_port_start=53` lets Foxhole have them (add it to
 `/etc/sysctl.d/` to keep it).
