@@ -131,7 +131,7 @@ address, or stops a test handshake with it) or one that refuses Iran ([sanctione
 with your computer's address: the device's connection comes to Foxhole on port 443 or 80, and goes on through
 the VPN to the site its TLS SNI or HTTP Host names. Every other site gets the network's own answer and goes direct.
 Only the web and WhatsApp's messages go through: games' and calls' traffic doesn't. An iPhone's iCloud Private Relay and a browser's
-secure DNS skip it. When the computer is off, set the device's DNS back to automatic. Linux keeps ports 53, 80
+secure DNS skip it. On an iPhone, every app except Safari needs its permission on, in **Settings → Privacy & Security → Local Network**, to reach your computer. When the computer is off, set the device's DNS back to automatic. Linux keeps ports 53, 80
 and 443 for root: `sudo sysctl -w net.ipv4.ip_unprivileged_port_start=53` lets Foxhole have them (add it to
 `/etc/sysctl.d/` to keep it).
 

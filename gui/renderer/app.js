@@ -810,6 +810,7 @@ function drawSmartDns() {
        <div class="addr"><span class="mono">${esc(ip)}</span><button class="mini" data-copy="${esc(ip)}" title="Copy">${icon("copy")}</button></div>
        ${S.active ? "" : t`<div class="warn-line">Not connected: until you connect, it gets the network's own answers, blocked sites included.</div>`}
        <div class="hint">Only the web and WhatsApp's messages go through, not games or calls. An iPhone's Private Relay, and a browser's secure DNS, skip it. When this ${DEVICE} is off, set the device's DNS back to automatic.</div>`
+      + t`<div class="hint">On an iPhone, apps other than Safari need permission: turn them on in <b>Settings → Privacy & Security → Local Network</b>.</div>`
       + (tgShare() || t`<div class="hint">Telegram doesn't use DNS: turn on Share with devices on this network for its QR code.</div>`);
 }
 
