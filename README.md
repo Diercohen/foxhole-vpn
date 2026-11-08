@@ -29,7 +29,6 @@ routing**, on Linux, macOS and Windows. A desktop app or a terminal app.
 - 📱 **Share with your phone** on the same Wi-Fi
 - 📺 **Smart DNS for a TV or console**: set its DNS to your computer, and YouTube and blocked or sanctioned sites open on it, with no app
 - 📲 **Share Foxhole** with the family, no internet needed: your relay and split tunneling by QR code or link, and from an Android phone the app itself to a phone nearby
-- 📶 **Rules per network**: connect by itself on joining a Wi-Fi (say, at work), or pause on one (at home, where the router has a VPN) and connect again on leaving it
 - 🧮 **Look like a calculator** (Android): for a phone that may be searched, Foxhole's icon and name become a calculator's that works as one, and your code, then =, opens Foxhole. Android's own Settings still list Foxhole, and while it's connected Android shows its VPN
 - 🔘 **Quick Settings tile and a widget** on Android: on or off without opening the app, and the month's data left on the home screen
 - 🗣️ **In Persian too** (فارسی), right to left: the desktop and phone apps, with the tray, the notification, the tile and the widget, by Settings → Language. **In Russian too** (Русский), by the same setting. The terminal UI and the CLI stay in English

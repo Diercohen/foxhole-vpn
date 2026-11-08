@@ -8,7 +8,7 @@ import { fetchServerList, type Country } from "./serverlist.js";
 import { Connection, RELAY_CODE } from "./connection.js";
 import { GuardianError, GuardianBlocked, useRelay } from "./guardian.js";
 import { network, publicIp, lanIp, firewallHint } from "./netinfo.js";
-import { loadSettings, saveSettings, proxyHost, validPort, loginFor, telegramLink, onJoin, ruleable, withNetRule, type Settings } from "./settings.js";
+import { loadSettings, saveSettings, proxyHost, validPort, loginFor, telegramLink, onJoin, type Settings } from "./settings.js";
 import { qrLines } from "./qr.js";
 import { SHARE_PORT, serveShare, shareData, shareLink, parseShared, sharedWhat, importPlan, type ShareServer } from "./share.js";
 import { traffic, runsOut, sizeOf } from "./traffic.js";
@@ -57,9 +57,8 @@ const LEFT_W = 53;
 const TABLE_W = 44;
 const SIDE_W = LEFT_W + 4 + 1 + TABLE_W + 1;
 
-/** The Settings popup's rows, in order. */
+/** The Settings popup's rows, in order, each with its entry in `values`. "On this network" (key netRule) is hidden for now. */
 const SETTINGS = [
-  { key: "netRule", label: "On this network" },
   { key: "share", label: "Share with devices on this network" },
   { key: "port", label: "Proxy port" },
   { key: "username", label: "Username" },
@@ -1097,12 +1096,6 @@ export class Tui {
       case "space": {
         const item = SETTINGS[this.#setSel].key;
         if (item === "share") return void this.#changeSetting({ share: !this.#settings.share });
-        if (item === "netRule") {
-          if (!ruleable(this.#net)) return;
-          const next = { connect: "pause", pause: null } as const;
-          const rule = this.#settings.networks?.[this.#net];
-          return void this.#changeSetting({ networks: withNetRule(this.#settings.networks, this.#net, rule ? next[rule] : "connect") });
-        }
         if (item === "smartDns") return void this.#changeSetting({ smartDns: !this.#settings.smartDns || undefined });
         if (item === "relaySetup") return void ((this.#wizard = new RelayWizard(() => this.#render())), this.#render());
         if (item === "relayCert") return void this.#trust(!this.#caOk);
@@ -1520,9 +1513,7 @@ export class Tui {
           : masked
             ? "••••••••"
             : full.length > 22 ? full.slice(0, 11) + "…" + full.slice(-6) : full;
-    const netRule = ruleable(this.#net) ? s.networks?.[this.#net] : undefined;
     const values = [
-      !ruleable(this.#net) ? dim(this.#net ? "can't tell it apart" : "offline") : (netRule === "connect" ? green("connect") : netRule === "pause" ? yellow("pause") : dim("nothing")) + dim("  ⏎ change"),
       onOff(s.share),
       e?.key === "port" ? e.text + cursor : String(s.port),
       e?.key === "username" ? e.text + cursor : s.username || dim("optional"),
@@ -1568,13 +1559,6 @@ export class Tui {
       username: loginHelp("username"),
       password: loginHelp("password"),
       telegram: [dim("Telegram through the VPN, other apps not: its proxy set by a"), dim("QR code on your phone, or in a click on this computer.")],
-      netRule: (!ruleable(this.#net)
-        ? wrap(this.#net ? "Foxhole can't see this Wi-Fi's name, so it can't tell it from another." : "Not on a network.", 62)
-        : wrap(`${this.#net}: ` + (netRule === "connect"
-          ? "Foxhole connects when this computer joins it, in the mode last picked."
-          : netRule === "pause"
-            ? "Foxhole disconnects when this computer joins it, and connects again as before when it leaves."
-            : "Foxhole can connect by itself when this computer joins it, or pause here (at home, where the router has a VPN) and connect again when it leaves."), 62)).map(dim),
       smartDns: !s.smartDns
         ? [dim("YouTube and blocked or sanctioned sites on a TV, a console or an"), dim("iPhone, with no app: only its DNS is set to this computer.")]
         : this.#smartDnsYields
