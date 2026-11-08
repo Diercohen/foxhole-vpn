@@ -85,7 +85,7 @@ for (const argv of [
   ["route", "-n", "add", "-host", "151.101.1.1", "192.168.1.1"], ["route", "-n", "add", "-host", "151.101.1.1", "-interface", "utun4"], ["route", "-n", "delete", "-host", "151.101.1.1"],
   ["ifconfig", "utun123", "198.18.0.1", "198.18.0.1", "up"], [`${M}/tun2socks`, "--device", "utun123", "--proxy", "socks5://127.0.0.1:1080"],
   ["networksetup", "-setdnsservers", "Wi-Fi", "127.0.0.1"], ["networksetup", "-setdnsservers", "USB 10/100/1000 LAN", "Empty"], ["networksetup", "-setdnsservers", "Wi-Fi", "192.168.1.1", "fe80::1"],
-  ["killall", "-HUP", "mDNSResponder"], ["pkill", "-f", "utun12[3]"], ["pkill", "-f", "foxhole-dn[s]"],
+  ["ipconfig", "setverbose", "1"], ["killall", "-HUP", "mDNSResponder"], ["pkill", "-f", "utun12[3]"], ["pkill", "-f", "foxhole-dn[s]"],
 ]) {
   const r = mac(argv);
   assert.equal(r.stdout, `RUN ${argv.join(" ")}\n`, `${argv.join(" ")}: ${r.stderr}`);
@@ -95,7 +95,7 @@ for (const argv of [
   ["route", "-n", "add", "-net", "0.0.0.0/0", "1.2.3.4"], ["route", "-n", "add", "-net", "1.2.3.0/24", "1.2.3.4"], ["route", "add", "-host", "1.2.3.4", "1.1.1.1"], ["route", "-n", "flush"], ["route", "-n", "delete", "default"],
   ["route", "-n", "add", "-host", "1.2.3.4"], ["route", "-n", "add", "-host", "1.2.3.4", "1.1.1.1", "-ifscope", "en0"], ["route", "-n", "add", "-host", "1.2.3.4", "-interface", "-x"],
   ["networksetup", "-setairportpower", "en0", "off"], ["networksetup", "-setdnsservers", "Wi-Fi"], ["networksetup", "-setdnsservers", "-x", "1.1.1.1"], ["networksetup", "-setdnsservers", "Wi-Fi", "$(id)"], ["networksetup", "-setdnsservers", "Wi-Fi", "1.1.1.1; id"],
-  ["ifconfig", "en0", "down"], ["ifconfig", "utun123", "1.2.3.4", "1.2.3.4", "up"], ["killall", "Finder"], ["pkill", "-f", "."],
+  ["ipconfig", "setverbose", "0"], ["ipconfig", "set", "en0", "NONE"], ["ifconfig", "en0", "down"], ["ifconfig", "utun123", "1.2.3.4", "1.2.3.4", "up"], ["killall", "Finder"], ["pkill", "-f", "."],
   [`${M}/tun2socks`, "--device", "utun123", "--proxy", "socks5://1.2.3.4:1080"], [`${M}/tun2socks`, "--device", "utun123", "--proxy", "socks5://127.0.0.1:1", "--tun-post-up", "id"], ["/Users/me/tun2socks", "--device", "utun123", "--proxy", "socks5://127.0.0.1:1"],
   ["guard", "-", "en0"], ["version"], ["version", "0"],
 ]) {
@@ -106,6 +106,7 @@ for (const argv of [
 const macInst = installScript(501, "/Users/me/.cache/foxhole-vpn/tun2socks", "darwin");
 assert.ok(macInst.includes(`echo '#501 ALL=(root) NOPASSWD: ${M}/net' > /etc/sudoers.d/foxhole-501.new`), "macOS: a rule for this uid and script");
 assert.equal(spawnSync("sh", ["-n", "-c", macInst]).status, 0, "macOS: the installer parses");
+assert.ok(macInst.endsWith("ipconfig setverbose 1 || true # shows the Wi-Fi's name (netinfo.ts)\n"), "macOS: the installer shows the Wi-Fi's name, and can't fail on it");
 
 // Windows: the helper's checks are .NET regexes in PowerShell; these patterns mean the same to JavaScript, with \z as $.
 const winPatterns = WIN_ALLOWED.map((r) => new RegExp(r.replaceAll("\\z", "$")));

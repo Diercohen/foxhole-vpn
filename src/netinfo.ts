@@ -3,9 +3,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import http from "node:http";
-import { existsSync, readFileSync, rmSync } from "node:fs";
-import { networkInterfaces, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { networkInterfaces } from "node:os";
 
 const exec = promisify(execFile);
 
@@ -40,7 +39,7 @@ const run = (cmd: string, args: string[], env?: Record<string, string>) =>
 
 /**
  * What stands for the Wi-Fi's name where the system shows it only to apps allowed Location (macOS 14.4+, Windows 11
- * 24H2+, Android: the name can tell where you are). The window offers to ask (wifiAccess), in so many words first.
+ * 24H2+, Android: the name can tell where you are). On Windows and Android the window offers to ask, in so many words first.
  */
 export const WIFI_HIDDEN = "name hidden";
 
@@ -59,34 +58,16 @@ const SCAN_RECORD_SSID = `function run(argv) {
   }
 }`;
 
-// macOS: Foxhole.app's own little app (gui/build/wifi.m) that reads the name, asking for Location as "Foxhole". It's
-// started by `open`: macOS asks about and allows what LaunchServices starts, not a program another one runs. The
-// terminal app and `electron .` have none of their own, so they use the installed Foxhole's.
-const OWN_MAC_HELPER = resolve(process.execPath, "../../Helpers/Foxhole Wi-Fi.app");
-const MAC_HELPER = existsSync(OWN_MAC_HELPER) ? OWN_MAC_HELPER : "/Applications/Foxhole.app/Contents/Helpers/Foxhole Wi-Fi.app";
-
-/** The helper's answer: allowed / denied / unasked, and the Wi-Fi's name. `ask`: asks first, if it's not been asked. */
-async function macHelper(ask: boolean): Promise<[string, string]> {
-  const out = join(tmpdir(), `foxhole-wifi-${process.pid}-${Date.now()}`);
-  await exec("open", ["-g", "-j", "-n", "-W", "--stdout", out, MAC_HELPER, ...(ask ? ["--args", "ask"] : [])], { timeout: ask ? 130_000 : 5000 }).catch(() => {});
-  try {
-    const [how = "", name = ""] = readFileSync(out, "utf8").split("\n");
-    return [how, name.trim()];
-  } catch {
-    return ["", ""];
-  } finally {
-    rmSync(out, { force: true });
-  }
-}
-
+let verboseAt = 0;
 /**
- * Asks to be shown the Wi-Fi's name (the user chose to, having been told why): "allowed", "denied", or "settings"
- * where it's turned on in the system's Settings (Windows has no question per desktop app; macOS asks only once).
+ * macOS: has the network helper (root, no password, once it's installed) turn on ipconfig's verbose mode, where it no
+ * longer redacts the name. It's tried at most once a minute, as the name's looked at every five seconds. Whether it ran.
  */
-export async function wifiAccess(): Promise<"allowed" | "denied" | "settings"> {
-  if (process.platform !== "darwin" || !existsSync(MAC_HELPER)) return "settings";
-  const [how] = await macHelper(true);
-  return how === "allowed" ? "allowed" : how === "denied" ? "settings" : "denied";
+async function macVerbose(): Promise<boolean> {
+  if (Date.now() - verboseAt < 60_000) return false;
+  verboseAt = Date.now();
+  const { helperInstalled, helperPriv } = await import("./helper.js"); // not at the top: helper.ts leads back to this file
+  return helperInstalled() && helperPriv().run(["ipconfig", "setverbose", "1"]).then(() => true, () => false);
 }
 
 /** The connected Wi-Fi's name, or null (wired, offline, or unknown). */
@@ -98,12 +79,12 @@ export async function wifiName(): Promise<string | null> {
   if (process.platform === "darwin") {
     const ports = await run("networksetup", ["-listallhardwareports"]);
     const dev = ports.match(/Hardware Port: Wi-Fi\s*\nDevice:\s*(\S+)/)?.[1] ?? "en0";
-    const summary = await run("ipconfig", ["getsummary", dev]);
+    const read = () => run("ipconfig", ["getsummary", dev]);
+    const summary = await read();
     const ssid = parseSsid(summary) ?? parseSsid(await run("networksetup", ["-getairportnetwork", dev]));
     if (ssid || !/^\s*SSID\s*:\s*<redacted>/m.test(summary)) return ssid;
-    // redacted for apps not allowed Location: the helper's, else (Foxhole.app isn't installed) macOS 15's scan record
-    if (existsSync(MAC_HELPER)) return (await macHelper(false))[1] || WIFI_HIDDEN;
-    return (await run("osascript", ["-l", "JavaScript", "-e", SCAN_RECORD_SSID, dev])).trim() || WIFI_HIDDEN;
+    // redacted: ipconfig's verbose mode shows it; else (no network helper yet) macOS 15's scan record
+    return ((await macVerbose()) && parseSsid(await read())) || (await run("osascript", ["-l", "JavaScript", "-e", SCAN_RECORD_SSID, dev])).trim() || WIFI_HIDDEN;
   }
   // NetworkManager first (Ubuntu, Fedora, Mint…): always there, and it gives the name in UTF-8,
   // where iw isn't always installed. Cached results only: no Wi-Fi scan on each check.

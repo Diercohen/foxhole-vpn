@@ -1310,13 +1310,12 @@ window.foxholeTvLink = (link) => (S ? tvSendOpen(link) : setTimeout(() => window
 
 const OS = IOS ? "iOS" : PHONE ? "Android" : { darwin: "macOS", win32: "Windows" }[fh.platform] ?? t`The system`;
 /** " · Show the name", where the system hides it (netinfo.ts WIFI_HIDDEN): what it takes is told first (askWifi). */
-const showName = () => (S.net?.endsWith("name hidden") ? t` · <span class="link" data-wifi>Show the name</span>` : "");
+const showName = () => (S.net?.endsWith("name hidden") && OS !== "macOS" ? t` · <span class="link" data-wifi>Show the name</span>` : "");
 
 /** Why Foxhole would want Location, and what the system then asks: before it asks (the user may say not now). */
 function askWifi() {
   $("#wifi-why").textContent = t`${OS} shows apps the Wi-Fi's name only if they're allowed Location, as a Wi-Fi's name can tell where you are.`;
   $("#wifi-how").textContent = {
-    macOS: t`macOS asks you once: choose Allow. You can change it any time in System Settings → Privacy & Security → Location Services.`,
     Windows: t`Windows' Location settings open: turn on Location services and Let desktop apps access your location. You can turn them off there any time.`,
     Android: t`Android asks you once: choose Precise and While using the app. You can change it any time in Android's settings.`,
   }[OS] ?? "";
@@ -1327,7 +1326,7 @@ function askWifi() {
 
 async function wifiAsk(btn) {
   btn.disabled = true;
-  btn.textContent = OS === "macOS" ? t`Waiting for macOS…` : t`One moment…`;
+  btn.textContent = t`One moment…`;
   const how = await act("showWifiName").catch((err) => ({ error: why(err) }));
   btn.disabled = false;
   btn.textContent = t`Continue`;

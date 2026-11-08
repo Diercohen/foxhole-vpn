@@ -30,7 +30,7 @@ const LINKS = {
   gas: "https://script.google.com/home", // Google Apps Script, for the relay's setup
   fda: FULL_DISK_ACCESS, // macOS: where the app is allowed to read Firefox's profile
   // Location, which shows apps the Wi-Fi's name (app.js wifi-modal)
-  location: process.platform === "win32" ? "ms-settings:privacy-location" : "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices",
+  location: "ms-settings:privacy-location",
 };
 // What the window may ask for: the Controller's actions, nothing else of it
 const ACTIONS = new Set([

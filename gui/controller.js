@@ -16,7 +16,7 @@ import { fetchEntitlement, fetchUsage } from "./dist/guardian.js";
 import { GuardianError, GuardianBlocked, useRelay } from "./dist/guardian.js";
 import { loadRelay, relayUrl } from "./dist/httprelay.js";
 import { STEPS, KEY_PLACEHOLDER, relayTemplate, highlightJs, deploymentId } from "./dist/relaysetup.js";
-import { network, publicIp, lanIp, firewallHint, wifiAccess } from "./dist/netinfo.js";
+import { network, publicIp, lanIp, firewallHint } from "./dist/netinfo.js";
 import { helperFor, helperInstalled, helperReady } from "./dist/helper.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor, telegramLink, onJoin, ruleable, withNetRule } from "./dist/settings.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenProblem } from "./dist/tokenserver.js";
@@ -508,11 +508,11 @@ export class Controller extends EventEmitter {
 
   /**
    * The window's "Show the name" (the user was told why first): the system asked to show Foxhole the Wi-Fi's name
-   * (netinfo.ts wifiAccess; Android's own question). "allowed", "denied", "settings" (for the window to open), or on
+   * (Android's own question; Windows' Settings page). "allowed", "denied", "settings" (for the window to open), or on
    * Android "opened" (Settings is on screen) and "approximate" (the name needs Precise location).
    */
   async showWifiName() {
-    const how = await (this.#android?.wifiAccess ?? wifiAccess)();
+    const how = this.#android ? await this.#android.wifiAccess() : "settings"; // Windows has no question per desktop app
     this.#refreshNet();
     return how;
   }

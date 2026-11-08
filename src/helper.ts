@@ -6,7 +6,8 @@
 // The script is what makes this safe, not a detail: sudo gives any program of this user the script as root, so it only
 // runs the exact commands a session needs (global.ts's and global-darwin.ts's, kept in step by test/helper.test.mjs),
 // never a command or a tun2socks of the caller's. What's left to a program of this user: sending this computer's traffic
-// through a SOCKS proxy on this computer, adding host routes, and (macOS) choosing the DNS server. Nothing that reaches a
+// through a SOCKS proxy on this computer, adding host routes, and (macOS) choosing the DNS server and turning on
+// ipconfig's verbose mode, which shows the Wi-Fi's name. Nothing that reaches a
 // root shell. On macOS no JavaScript runs as root with it either: the DNS relay stays the user's (global-darwin.ts).
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -24,7 +25,7 @@ const WIN_NET = join(WIN_DIR, "net.ps1");
 const WIN_T2S = join(WIN_DIR, "tun2socks.exe");
 const IS_WIN = process.platform === "win32";
 // Each system's script's version, raised when it changes: the next whole-system mode there asks once, to put the new one in
-const VERSIONS: Record<string, string> = { linux: "2", darwin: "1", win32: "1" };
+const VERSIONS: Record<string, string> = { linux: "2", darwin: "2", win32: "1" };
 const VERSION = VERSIONS[process.platform] ?? "1";
 const SUPPORTED = process.platform === "linux" || process.platform === "darwin"; // with sudo
 
@@ -153,6 +154,7 @@ case "$*" in
   "pkill -f utun12[3]" | \\
   "pkill -f foxhole-dn[s]" | \\
   "killall -HUP mDNSResponder" | \\
+  "ipconfig setverbose 1" | \\
   "ifconfig utun123 198.18.0.1 198.18.0.1 up" | \\
   "route -n add -net 0.0.0.0/1 198.18.0.1" | \\
   "route -n add -net 128.0.0.0/1 198.18.0.1" | \\
@@ -215,7 +217,7 @@ echo '#${uid} ALL=(root) NOPASSWD: ${net}' > ${rule}.new
 chmod 440 ${rule}.new
 visudo -cf ${rule}.new >/dev/null || { rm -f ${rule}.new; exit 1; }
 mv -f ${rule}.new ${rule}
-`;
+${platform === "darwin" ? "ipconfig setverbose 1 || true # shows the Wi-Fi's name (netinfo.ts)\n" : ""}`;
 };
 
 /** The session's commands through the helper: its own script and tun2socks, no password. */
