@@ -7,7 +7,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Controller } from "./controller.js";
 import { createTray } from "./tray.js";
-import "./renderer/fa.js"; // foxholeWords: Persian, for Settings → Language
+import "./renderer/fa.js"; // foxholeWords: for Settings → Language
+import "./renderer/ru.js";
 import { createBadge } from "./badge.js";
 import { Updater } from "./updater.js";
 import { AUTOSTART_FLAG, loginItem } from "./autostart.js";

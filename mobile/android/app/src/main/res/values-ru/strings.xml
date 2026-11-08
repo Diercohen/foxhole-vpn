@@ -1,0 +1,14 @@
+<resources>
+    <!-- on a phone set to Russian, disguise mode's name in the launcher: its own calculator's -->
+    <string name="calculator">Калькулятор</string>
+    <!-- Foxhole in Russian (Settings → Language, or a phone set to Russian): the tile, widget and notification -->
+    <string name="widget_off">Выкл.</string>
+    <string name="widget_description">Остаток трафика VPN за этот месяц и состояние Foxhole</string>
+    <string name="connecting">Подключение…</string>
+    <string name="on_at">Вкл. · %1$s</string>
+    <string name="paused">Пауза</string>
+    <string name="pause">Пауза</string>
+    <string name="resume">Продолжить</string>
+    <string name="disconnect">Отключить</string>
+    <string name="starting">Запуск…</string>
+</resources>

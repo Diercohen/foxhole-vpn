@@ -32,7 +32,7 @@ routing**, on Linux, macOS and Windows. A desktop app or a terminal app.
 - 📶 **Rules per network**: connect by itself on joining a Wi-Fi (say, at work), or pause on one (at home, where the router has a VPN) and connect again on leaving it
 - 🧮 **Look like a calculator** (Android): for a phone that may be searched, Foxhole's icon and name become a calculator's that works as one, and your code, then =, opens Foxhole. Android's own Settings still list Foxhole, and while it's connected Android shows its VPN
 - 🔘 **Quick Settings tile and a widget** on Android: on or off without opening the app, and the month's data left on the home screen
-- 🗣️ **In Persian too** (فارسی), right to left: the desktop and phone apps, with the tray, the notification, the tile and the widget, by Settings → Language (Persian on a system set to it). The terminal UI and the CLI stay in English
+- 🗣️ **In Persian too** (فارسی), right to left: the desktop and phone apps, with the tray, the notification, the tile and the widget, by Settings → Language. **In Russian too** (Русский), by the same setting. The terminal UI and the CLI stay in English
 - 🟣 **Relay mode** for networks that block Firefox VPN (e.g. Iran)
 
 ## Install
@@ -205,9 +205,9 @@ mode. Its APKs, one per ABI, land in `mobile/android/app/build/outputs/apk/relea
 signed with the keystore at `FOXHOLE_KEYSTORE` (`FOXHOLE_KEYSTORE_PASSWORD`,
 `FOXHOLE_KEY_ALIAS`), or else the debug key.
 
-The Persian is `gui/renderer/fa.js`, by the English. A window text is written
-t\`…\` (the core's messages as they are); `node gui/i18n.test.mjs --missing` lists
-the ones with no Persian yet, and the GUI's tests fail on them.
+The Persian is `gui/renderer/fa.js` and the Russian `gui/renderer/ru.js`, by the English. A window text is written
+t\`…\` (the core's messages as they are); `node gui/i18n.test.mjs --missing [ru]` lists
+the ones with no translation yet, and the GUI's tests fail on them.
 
 Release: push a tag (`git tag v1.1.0 && git push origin v1.1.0`); GitHub builds
 the apps into a draft release.

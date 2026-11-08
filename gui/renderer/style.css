@@ -10,6 +10,23 @@
   unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+200C-200F, U+FB50-FDFF, U+FE70-FEFF;
 }
 
+/* Russian (Golos Text, OFL: fonts/GolosText-OFL.txt). Cyrillic for "Русский" in any language, Latin only in a Russian window
+   (the --font below), so its words and the names among them are one typeface. */
+@font-face {
+  font-family: Golos;
+  src: url("fonts/GolosText-cyrillic.woff2") format("woff2");
+  font-weight: 400 900;
+  font-display: swap;
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "Golos Latin";
+  src: url("fonts/GolosText-latin.woff2") format("woff2");
+  font-weight: 400 900;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 @property --a1 { syntax: "<color>"; inherits: true; initial-value: #8b5cff; }
 @property --a2 { syntax: "<color>"; inherits: true; initial-value: #45b6ff; }
 
@@ -35,7 +52,8 @@
   --r-md: 18px;
   --spring: cubic-bezier(0.2, 0.9, 0.25, 1.2);
   --out: cubic-bezier(0.16, 1, 0.3, 1);
-  --font: Vazirmatn, "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", Inter, Ubuntu, Cantarell, "Noto Sans", sans-serif;
+  --font: Vazirmatn, Golos, var(--system-font);
+  --system-font: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", Inter, Ubuntu, Cantarell, "Noto Sans", sans-serif;
   --mono: "SF Mono", ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
 }
 
@@ -1037,6 +1055,8 @@ body.tv [data-use]:focus { border-radius: 14px; }
 #take-link { width: 100%; min-height: 84px; resize: vertical; padding: 10px 12px; border: 0; border-radius: 14px; font: 12px/1.45 var(--mono); color: var(--ink);
   background: rgba(0, 0, 0, 0.25); box-shadow: inset 0 0 0 1px var(--line-2); word-break: break-all; }
 #take-link:focus { outline: none; box-shadow: inset 0 0 0 1.5px var(--fox); }
+
+html[lang="ru"] { --font: Golos, "Golos Latin", var(--system-font); }
 
 /* ── Persian: right to left (app.js sets dir="rtl") ───────────────────────────────────────── */
 

@@ -7,6 +7,7 @@
 <title>Foxhole</title>
 <link rel="stylesheet" href="style.css">
 <script src="fa.js" defer></script>
+<script src="ru.js" defer></script>
 <script src="app.js" defer></script>
 <script src="fox3d.js" defer></script>
 </head>
@@ -196,9 +197,9 @@
 <section class="sheet glass" id="sheet-settings" aria-label="Settings">
   <header><span class="badge"><svg class="i"><use href="#i-sliders"/></svg></span><div><h2>Settings</h2><p>The proxy, sharing it, and your account.</p></div><button class="icon-btn close" data-close><svg class="i"><use href="#i-close"/></svg></button></header>
   <div class="scroll">
-    <div class="group" id="lang-group">
+    <div class="group" id="lang-group" hidden>
       <div class="label"><svg class="i"><use href="#i-globe"/></svg>Language</div>
-      <div class="seg small" id="lang" data-v="0"><span class="thumb"></span><button type="button" data-lang="en" lang="en">English</button><button type="button" data-lang="fa" lang="fa">فارسی</button></div>
+      <div class="seg small three" id="lang" data-v="0"><span class="thumb"></span><button type="button" data-lang="en" lang="en">English</button><button type="button" data-lang="fa" lang="fa">فارسی</button><button type="button" data-lang="ru" lang="ru">Русский</button></div>
     </div>
     <div class="group desktop-only" id="autostart-group" hidden>
       <div class="row-line">

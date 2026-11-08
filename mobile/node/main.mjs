@@ -15,7 +15,8 @@ import { caPem, loadCa } from "./dist/mitm.js";
 import { useFastlyFallback } from "./dist/dns.js";
 import { currentSplit, appOf } from "./dist/split.js";
 import { log } from "./dist/log.js";
-import "./fa.js"; // FA_COUNTRIES, foxholeWords: Persian, for Settings → Language (prepare.mjs copies it from gui/renderer)
+import "./fa.js"; // foxholeCountry, foxholeWords: for Settings → Language (prepare.mjs copies them from gui/renderer)
+import "./ru.js";
 
 net.setDefaultAutoSelectFamilyAttemptTimeout(3000); // as cli.ts: far VPN servers take 600-900 ms to answer
 useFastlyFallback(); // where the network drops Fastly's addresses Mozilla's hosts get (dns.ts)
@@ -229,8 +230,8 @@ function push() {
   const s = view();
   if (shown) send({ t: "state", s });
   const t = foxholeWords(s.settings?.lang);
-  // in the language Settings has (no Intl here for country names: fa.js has them); the relay's row is "Relay"
-  const place = (code) => (s.settings?.lang === "fa" && FA_COUNTRIES[code]) || (s.countries.find((c) => c.code === code)?.name ?? "");
+  // in the language Settings has (no Intl here for country names: fa.js and ru.js have them); the relay's row is "Relay"
+  const place = (code) => foxholeCountry(s.settings?.lang, code) || (s.countries.find((c) => c.code === code)?.name ?? "");
   const note = s.active
     ? JSON.stringify({ title: `${s.globalOn ? t`Whole system` : t`Proxy`} · ${place(s.global ?? s.active)}`, text: s.proxy ? `${s.proxy.addr} · SOCKS5 + HTTP` : "" })
     : paused

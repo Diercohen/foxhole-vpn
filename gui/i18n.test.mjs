@@ -1,9 +1,10 @@
-// node i18n.test.mjs: Foxhole's Persian (renderer/fa.js) has every t`…` text of the window, tray and phone core, and
+// node i18n.test.mjs: Foxhole's Persian (renderer/fa.js) and Russian (renderer/ru.js) have every t`…` text of the window, tray and phone core, and
 // index.html's own words; each translation has the values its English has; and no text is there that's gone from the
-// code. `--missing` lists what has no Persian yet, as fa.js keys.
+// code. `--missing` lists what has no Persian yet (`--missing ru`: no Russian), as fa.js keys.
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import "./renderer/fa.js";
+import "./renderer/ru.js";
 
 const read = (f) => readFileSync(new URL(f, import.meta.url), "utf8");
 const norm = (s) => s.replace(/\s+/g, " ").trim();
@@ -82,23 +83,31 @@ const sources = {
   "../mobile/node/main.mjs": tagged(read("../mobile/node/main.mjs")),
   "renderer/index.html": pageWords(read("renderer/index.html")),
 };
-const missing = new Set();
-for (const keys of Object.values(sources)) for (const k of keys) if (!(k in FA) && !SAME.has(k)) missing.add(k);
+const missing = (table) => new Set(Object.values(sources).flat().filter((k) => !(k in table) && !SAME.has(k)));
 if (process.argv.includes("--missing")) {
-  for (const k of missing) console.log(JSON.stringify(k));
+  for (const k of missing(process.argv.includes("ru") ? RU : FA)) console.log(JSON.stringify(k));
   process.exit(0);
 }
 assert.ok(sources["renderer/app.js"].length > 350, "app.js's texts were found");
-assert.deepEqual([...missing], [], "every text has its Persian in renderer/fa.js");
+assert.deepEqual([...missing(FA)], [], "every text has its Persian in renderer/fa.js");
+assert.deepEqual([...missing(RU)], [], "every text has its Russian in renderer/ru.js");
+// the core's words are only in the tables: the same ones in both
+assert.deepEqual(Object.keys(FA).filter((k) => !(k in RU)), [], "ru.js has all fa.js has");
+assert.deepEqual(Object.keys(RU).filter((k) => !(k in FA)), [], "fa.js has all ru.js has");
+// Russian that's all names
+const KEPT_RU = new Set(["Wi-Fi", "Wi-Fi · {}", "Android's VPN"]);
 
 // each translation has its English's values: {} as many, in order, or {0}, {1}… each one there is (some may go)
-for (const [en, fa] of Object.entries(FA)) {
-  const n = en.split("{}").length - 1;
-  const plain = (fa.match(/\{\}/g) ?? []).length;
-  const numbered = [...fa.matchAll(/\{(\d)\}/g)].map((m) => +m[1]);
-  assert.ok(numbered.length ? !plain && numbered.every((x) => x < n) : plain === n, `the values of ${JSON.stringify(en)}`);
-  if (!SAME.has(en)) assert.match(fa, /[؀-ۿ]|^[^A-Za-z]*$/, `Persian for ${JSON.stringify(en)}`);
-}
+const tags = (s) => (s.match(/<[^>]+>/g) ?? []).map((m) => m.replace(/\s(title|aria-label)="[^"]*"/g, "")).sort(); // those two are read, so translated
+for (const [table, letters] of [[FA, /[؀-ۿ]|^[^A-Za-z]*$/], [RU, /[а-яё]|^[^A-Za-z]*$/i]])
+  for (const [en, said] of Object.entries(table)) {
+    const n = en.split("{}").length - 1;
+    const plain = (said.match(/\{\}/g) ?? []).length;
+    const numbered = [...said.matchAll(/\{(\d)\}/g)].map((m) => +m[1]);
+    assert.ok(numbered.length ? !plain && numbered.every((x) => x < n) : plain === n, `the values of ${JSON.stringify(en)}`);
+    if (!SAME.has(en) && !(table === RU && KEPT_RU.has(en))) assert.match(said, letters, `the translation of ${JSON.stringify(en)}`);
+    if (table === RU) assert.deepEqual(tags(said), tags(en), `the markup of ${JSON.stringify(en)}`); // its buttons' data-* are what the window acts on
+  }
 
 // no text that's gone: each piece of a key between its {} is in the code (the core's words too: controller.js, updater.js, src/, and
 // the phone's Kotlin), a list's ", " beside a {} aside
@@ -119,5 +128,11 @@ assert.equal(fa`Connect`, FA.Connect);
 assert.equal(foxholeWords("en")`Connected · ${"Germany"}`, "Connected · Germany");
 assert.equal(fa`Connected · ${"x"}`, FA["Connected · {}"].replace("{}", "x"));
 for (const code of "AR AT AU BE BG BR CA CL CO DE DK ES FI FR GB GH IE IR IT JP KR MX MY NL NO NZ PE PH PT SE SG TH US ZA RELAY".split(" "))
-  assert.match(FA_COUNTRIES[code] ?? "", /[؀-ۿ]/, `FA_COUNTRIES.${code}`);
-console.log(`i18n: ${Object.keys(FA).length} Persian texts, all of the window's, tray's and phone core's ok`);
+  assert.match(FA_COUNTRIES[code] ?? "", /[؀-ۿ]/, `FA_COUNTRIES.${code}`),
+    assert.match(RU_COUNTRIES[code] ?? "", /[а-яё]/i, `RU_COUNTRIES.${code}`);
+const ru = foxholeWords("ru");
+assert.equal(ru`Connect`, RU.Connect);
+assert.equal(ru`Connected · ${"x"}`, RU["Connected · {}"].replace("{}", "x"));
+assert.equal(foxholeCountry("ru", "DE"), RU_COUNTRIES.DE);
+assert.equal(foxholeCountry("en", "DE"), undefined);
+console.log(`i18n: ${Object.keys(FA).length} Persian and ${Object.keys(RU).length} Russian texts, all of the window's, tray's and phone core's ok`);

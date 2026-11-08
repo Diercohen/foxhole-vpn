@@ -3,10 +3,11 @@ import { Tray, Menu, nativeImage, systemPreferences } from "electron";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { flag } from "./dist/ui.js";
-import "./renderer/fa.js"; // FA, FA_COUNTRIES, foxholeWords: Persian, for Settings → Language
+import "./renderer/fa.js"; // foxholeWords, foxholeCountry: for Settings → Language
+import "./renderer/ru.js";
 
 /** A country as the menu names it, in the menu's language: its flag is the item's picture (flagIcon). */
-const named = (s, code) => (s.settings?.lang === "fa" && FA_COUNTRIES[code]) || (s.countries.find((c) => c.code === code)?.name ?? code);
+const named = (s, code) => foxholeCountry(s.settings?.lang, code) || (s.countries.find((c) => c.code === code)?.name ?? code);
 
 /** A country's flag picture (build/flags, made by flag-icons.mjs; Electron finds its @2x), or null. */
 const flagFiles = new Map();

@@ -39,9 +39,9 @@ object Status {
       )
     }
 
-  /** Foxhole's own words (res/values, values-fa) in the language Settings has, whatever the phone's is. */
+  /** Foxhole's own words (res/values, values-fa, values-ru) in the language Settings has, whatever the phone's is. */
   fun words(ctx: Context): Context {
-    val lang = prefs(ctx).getString("lang", null) ?: return ctx // the core's not said yet: the phone's
+    val lang = prefs(ctx).getString("lang", null) ?: "en" // the core's not said yet
     return ctx.createConfigurationContext(Configuration(ctx.resources.configuration).apply { setLocale(Locale.forLanguageTag(lang)) })
   }
 

@@ -728,14 +728,19 @@ globalThis.FA_COUNTRIES = {
   RELAY: "رله",
 };
 
+/** A language's words by their English (fa.js here, ru.js Russian's); null for English, as written. */
+globalThis.foxholeTable = (lang) => (lang === "fa" ? FA : lang === "ru" ? RU : null);
+/** A location's name in `lang`, if there's one (nodejs-mobile has no ICU, so the phone's core can't ask Intl). */
+globalThis.foxholeCountry = (lang, code) => (lang === "fa" ? FA_COUNTRIES : lang === "ru" ? RU_COUNTRIES : {})[code];
+
 /**
- * A t`…${x}…` tag in `lang`: in "fa", FA's Persian for the text, its values put in; else, or with none for it, the
- * English as written. The window's (app.js), the tray's, main.js's and the phone core's (mobile/node/main.mjs).
+ * A t`…${x}…` tag in `lang`: its words for the text, its values put in; else, or with none for it, the English as
+ * written. The window's (app.js), the tray's, main.js's and the phone core's (mobile/node/main.mjs).
  */
 globalThis.foxholeWords = (lang) => (strings, ...vals) => {
-  const fa = lang === "fa" ? FA[strings.join("{}").replace(/\s+/g, " ").trim()] : undefined;
-  if (fa === undefined) return strings.reduce((out, s, i) => out + vals[i - 1] + s);
+  const said = foxholeTable(lang)?.[strings.join("{}").replace(/\s+/g, " ").trim()];
+  if (said === undefined) return strings.reduce((out, s, i) => out + vals[i - 1] + s);
   let i = 0;
-  const placed = fa.replace(/\{(\d?)\}/g, (_, n) => vals[n === "" ? i++ : +n]);
+  const placed = said.replace(/\{(\d?)\}/g, (_, n) => vals[n === "" ? i++ : +n]);
   return strings[0].match(/^\s*/)[0] + placed + strings[strings.length - 1].match(/\s*$/)[0];
 };

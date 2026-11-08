@@ -18,7 +18,7 @@ export interface Settings {
   proxyOnly?: boolean; // connecting doesn't go on to whole-system mode, the default: the mode last picked (TUI, desktop app)
   smartDns?: boolean; // this computer is the DNS server of the home's TV, console, iPhone: blocked sites through the VPN (smartdns.ts)
   networks?: Record<string, NetRule>; // what joining a network does, by its name as netinfo.ts network() gives it
-  lang?: "en" | "fa"; // the desktop and phone apps' language (Settings → Language): their window, tray and notification
+  lang?: "en" | "fa" | "ru"; // the desktop and phone apps' language (Settings → Language): their window, tray and notification
 }
 
 /** A network's rule: connect on joining it; or pause there (disconnect, and connect again as before on leaving it). */
@@ -94,7 +94,7 @@ export function parseSettings(json: string): Settings {
     ...(o.proxyOnly === true ? { proxyOnly: true } : {}),
     ...(o.smartDns === true ? { smartDns: true } : {}),
     ...(parseNetworks(o.networks) && { networks: parseNetworks(o.networks) }),
-    ...(o.lang === "en" || o.lang === "fa" ? { lang: o.lang } : {}),
+    ...(o.lang === "en" || o.lang === "fa" || o.lang === "ru" ? { lang: o.lang } : {}),
   };
 }
 

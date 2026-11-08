@@ -69,7 +69,7 @@ const { version } = JSON.parse(readFileSync(join(root, "package.json"), "utf8"))
 mkdirSync(project, { recursive: true });
 writeFileSync(join(project, "package.json"), JSON.stringify({ name: "foxhole-core", version, type: "module" }, null, 2));
 for (const f of ["controller.js", "updater.js"]) cpSync(join(root, "gui", f), join(project, f));
-cpSync(join(root, "gui/renderer/fa.js"), join(project, "fa.js")); // Persian, for the notification
+for (const f of ["fa.js", "ru.js"]) cpSync(join(root, "gui/renderer", f), join(project, f)); // the notification's words
 cpSync(join(mobile, "node/main.mjs"), join(project, "main.mjs"));
 cpSync(join(root, "dist"), join(project, "dist"), { recursive: true, filter: (src) => !src.endsWith(".png") }); // the screenshots are the window's
 

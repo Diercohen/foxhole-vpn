@@ -1,39 +1,39 @@
 // The window: draws the state the main process sends (controller.js state()) and asks it for actions.
 const fh = window.foxhole;
 
-// ── Its language: English as written here, or Persian (fa.js), right to left ───────────────
+// ── Its language: English as written here, Persian (fa.js), right to left, or Russian (ru.js) ───────────────
 // Settings → Language: kept here, to draw in it from the start, and in settings.json (the tray's and notification's)
 let langSaved = null;
 try {
   langSaved = localStorage.getItem("lang");
 } catch {} // no storage
-const LANG = langSaved ?? (/^fa\b/i.test(navigator.language) ? "fa" : "en");
-const FA_ON = LANG === "fa";
+const LANG = langSaved ?? "en";
+const WORDS = foxholeTable(LANG); // null in English
 const norm = (s) => s.replace(/\s+/g, " ").trim();
-/** t`…${x}…`: these words in the window's language (fa.js has them by their English, each value a {}). */
+/** t`…${x}…`: these words in the window's language (fa.js and ru.js have them by their English, each value a {}). */
 const t = foxholeWords(LANG);
 const MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ");
 const trDone = new Map();
-let trPatterns = null; // fa.js's plain texts with a {}, the longest first: [regular expression, their English as t's]
+let trPatterns = null; // the language's plain texts with a {}, the longest first: [regular expression, their English as t's]
 const COUNTRIES = new Map(); // the locations' English names, as the core puts them in its texts (localize fills it)
 /**
- * The core's words (controller.js, src/: always English) in the window's language: as fa.js has them, where a {}
- * matches any text (none too), translated in turn; a location's name; a short date (ui.ts shortDate, "Nov 1") by Iran's
- * calendar. Its spaces before and after stay.
+ * The core's words (controller.js, src/: always English) in the window's language: as fa.js or ru.js has them, where a {}
+ * matches any text (none too), translated in turn; a location's name; a short date (ui.ts shortDate, "Nov 1"), in
+ * Persian by Iran's calendar. Its spaces before and after stay.
  */
 function tr(text) {
-  if (!FA_ON || typeof text !== "string" || !text.trim()) return text;
+  if (!WORDS || typeof text !== "string" || !text.trim()) return text;
   if (text.includes("\n")) return text.split("\n").map(tr).join("\n"); // a message a line
   let out = trDone.get(text);
   if (out !== undefined) return out;
   const key = norm(text);
-  const fa = FA[key] ?? COUNTRIES.get(key) ?? persianDate(key) ?? trPattern(key);
-  out = fa == null ? text : text.match(/^\s*/)[0] + fa + text.match(/\s*$/)[0];
+  const said = WORDS[key] ?? COUNTRIES.get(key) ?? localDate(key) ?? trPattern(key);
+  out = said == null ? text : text.match(/^\s*/)[0] + said + text.match(/\s*$/)[0];
   if (trDone.size < 3000) trDone.set(text, out);
   return out;
 }
 function trPattern(key) {
-  trPatterns ??= Object.keys(FA)
+  trPatterns ??= Object.keys(WORDS)
     .filter((k) => k.includes("{}") && !k.includes("<") && /[^{}\s]/.test(k.replace(/\{\}/g, "")))
     .sort((a, b) => b.replace(/\{\}/g, "").length - a.replace(/\{\}/g, "").length)
     .map((k) => [new RegExp(`^${k.split("{}").map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("(.*?)")}$`, "s"), k.split("{}")]);
@@ -43,7 +43,7 @@ function trPattern(key) {
   }
   return null;
 }
-function persianDate(key) {
+function localDate(key) {
   const m = /^([A-Z][a-z]{2}) (\d{1,2})$/.exec(key);
   const month = m ? MONTHS.indexOf(m[1]) : -1;
   if (month < 0) return null;
@@ -53,17 +53,18 @@ function persianDate(key) {
   if (d - now > half) d.setFullYear(d.getFullYear() - 1);
   else if (now - d > half) d.setFullYear(d.getFullYear() + 1);
   try {
-    return new Intl.DateTimeFormat("fa-IR-u-nu-latn", { day: "numeric", month: "long" }).format(d);
+    return new Intl.DateTimeFormat(LANG === "fa" ? "fa-IR-u-nu-latn" : LANG, { day: "numeric", month: "long" }).format(d);
   } catch {
     return null;
   }
 }
 let regions = null;
-/** A country's name in Persian (Mozilla's are English): fa.js's, as the tray and notification have it, else the system's. */
+/** A country's name in the window's language (Mozilla's are English): as the tray and notification have it, else the system's. */
 function countryName(c) {
-  if (FA_COUNTRIES[c.code]) return FA_COUNTRIES[c.code];
+  const known = foxholeCountry(LANG, c.code);
+  if (known) return known;
   try {
-    regions ??= new Intl.DisplayNames(["fa"], { type: "region" });
+    regions ??= new Intl.DisplayNames([LANG], { type: "region" });
     const name = regions.of(c.code);
     if (name !== c.code) return name;
   } catch {} // not a country code
@@ -71,7 +72,7 @@ function countryName(c) {
 }
 /** The state's words from the core in the window's language, as it comes; what's matched or sent back (S.net, a rule) stays. */
 function localize(s) {
-  if (!FA_ON || !s) return s;
+  if (!WORDS || !s) return s;
   for (const c of s.countries ?? []) {
     c.en ??= c.name;
     c.name = countryName(c);
@@ -88,23 +89,24 @@ function localize(s) {
 /** index.html's own words: elements marked data-t whole (words with markup in them), then each text, and the attributes read out. */
 function translatePage() {
   document.documentElement.lang = LANG;
-  if (!FA_ON) return;
-  document.documentElement.dir = "rtl";
+  if (!WORDS) return;
+  if (LANG === "fa") document.documentElement.dir = "rtl";
   for (const el of document.querySelectorAll("[data-t]")) el.innerHTML = t([el.innerHTML]);
   const words = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   while (words.nextNode()) {
     const n = words.currentNode;
-    const fa = FA[norm(n.nodeValue)];
-    if (fa !== undefined) n.nodeValue = n.nodeValue.replace(n.nodeValue.trim(), fa);
+    const said = WORDS[norm(n.nodeValue)];
+    if (said !== undefined) n.nodeValue = n.nodeValue.replace(n.nodeValue.trim(), said);
   }
   for (const a of ["title", "placeholder", "aria-label", "alt"])
     for (const el of document.querySelectorAll(`[${a}]`)) {
-      const fa = FA[norm(el.getAttribute(a))];
-      if (fa !== undefined) el.setAttribute(a, fa);
+      const said = WORDS[norm(el.getAttribute(a))];
+      if (said !== undefined) el.setAttribute(a, said);
     }
 }
 translatePage();
-document.getElementById("lang").dataset.v = LANG === "fa" ? "1" : "0";
+const LANG_NAMES = { en: "English", fa: "فارسی", ru: "Русский" };
+document.getElementById("lang").dataset.v = Object.keys(LANG_NAMES).indexOf(LANG);
 
 /** Settings → Language: kept here and in settings.json, then the window's drawn anew in it. */
 async function setLang(lang) {
@@ -116,8 +118,8 @@ async function setLang(lang) {
   location.reload();
 }
 
-/** The sign-in screens' way to the other language, before Settings can be reached. */
-const langLink = () => `<p class="fine lang-link"><span class="link" data-lang="${LANG === "fa" ? "en" : "fa"}" lang="${LANG === "fa" ? "en" : "fa"}">${LANG === "fa" ? "English" : "فارسی"}</span></p>`;
+/** The sign-in screens' way to the other languages, before Settings can be reached. */
+const langLink = () => `<p class="fine lang-link" hidden>${Object.keys(LANG_NAMES).filter((l) => l !== LANG).map((l) => `<span class="link" data-lang="${l}" lang="${l}">${LANG_NAMES[l]}</span>`).join(" · ")}</p>`;
 
 let langSynced = false;
 /** Once: the language Settings set where this window's storage kept none (cleared), drawn anew in it; else the core follows the window. */

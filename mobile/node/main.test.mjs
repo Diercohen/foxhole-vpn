@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "foxhole-core-"));
 copyFileSync(join(here, "main.mjs"), join(dir, "main.mjs")); // a copy: its imports resolve beside it
-copyFileSync(join(here, "../../gui/renderer/fa.js"), join(dir, "fa.js")); // as prepare.mjs has it
+for (const f of ["fa.js", "ru.js"]) copyFileSync(join(here, "../../gui/renderer", f), join(dir, f)); // as prepare.mjs has them
 symlinkSync(join(here, "../../dist"), join(dir, "dist"));
 writeFileSync(join(dir, "package.json"), '{ "type": "module" }');
 writeFileSync(join(dir, "updater.js"), "export class Updater { start() {} state() { return null; } }");
