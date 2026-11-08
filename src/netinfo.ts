@@ -60,8 +60,10 @@ const SCAN_RECORD_SSID = `function run(argv) {
 }`;
 
 // macOS: Foxhole.app's own little app (gui/build/wifi.m) that reads the name, asking for Location as "Foxhole". It's
-// started by `open`: macOS asks about and allows what LaunchServices starts, not a program another one runs.
-const MAC_HELPER = resolve(process.execPath, "../../Helpers/Foxhole Wi-Fi.app");
+// started by `open`: macOS asks about and allows what LaunchServices starts, not a program another one runs. The
+// terminal app and `electron .` have none of their own, so they use the installed Foxhole's.
+const OWN_MAC_HELPER = resolve(process.execPath, "../../Helpers/Foxhole Wi-Fi.app");
+const MAC_HELPER = existsSync(OWN_MAC_HELPER) ? OWN_MAC_HELPER : "/Applications/Foxhole.app/Contents/Helpers/Foxhole Wi-Fi.app";
 
 /** The helper's answer: allowed / denied / unasked, and the Wi-Fi's name. `ask`: asks first, if it's not been asked. */
 async function macHelper(ask: boolean): Promise<[string, string]> {
@@ -99,7 +101,7 @@ export async function wifiName(): Promise<string | null> {
     const summary = await run("ipconfig", ["getsummary", dev]);
     const ssid = parseSsid(summary) ?? parseSsid(await run("networksetup", ["-getairportnetwork", dev]));
     if (ssid || !/^\s*SSID\s*:\s*<redacted>/m.test(summary)) return ssid;
-    // redacted for apps not allowed Location: the helper's, else (no helper: the terminal app) macOS 15's scan record
+    // redacted for apps not allowed Location: the helper's, else (Foxhole.app isn't installed) macOS 15's scan record
     if (existsSync(MAC_HELPER)) return (await macHelper(false))[1] || WIFI_HIDDEN;
     return (await run("osascript", ["-l", "JavaScript", "-e", SCAN_RECORD_SSID, dev])).trim() || WIFI_HIDDEN;
   }
