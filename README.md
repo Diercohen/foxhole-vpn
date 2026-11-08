@@ -20,8 +20,19 @@ routing**, on Linux, macOS and Windows. A desktop app or a terminal app.
 - 🌍 **Free VPN servers**: US, Germany, Japan, Australia, Argentina, South Africa
 - 🧦 **SOCKS5 and HTTP proxy on one port** (`127.0.0.1:1080`) for any app
 - 🛡️ **Whole-system mode** (TUN) with DNS over HTTPS inside the tunnel and IPv6/QUIC leak protection
+- 📞 **Calls** through it: UDP to the ports the VPN takes (WebRTC's), in whole-system mode
 - ✂️ **Split tunneling**: pick the sites and apps that skip the VPN, or the only ones that use it (apps: on computers, and on Android in whole-system mode; iOS can only split sites)
+- 🇮🇷 **Iranian sites direct** in one switch, and **Save data**: other sites go direct too where they open, blocked ones through the VPN
+- 🔎 **Blocked or sanctioned?** Split tunneling's **Check** tries a site directly and through the VPN: Iran's filter, sanctions, or open (then it can skip the VPN). And when Iran cuts the international internet off, Foxhole says so
+- 📊 **Data by site**: which sites spend the VPN's monthly data, when it runs out at this rate, and one click to send a big one direct
+- ✈️ **Telegram in one tap**: the proxy card's button sets Telegram on this device; with sharing on, a QR code sets your phone's
 - 📱 **Share with your phone** on the same Wi-Fi
+- 📺 **Smart DNS for a TV or console**: set its DNS to your computer, and YouTube and blocked or sanctioned sites open on it, with no app
+- 📲 **Share Foxhole** with the family, no internet needed: your relay and split tunneling by QR code or link, and from an Android phone the app itself to a phone nearby
+- 📶 **Rules per network**: connect by itself on joining a Wi-Fi (say, at work), or pause on one (at home, where the router has a VPN) and connect again on leaving it
+- 🧮 **Look like a calculator** (Android): for a phone that may be searched, Foxhole's icon and name become a calculator's that works as one, and your code, then =, opens Foxhole. Android's own Settings still list Foxhole, and while it's connected Android shows its VPN
+- 🔘 **Quick Settings tile and a widget** on Android: on or off without opening the app, and the month's data left on the home screen
+- 🗣️ **In Persian too** (فارسی), right to left: the desktop and phone apps, with the tray, the notification, the tile and the widget, by Settings → Language (Persian on a system set to it). The terminal UI and the CLI stay in English
 - 🟣 **Relay mode** for networks that block Firefox VPN (e.g. Iran)
 
 ## Install
@@ -66,7 +77,8 @@ foxhole restore             # undo whole-system routing if foxhole was killed
 In the TUI: pick a country and press **Enter** to connect (it starts disconnected).
 **`g`** ticks or unticks **Global TUN**: ticked, the default, connecting goes on to
 whole-system mode (asks for your password in-app), and your choice is kept for next
-time. **`t`** split tunneling, **`l`** logs, **`s`** settings.
+time. **`t`** split tunneling (**`i`** Iranian sites direct, **`s`** save data, **`?`** checks a site as you type it), **`m`** data by site, **`l`** logs, **`s`** settings
+(**Use in Telegram** shows its QR code, **Share settings** yours).
 On Windows, whole-system mode asks for administrator rights in Windows' own
 prompt, once: allow **Windows PowerShell**. With it Foxhole sets up its network helper,
 a scheduled task running a PowerShell script in `C:\Program Files\Foxhole Helper`, and
@@ -103,6 +115,40 @@ it shows each click with a screenshot. The relay:
   calls; your traffic still goes through Firefox VPN), and
 - can carry your browsing itself: pick **Relay** at the top of Locations.
 
+**Split tunneling → Iranian sites direct** sends Iran's sites around the VPN: by
+name (`.ir`, and 57,000 more from [iran-hosted-domains](https://github.com/bootmortis/iran-hosted-domains))
+and by address ([Iran's ranges](https://github.com/ipverse/country-ip-blocks)), refreshed weekly through the VPN.
+Banks and payment pages work, and that traffic costs Iran's cheaper rate instead of the VPN's data.
+**Save data** goes further: every other site is tried directly first, and one that's blocked
+(the filter's DNS answer, a reset, silence) goes through the VPN and is remembered for 3 days.
+Your provider then sees which sites you visit. Sites that refuse Iranian addresses
+([sanctioned](https://github.com/Chocolate4U/Iran-v2ray-rules)) always use the VPN.
+On a Mac, Save data works in Proxy only mode.
+
+**Settings → Smart DNS for a TV or console** (desktop app and TUI) makes your computer the DNS server of
+the home's other devices: a smart TV, a PlayStation or Xbox, an iPhone. On the device, set DNS by hand to the
+address Foxhole shows. While Foxhole is connected, a site Iran blocks (the network's DNS answers with the filter's
+address) or one that refuses Iran ([sanctioned](https://github.com/Chocolate4U/Iran-v2ray-rules)) is answered
+with your computer's address: the device's connection comes to Foxhole on port 443 or 80, and goes on through
+the VPN to the site its TLS SNI or HTTP Host names. Every other site gets the network's own answer and goes direct.
+Only the web goes through: games' and calls' traffic doesn't. An iPhone's iCloud Private Relay and a browser's
+secure DNS skip it. When the computer is off, set the device's DNS back to automatic. Linux keeps ports 53, 80
+and 443 for root: `sudo sysctl -w net.ipv4.ip_unprivileged_port_start=53` lets Foxhole have them (add it to
+`/etc/sysctl.d/` to keep it).
+
+**Settings → Share Foxhole** gives the family's other devices your split tunneling's sites and, if you tick it, your
+relay, so nobody else has to set one up. A phone on the same Wi-Fi scans its QR code with the camera and opens them in
+Foxhole; or send the link (`foxhole://settings?d=…`), and they paste it into **Settings → Import settings**, which
+shows what it changes first. From an Android phone the same QR code also gives a phone without Foxhole the app itself,
+over the Wi-Fi or the phone's hotspot, with no internet (Android asks to let the browser install apps). Anyone with
+the code or link can use your relay. Rules for apps stay each device's own.
+
+**Fixes without an update:** when the filtering changes, foxhole picks up the workaround (other addresses for
+Mozilla's servers, more Google sites for relay mode to reach directly) and a short notice from [`hot.json`](hot.json),
+which it checks against the developer's signing key. It fetches the file at start and every 6 hours from GitHub,
+jsDelivr and githack, through the VPN when connected and through your relay when nothing else answers. A file that
+doesn't verify, or is older than the one it has, is ignored.
+
 Relay mode is web-only, slower, has no country choice and **doesn't hide your IP**
 (Google forwards it). Sites with bot checks (Cloudflare, Reddit, ChatGPT) refuse
 it. It needs foxhole's certificate trusted; foxhole asks after your first connect.
@@ -129,7 +175,9 @@ near-root on your computer). In Iran, add
 
 ## Limits
 
-- **TCP only**: no UDP, so WebRTC, VoIP and games don't work through it.
+- **UDP to some ports only**: the VPN carries UDP to ports 80, 443, 3478, 8080, 8443 and 49152 and up, so calls
+  (WhatsApp, Discord, Teams and other WebRTC apps) work in whole-system mode; DNS, NTP and most games' ports don't.
+  QUIC stays on TCP, which is faster through it.
 - The VPN may refuse non-web ports (e.g. SSH `:22`); git over SSH to GitHub
   still works via `ssh.github.com:443`.
 - Whole-system mode refuses to start next to another full-tunnel VPN (`--force` overrides).
@@ -157,9 +205,15 @@ mode. Its APKs, one per ABI, land in `mobile/android/app/build/outputs/apk/relea
 signed with the keystore at `FOXHOLE_KEYSTORE` (`FOXHOLE_KEYSTORE_PASSWORD`,
 `FOXHOLE_KEY_ALIAS`), or else the debug key.
 
+The Persian is `gui/renderer/fa.js`, by the English. A window text is written
+t\`…\` (the core's messages as they are); `node gui/i18n.test.mjs --missing` lists
+the ones with no Persian yet, and the GUI's tests fail on them.
+
 Release: push a tag (`git tag v1.1.0 && git push origin v1.1.0`); GitHub builds
 the apps into a draft release.
 
 ## License
 
-[MIT](LICENSE) © Dier Cohen
+[MIT](LICENSE) © Dier Cohen. The Iranian sites list in `assets/lists` is
+bootmortis/iran-hosted-domains' (MIT, [its license](assets/lists/LICENSE-iran-hosted-domains)); Iran's
+address ranges are ipverse/country-ip-blocks' (CC0).

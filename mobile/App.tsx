@@ -8,6 +8,7 @@ import Core from "./specs/NativeFoxhole";
 
 const REPO = "https://github.com/Diercohen/foxhole-vpn";
 /** What the window may open, as gui/main.js. */
+const TELEGRAM = /^tg:\/\/socks\?server=127\.0\.0\.1&port=\d{1,5}$/;
 const LINKS: Record<string, string> = {
   repo: REPO,
   releases: `${REPO}/releases`,
@@ -112,19 +113,21 @@ function Main() {
   const [keyboard, setKeyboard] = useState(0); // its height: the window ends above it
   const account = useRef<object | null>(null); // from the sign-in page, until the core is signed in with it
   const askedNotify = useRef(false);
-  // a TV's QR code, scanned with the camera app (its page opens foxhole://tv?l=…): to the window's "Sign in a TV"
-  const tvLink = useRef<string | null>(null);
+  // a QR code scanned with the camera app, its page opening Foxhole: a TV's (foxhole://tv?l=…) to the window's "Sign in
+  // a TV", shared settings (foxhole://settings?d=…, share.ts) to its "Import settings". The window's call, till it's there.
+  const link = useRef<string | null>(null);
   const loaded = useRef(false);
-  const giveTvLink = () => {
-    if (!tvLink.current || !loaded.current) return;
-    web.current?.injectJavaScript(`window.foxholeTvLink && window.foxholeTvLink(${JSON.stringify(tvLink.current)});true;`);
-    tvLink.current = null;
+  const giveLink = () => {
+    if (!link.current || !loaded.current) return;
+    web.current?.injectJavaScript(`${link.current};true;`);
+    link.current = null;
   };
-  const opened = (url: string | null) => {
-    const m = url?.match(/^foxhole:\/\/tv\?l=(.+)$/);
-    if (!m) return;
-    tvLink.current = decodeURIComponent(m[1]);
-    giveTvLink();
+  const opened = (url?: string | null) => {
+    const tv = url?.match(/^foxhole:\/\/tv\?l=(.+)$/);
+    if (tv) link.current = `window.foxholeTvLink && window.foxholeTvLink(${JSON.stringify(decodeURIComponent(tv[1]))})`;
+    else if (url && /^foxhole:\/\/settings\?d=[\w-]+$/.test(url)) link.current = `window.foxholeImport && window.foxholeImport(${JSON.stringify(url)})`;
+    else return;
+    giveLink();
   };
 
   useEffect(() => {
@@ -170,7 +173,8 @@ function Main() {
     const m = JSON.parse(e.nativeEvent.data);
     if (m.t === "act") Core.send(e.nativeEvent.data); // the core checks it's one the window may ask for
     // a named link, or a page of the repo (the update's notes link its pull requests), as gui/main.js
-    else if (m.t === "open" && (LINKS[m.which] || m.which?.startsWith?.(`${REPO}/`))) void Linking.openURL(LINKS[m.which] ?? m.which);
+    // or Telegram's own link to this phone's proxy (the proxy card's button), as gui/main.js
+    else if (m.t === "open" && (LINKS[m.which] || m.which?.startsWith?.(`${REPO}/`) || TELEGRAM.test(m.which ?? ""))) Linking.openURL(LINKS[m.which] ?? m.which).catch(() => {}); // no Telegram: nothing to open
     else if (m.t === "back") Core.moveToBack();
   };
 
@@ -204,7 +208,7 @@ function Main() {
           web.current?.injectJavaScript(insetsJs);
           if (Platform.isTV) web.current?.requestFocus(); // nothing has Android's focus on opening: OK wouldn't reach the page
           loaded.current = true;
-          giveTvLink();
+          giveLink();
         }}
         mediaPlaybackRequiresUserAction={false} // Sign in a TV: the camera's picture, to scan the TV's QR code
         textZoom={100}

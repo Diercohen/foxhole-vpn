@@ -132,12 +132,13 @@ class FoxholeService : VpnService() {
   }
 
   private fun openApp() =
-    PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_IMMUTABLE)
+    PendingIntent.getActivity(this, 0, Intent(this, FoxholeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_IMMUTABLE)
 
   private fun notification(): Notification {
     getSystemService(NotificationManager::class.java)
       .createNotificationChannel(NotificationChannel(CHANNEL, "Connection", NotificationManager.IMPORTANCE_LOW))
-    val (title, text, paused) = note ?: Triple("Foxhole", "Starting…", false)
+    val w = Status.words(this)
+    val (title, text, paused) = note ?: Triple("Foxhole", w.getString(R.string.starting), false)
     val button = { action: String -> PendingIntent.getService(this, 1, Intent(this, FoxholeService::class.java).setAction(action), PendingIntent.FLAG_IMMUTABLE) }
     return NotificationCompat.Builder(this, CHANNEL)
       .setSmallIcon(R.drawable.ic_notify)
@@ -147,8 +148,8 @@ class FoxholeService : VpnService() {
       .setOngoing(true)
       .setShowWhen(false)
       .setContentIntent(openApp())
-      .addAction(0, if (paused) "Resume" else "Pause", button(if (paused) RESUME else PAUSE))
-      .addAction(0, "Disconnect", button(DISCONNECT))
+      .addAction(0, w.getString(if (paused) R.string.resume else R.string.pause), button(if (paused) RESUME else PAUSE))
+      .addAction(0, w.getString(R.string.disconnect), button(DISCONNECT))
       .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
       .build()
   }
@@ -191,7 +192,10 @@ class FoxholeService : VpnService() {
       }
     }
 
-    /** hev-socks5-tunnel's settings: TCP to the proxy over SOCKS5, DNS answered in the tunnel itself. */
+    /**
+     * hev-socks5-tunnel's settings: TCP to the proxy over SOCKS5, and UDP by its UDP ASSOCIATE (the proxy carries what
+     * the VPN takes: calls), DNS answered in the tunnel itself.
+     */
     private fun tunnelConfig(port: Int) = """
       |tunnel:
       |  mtu: 8500
@@ -200,6 +204,7 @@ class FoxholeService : VpnService() {
       |socks5:
       |  address: 127.0.0.1
       |  port: $port
+      |  udp: 'udp'
       |mapdns:
       |  address: 198.18.0.2
       |  port: 53

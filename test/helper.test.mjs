@@ -8,7 +8,7 @@ import { WIN_ALLOWED, helperScript, installScript, winInstall, winScript, winScr
 import { DNS_FLUSH, NRPT_ADD, pinRoute, planStaleCleanup as winStale, ps } from "../dist/global-win32.js";
 import { directRoutes } from "../dist/relay.js";
 import { useSplit } from "../dist/split.js";
-import { PRIVATE_CIDRS, pinCmd, planDirect, planDirectTeardown, planSetup, planStaleCleanup, planTeardown } from "../dist/global.js";
+import { PRIVATE_CIDRS, QUIC_REJECT, pinCmd, planDirect, planDirectTeardown, planSetup, planStaleCleanup, planTeardown } from "../dist/global.js";
 
 const T2S = "/usr/local/libexec/foxhole/tun2socks";
 const script = helperScript("linux")
@@ -26,7 +26,7 @@ for (const orig of [{ gw: "192.168.0.1", dev: "wlo1" }, { gw: null, dev: "ppp0" 
   const all = [
     ...planSetup(pins, orig), ...planTeardown(pins), ...planDirect("192.168.0.7", orig), ...planDirectTeardown(), ...planStaleCleanup(orig), ...planStaleCleanup(),
     ...PRIVATE_CIDRS.map((c) => pinCmd(c, orig)), ...PRIVATE_CIDRS.map((c) => ["ip", "route", "del", c]), pinCmd("9.9.9.9", orig, "replace"), ["ip", "route", "del", "9.9.9.9"],
-    ["iptables", "-I", "OUTPUT", "-o", "foxhole0", "-p", "udp", "-j", "REJECT"], ["iptables", "-D", "OUTPUT", "-o", "foxhole0", "-p", "udp", "-j", "REJECT"],
+    ["iptables", "-I", ...QUIC_REJECT], ["iptables", "-D", ...QUIC_REJECT], ["iptables", "-D", "OUTPUT", "-o", "foxhole0", "-p", "udp", "-j", "REJECT"],
     ["resolvectl", "dns", "foxhole0", "198.18.0.1:45123"], ["resolvectl", "domain", "foxhole0", "~."], ["resolvectl", "revert", "foxhole0"],
     [T2S, "--device", "foxhole0", "--proxy", "socks5://127.0.0.1:1080"],
   ];
@@ -46,7 +46,7 @@ for (const argv of [
   ["ip", "route", "replace", "0.0.0.0/0", "dev", "eth0"], ["ip", "route", "replace", "1.2.3.0/24", "dev", "eth0"], ["ip", "route", "add", "1.2.3.4", "dev", "eth0"],
   ["ip", "route", "replace", "1.2.3.4", "dev", "-batch"], ["ip", "route", "replace", "1.2.3.4", "via", "x", "dev", "eth0"], ["ip", "route", "replace", "1.2.3.4", "dev", "eth0", "table", "main"],
   ["ip", "route", "flush", "table", "main"], ["ip", "rule", "add", "from", "all", "lookup", "1080", "priority", "1081"], ["ip", "rule", "del", "priority", "0"], ["ip", "link", "del", "eth0"], ["ip", "link", "set", "dev", "eth0", "down"],
-  ["iptables", "-F"], ["iptables", "-I", "OUTPUT", "-j", "DROP"], ["pkill", "-f", "--", "sshd"], ["pkill", "-f", "."],
+  ["iptables", "-F"], ["iptables", "-I", "OUTPUT", "-j", "DROP"], ["iptables", "-I", "OUTPUT", "-o", "foxhole0", "-p", "udp", "-j", "REJECT"], ["pkill", "-f", "--", "sshd"], ["pkill", "-f", "."],
   ["resolvectl", "dns", "eth0", "1.1.1.1"], ["resolvectl", "dns", "foxhole0", "1.1.1.1:53"], ["resolvectl", "dns", "foxhole0", "53"], ["resolvectl", "revert", "eth0"],
   [T2S], [T2S, "--device", "foxhole0", "--proxy", "socks5://1.2.3.4:1080"], [T2S, "--device", "foxhole0", "--proxy", "1080"], [T2S, "--device", "eth0", "--proxy", "socks5://127.0.0.1:1080"],
   [T2S, "--device", "foxhole0", "--proxy", "socks5://127.0.0.1:1080", "--tun-post-up", "id"], [T2S, "--tun-post-up=id", "foxhole0", "--proxy", "socks5://127.0.0.1:1080"],

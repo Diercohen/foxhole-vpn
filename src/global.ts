@@ -135,6 +135,12 @@ export const planDirectTeardown = (): string[][] => [
   ["ip", "route", "flush", "table", DIRECT_TABLE],
 ];
 
+// QUIC (UDP to 80 and 443) is turned back at the tun, so browsers fall back to TCP at once. The rest of UDP goes in, for
+// the VPN to carry what it takes (udp.ts: calls).
+export const QUIC_REJECT = ["OUTPUT", "-o", TUN, "-p", "udp", "-m", "multiport", "--dports", "80,443", "-j", "REJECT"];
+// up to 1.1.0 every UDP packet was: a killed session of then still leaves this one
+const UDP_REJECT_OLD = ["OUTPUT", "-o", TUN, "-p", "udp", "-j", "REJECT"];
+
 /**
  * What a killed global session can leave (its tun2socks still holding the tun, so a dead default
  * route keeps the computer offline; the IPv6 blackhole; the UDP reject; with the uplink `orig`,
@@ -147,7 +153,8 @@ export function planStaleCleanup(orig?: DefaultRoute | null): string[][] {
     ["pkill", "-f", "--", `--device ${TUN.slice(0, -1)}[${TUN.slice(-1)}]`], // "--": the pattern isn't an option
     ["ip", "link", "del", TUN],
     ["ip", "-6", "route", "del", "blackhole", "default", "metric", "1"],
-    ["iptables", "-D", "OUTPUT", "-o", TUN, "-p", "udp", "-j", "REJECT"],
+    ["iptables", "-D", ...QUIC_REJECT],
+    ["iptables", "-D", ...UDP_REJECT_OLD],
     ...planDirectTeardown(),
     ...(orig ? PRIVATE_CIDRS.map((cidr) => ["ip", "route", "del", ...pinCmd(cidr, orig).slice(3), "proto", "boot", "metric", "0"]) : []),
   ];
@@ -210,13 +217,13 @@ export function httpsGet(url: string, proxy?: DownloadVia["proxy"], headers: Rec
   });
 }
 
-/** GETs `url` into memory, following redirects. */
-async function get(url: string, proxy: DownloadVia["proxy"], onData: (got: number, total: number) => void, hops = 5): Promise<Buffer> {
+/** GETs `url` into memory (through `proxy`'s CONNECT when given), following redirects. */
+export async function download(url: string, proxy?: DownloadVia["proxy"], onData: (got: number, total: number) => void = () => {}, hops = 5): Promise<Buffer> {
   const res = await httpsGet(url, proxy);
   const { statusCode = 0, headers } = res;
   if (statusCode >= 300 && statusCode < 400 && headers.location && hops > 0) {
     res.resume();
-    return get(new URL(headers.location, url).href, proxy, onData, hops - 1);
+    return download(new URL(headers.location, url).href, proxy, onData, hops - 1);
   }
   if (statusCode !== 200) {
     res.resume();
@@ -246,7 +253,7 @@ async function fetchZip(url: string, via: DownloadVia, sha256?: string): Promise
   let failure: unknown;
   for (const proxy of via.proxy ? [via.proxy, undefined] : [undefined]) {
     try {
-      body = await get(url, proxy, progress); // through the VPN first, then directly
+      body = await download(url, proxy, progress); // through the VPN first, then directly
       break;
     } catch (err) {
       failure = err;
@@ -648,12 +655,11 @@ export class GlobalSession {
       dns = `direct: ${dnsIps.join(", ")} (${(err as Error).message} — DNS may be visible locally)`;
     }
 
-    // Reject UDP into the tunnel: it's TCP-only, so QUIC (Chrome's HTTP/3 over
-    // UDP 443) would otherwise hang instead of falling back to TCP. The REJECT
-    // makes that fallback immediate. Best-effort (needs iptables). DNS to the forwarder
-    // is delivered locally and LAN UDP goes out other interfaces, so they're unaffected.
+    // Reject QUIC into the tunnel (QUIC_REJECT): over the VPN it would crawl, and the REJECT makes Chrome's fallback to
+    // TCP immediate. Best-effort (needs iptables). DNS to the forwarder is delivered locally and LAN UDP goes out
+    // other interfaces, so they're unaffected.
     try {
-      await priv.run(["iptables", "-I", "OUTPUT", "-o", TUN, "-p", "udp", "-j", "REJECT"]);
+      await priv.run(["iptables", "-I", ...QUIC_REJECT]);
       this.#udpBlocked = true;
     } catch {
       /* no iptables — users can disable QUIC in the browser instead */
@@ -806,7 +812,7 @@ export class GlobalSession {
     holdDirect(); // until the routes are gone: a direct site dialed now would loop through the tun
     if (this.#mac) return void (await this.#mac.stop(), setDirectFrom(null), setPinDirect(null));
     if (this.#udpBlocked)
-      await this.#o.priv.run(["iptables", "-D", "OUTPUT", "-o", TUN, "-p", "udp", "-j", "REJECT"], true);
+      await this.#o.priv.run(["iptables", "-D", ...QUIC_REJECT], true);
     for (const cidr of this.#addedPrivate) await this.#o.priv.run(["ip", "route", "del", cidr], true);
     // Stopping tun2socks takes its tun, and the routes on it, away with it.
     await stopProcess(this.#t2s, () => this.#o.priv.run(planStaleCleanup()[0], true)); // sudo child may outlive the signal

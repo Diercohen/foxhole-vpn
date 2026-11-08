@@ -22,6 +22,7 @@ import { envLines } from "./catrust.js";
 import { loadCa } from "./mitm.js";
 import { useFastlyFallback } from "./dns.js";
 import { checkUpdate, updateNotice, versionLines } from "./update.js";
+import { hot, refreshHot } from "./hot.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenFile, tokenTtl, tokenProblem } from "./tokenserver.js";
 import { bold, dim, green, red, yellow, cyan, under, code, flag, countryName, gb, shortDate, box, vw, centerIn, copyText, openUrl } from "./ui.js";
 
@@ -576,10 +577,12 @@ ${bold("Environment:")}
   FOXHOLE_ACCESS_TOKEN   Use this VPN access token instead of the saved one (~/.config/foxhole-vpn/token)
 `;
 
-/** After a quick command, print the yellow update notice if a newer version is out. */
+/** After a quick command, print the yellow update notice if a newer version is out, and the hot config's notice. */
 async function notice() {
   await checkUpdate();
   if (updateNotice()) console.error("\n" + versionLines().join("\n"));
+  const news = hot()?.notice;
+  if (news) console.error("\n" + yellow(news));
 }
 
 async function main() {
@@ -598,6 +601,7 @@ async function main() {
     console.log(versionLines().join("\n"));
     return;
   }
+  if (["tui", "up", "proxy", "global"].includes(cmd)) void refreshHot(); // the network's newest fixes (hot.ts): a quick command would wait for it
   switch (cmd) {
     // Long-running commands show the update notice themselves.
     case "tui":

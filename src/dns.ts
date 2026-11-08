@@ -4,6 +4,7 @@ import net from "node:net";
 import tls from "node:tls";
 import { viaOf } from "./split.js";
 import { caPem } from "./mitm.js";
+import { hot } from "./hot.js";
 
 // A local DNS resolver that forwards every query as DNS-over-HTTPS (RFC 8484)
 // *through the SOCKS proxy*. This keeps name resolution inside the tunnel on
@@ -19,12 +20,21 @@ export const DOH_HOST = "cloudflare-dns.com";
 // Iran's networks (seen on Shatel, 2026-11) drop connections to Fastly's 146.75.0.0/16, where their DNS puts Mozilla's
 // hosts: the VPN token (api.accounts.firefox.com) and the server list (firefox.settings.services.mozilla.com) time out.
 // Fastly serves the same hosts on its 151.101.0.0/16 anycast at the same last octet: those go after the answer's own,
-// for Node to try in turn.
+// for Node to try in turn. A hot config (hot.ts) can replace that rule when the network changes.
 
 const MOZILLA = /(^|\.)(firefox\.com|mozilla\.(com|org|net))$/i;
+const FALLBACK = { "146.75.": ["151.101.1.", "151.101.65.", "151.101.129.", "151.101.193."] };
 type LookupCb = (err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => void;
 
-/** `lookup`, with Fastly's 151.101 addresses after each 146.75 one it gives for Mozilla's hosts. */
+/** The addresses to try after `address` by `rules` (hot.ts Hot.fallback): a value ending in "." gets its last number. Pure. */
+export function alternatives(address: string, rules: Record<string, string[]>): string[] {
+  const last = address.split(".").pop();
+  return Object.entries(rules)
+    .flatMap(([from, to]) => (address.startsWith(from) ? to.map((t) => (t.endsWith(".") ? t + last : t)) : []))
+    .filter((a) => net.isIP(a));
+}
+
+/** `lookup`, with the fallback addresses after each one it gives for Mozilla's hosts: Fastly's 151.101 after its 146.75. */
 export function withFastlyFallback(lookup: typeof dns.lookup): typeof dns.lookup {
   return ((host: string, options: dns.LookupOptions | number | LookupCb, cb?: LookupCb) => {
     if (typeof options === "function") [cb, options] = [options, {}];
@@ -32,11 +42,8 @@ export function withFastlyFallback(lookup: typeof dns.lookup): typeof dns.lookup
     const opts: dns.LookupOptions = typeof options === "number" ? { family: options } : (options ?? {});
     lookup(host, { ...opts, all: true }, (err, found) => {
       if (err) return cb!(err, []);
-      const all = [...found];
-      for (const { address } of found) {
-        const last = /^146\.75\.\d+\.(\d+)$/.exec(address)?.[1];
-        if (last) all.push(...[1, 65, 129, 193].map((n) => ({ address: `151.101.${n}.${last}`, family: 4 })));
-      }
+      const rules = hot()?.fallback ?? FALLBACK;
+      const all = [...found, ...found.flatMap(({ address }) => alternatives(address, rules).map((a) => ({ address: a, family: net.isIP(a) })))];
       if (opts.all) cb!(null, all);
       else cb!(null, all[0].address, all[0].family);
     });

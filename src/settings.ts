@@ -16,6 +16,34 @@ export interface Settings {
   // in this file or given via FOXHOLE_RELAY_ID/KEY; not shown or edited in the UI. The authKey is a shared secret.
   relay?: { deploymentId: string; authKey: string };
   proxyOnly?: boolean; // connecting doesn't go on to whole-system mode, the default: the mode last picked (TUI, desktop app)
+  smartDns?: boolean; // this computer is the DNS server of the home's TV, console, iPhone: blocked sites through the VPN (smartdns.ts)
+  networks?: Record<string, NetRule>; // what joining a network does, by its name as netinfo.ts network() gives it
+  lang?: "en" | "fa"; // the desktop and phone apps' language (Settings → Language): their window, tray and notification
+}
+
+/** A network's rule: connect on joining it; or pause there (disconnect, and connect again as before on leaving it). */
+export type NetRule = "connect" | "pause";
+
+/** A network that can have a rule: one Foxhole can tell apart (not offline, nor a Wi-Fi whose name it can't see). Pure. */
+export const ruleable = (n: string | null | undefined): n is string => !!n && !/^(Wi-Fi|Wi-Fi · name hidden|Online)$/.test(n);
+
+/** `rules` with `net`'s rule set to `rule` (null: none), or undefined when none are left (the file stays clean). Pure. */
+export function withNetRule(rules: Settings["networks"], net: string, rule: NetRule | null): Settings["networks"] {
+  const { [net]: _, ...rest } = rules ?? {};
+  const next = rule === "connect" || rule === "pause" ? { ...rest, [net]: rule } : rest;
+  return Object.keys(next).length ? next : undefined;
+}
+
+/**
+ * What joining network `n` does by `rules`, given the connection (`paused`: by a network's rule): pause there, resume
+ * on leaving the network that paused it, connect, or nothing. Pure.
+ */
+export function onJoin(rules: Settings["networks"], n: string | null, s: { active: boolean; paused: boolean }): "connect" | "pause" | "resume" | null {
+  if (!ruleable(n)) return null; // nothing to go by: it may be the same network
+  const rule = rules?.[n];
+  if (rule === "pause") return s.active ? "pause" : null;
+  if (s.active) return null;
+  return s.paused ? "resume" : rule === "connect" ? "connect" : null;
 }
 
 export const DEFAULTS: Settings = { share: false, port: 1080, username: "", password: "", split: NO_SPLIT };
@@ -28,13 +56,14 @@ const isVia = (v: unknown): v is Via => v === "vpn" || v === "direct";
 
 /** The split rules a file holds, each checked like a typed one; anything else dropped. Pure. */
 function parseSplit(v: unknown): Split {
-  const o = (v && typeof v === "object" ? v : {}) as { default?: unknown; rules?: unknown };
+  const o = (v && typeof v === "object" ? v : {}) as { default?: unknown; rules?: unknown; smart?: unknown; probe?: unknown };
   const rules: Split["rules"] = [];
   for (const r of Array.isArray(o.rules) ? (o.rules as { match?: unknown; via?: unknown }[]) : []) {
     const match = typeof r?.match === "string" ? (appOf(r.match) !== null ? parseApp(r.match) : parseSite(r.match)) : null;
     if (match && isVia(r.via) && !rules.some((x) => x.match === match)) rules.push({ match, via: r.via });
   }
-  return { default: isVia(o.default) ? o.default : NO_SPLIT.default, rules };
+  // smart and probe only when on, to keep the file clean
+  return { default: isVia(o.default) ? o.default : NO_SPLIT.default, rules, ...(o.smart === true && { smart: true }), ...(o.probe === true && { probe: true }) };
 }
 
 /** The relay a file holds, if both parts are non-empty strings; else undefined. Pure. */
@@ -63,7 +92,16 @@ export function parseSettings(json: string): Settings {
     // kept so a hand-added relay survives the next save; no key at all when unset, to keep the file clean
     ...(parseRelay(o.relay) ? { relay: parseRelay(o.relay) } : {}),
     ...(o.proxyOnly === true ? { proxyOnly: true } : {}),
+    ...(o.smartDns === true ? { smartDns: true } : {}),
+    ...(parseNetworks(o.networks) && { networks: parseNetworks(o.networks) }),
+    ...(o.lang === "en" || o.lang === "fa" ? { lang: o.lang } : {}),
   };
+}
+
+/** The network rules a file holds, or undefined for none. Pure. */
+function parseNetworks(v: unknown): Settings["networks"] {
+  const ok = Object.entries(v && typeof v === "object" ? v : {}).filter(([n, r]) => ruleable(n) && n.length <= 100 && (r === "connect" || r === "pause"));
+  return ok.length ? Object.fromEntries(ok) : undefined;
 }
 
 /**
@@ -89,6 +127,16 @@ export function saveSettings(s: Settings): void {
   mkdirSync(dirname(settingsFile()), { recursive: true, mode: 0o700 });
   writeFileSync(settingsFile(), JSON.stringify(s, null, 2) + "\n", { mode: 0o600 });
   chmodSync(settingsFile(), 0o600); // mode above only applies when the file is new
+}
+
+/**
+ * Telegram's link that sets a SOCKS5 proxy: t.me's, for a phone's camera (Telegram takes it even where t.me itself is
+ * blocked), or with `app` its own tg:// one, which Telegram on this device opens. Pure.
+ */
+export function telegramLink(host: string, port: number, login?: ProxyLogin | null, app = false): string {
+  // %20, not URLSearchParams' "+", for a space: Telegram may not read a "+" as one
+  const q = { server: host, port: String(port), ...(login && (login.username || login.password) && { user: login.username, pass: login.password }) };
+  return `${app ? "tg://" : "https://t.me/"}socks?${Object.entries(q).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&")}`;
 }
 
 /** The address the proxy listens on. */

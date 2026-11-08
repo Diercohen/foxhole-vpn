@@ -1,9 +1,10 @@
-// A QR code for a short text (the TV's sign-in link, tvpair.ts): byte mode, error correction level M, versions 1-10
-// (up to 213 bytes), as an SVG path of its dark modules. After Project Nayuki's QR Code generator (MIT).
+// A QR code for a text (the TV's sign-in link, tvpair.ts; a shared settings link, share.ts): byte mode, error correction
+// level M, versions 1-40 (up to 2331 bytes), as an SVG path of its dark modules. After Project Nayuki's QR Code
+// generator (MIT).
 
-// Level M's error correction for versions 1-10: codewords per block, and blocks
-const ECC_PER_BLOCK = [0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26];
-const BLOCKS = [0, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5];
+// Level M's error correction for each version: codewords per block, and blocks
+const ECC_PER_BLOCK = [0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26, 26, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28];
+const BLOCKS = [0, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16, 17, 17, 18, 20, 21, 23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49];
 const FORMAT_M = 0; // level M's two format bits
 
 /** GF(256) multiplication, modulo x^8 + x^4 + x^3 + x^2 + 1. */
@@ -55,7 +56,7 @@ const dataCodewords = (ver: number) => Math.floor(rawModules(ver) / 8) - ECC_PER
 function alignmentPositions(ver: number, size: number): number[] {
   if (ver === 1) return [];
   const count = Math.floor(ver / 7) + 2;
-  const step = Math.ceil((ver * 4 + 4) / (count * 2 - 2)) * 2;
+  const step = Math.floor((ver * 8 + count * 3 + 5) / (count * 4 - 4)) * 2;
   const result = [6];
   for (let pos = size - 7; result.length < count; pos -= step) result.splice(1, 0, pos);
   return result;
@@ -63,10 +64,31 @@ function alignmentPositions(ver: number, size: number): number[] {
 
 /** The QR code of `text`: its size in modules and its dark modules as an SVG path, with a 4-module quiet zone. */
 export function qrSvgPath(text: string): { size: number; path: string } {
+  const dark = qrModules(text);
+  let path = "";
+  dark.forEach((row, y) => row.forEach((on, x) => on && (path += `M${x + 4},${y + 4}h1v1h-1z`)));
+  return { size: dark.length + 8, path };
+}
+
+/** The QR code of `text` for a terminal: two modules a line in half blocks, black on white, with a 2-module quiet zone. */
+export function qrLines(text: string): string[] {
+  const dark = qrModules(text);
+  const at = (x: number, y: number) => dark[y - 2]?.[x - 2] === true;
+  const lines: string[] = [];
+  for (let y = 0; y < dark.length + 4; y += 2) {
+    let line = "";
+    for (let x = 0; x < dark.length + 4; x++) line += at(x, y) ? (at(x, y + 1) ? "█" : "▀") : at(x, y + 1) ? "▄" : " ";
+    lines.push(`\x1b[30;107m${line}\x1b[0m`);
+  }
+  return lines;
+}
+
+/** The QR code of `text`: its modules, dark or not, without a quiet zone. */
+export function qrModules(text: string): boolean[][] {
   const bytes = [...Buffer.from(text, "utf8")];
   let ver = 1;
-  while (ver <= 10 && 4 + (ver < 10 ? 8 : 16) + bytes.length * 8 > dataCodewords(ver) * 8) ver++;
-  if (ver > 10) throw new Error("too long for a QR code here");
+  while (ver <= 40 && 4 + (ver < 10 ? 8 : 16) + bytes.length * 8 > dataCodewords(ver) * 8) ver++;
+  if (ver > 40) throw new Error("too long for a QR code");
 
   // the bits: byte mode, the length, the bytes, a terminator, then padding to the version's capacity
   const bits: number[] = [];
@@ -188,8 +210,5 @@ export function qrSvgPath(text: string): { size: number; path: string } {
   }
   apply(best);
   drawFormat(best);
-
-  let path = "";
-  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) if (dark[y][x]) path += `M${x + 4},${y + 4}h1v1h-1z`;
-  return { size: size + 8, path };
+  return dark;
 }

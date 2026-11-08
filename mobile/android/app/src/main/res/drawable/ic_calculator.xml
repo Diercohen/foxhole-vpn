@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- + − × =, inside the adaptive icon's safe zone -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:pathData="M33,42h16M41,34v16M59,42h16M35.3,60.3l11.4,11.4M46.7,60.3l-11.4,11.4" />
+    <path
+        android:strokeColor="#FFFF8A1F"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:pathData="M59,62h16M59,70h16" />
+</vector>

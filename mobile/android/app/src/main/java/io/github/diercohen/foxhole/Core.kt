@@ -38,10 +38,12 @@ object Core {
   fun start(context: Context) {
     if (mine != null) return
     val ctx = context.applicationContext
+    Status.live = true // what the core says from now on holds (the tile's, the widget's)
     val project = unpack(ctx)
     // where the core keeps its settings, the sign-in and relay mode's certificate (as ~ on a computer)
     Os.setenv("HOME", File(ctx.filesDir, "home").apply { mkdirs() }.path, true)
     Os.setenv("TMPDIR", ctx.cacheDir.path, true)
+    Os.setenv("FOXHOLE_APK", ctx.applicationInfo.sourceDir, true) // this app's own APK, for Share Foxhole to give a phone nearby (share.ts)
     val (here, there) = ParcelFileDescriptor.createSocketPair()
     mine = here
     out = FileOutputStream(here.fileDescriptor)

@@ -3,9 +3,10 @@ import { Tray, Menu, nativeImage, systemPreferences } from "electron";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { flag } from "./dist/ui.js";
+import "./renderer/fa.js"; // FA, FA_COUNTRIES, foxholeWords: Persian, for Settings → Language
 
-/** A country as the menu names it: its flag is the item's picture (flagIcon). */
-const named = (s, code) => s.countries.find((c) => c.code === code)?.name ?? code;
+/** A country as the menu names it, in the menu's language: its flag is the item's picture (flagIcon). */
+const named = (s, code) => (s.settings?.lang === "fa" && FA_COUNTRIES[code]) || (s.countries.find((c) => c.code === code)?.name ?? code);
 
 /** A country's flag picture (build/flags, made by flag-icons.mjs; Electron finds its @2x), or null. */
 const flagFiles = new Map();
@@ -22,19 +23,20 @@ const flagIcon = (code) => (flagFile(code) ? { icon: flagFile(code) } : {});
 
 /** What the tray shows for a state (controller.js state()): icon, the text beside it (macOS), tooltip, menu. Pure. */
 export function trayView(s, act) {
+  const t = foxholeWords(s.settings?.lang);
   const status = s.restoring
-    ? "Restoring networking…"
+    ? t`Restoring networking…`
     : s.busy
-      ? s.connecting ? `Connecting to ${named(s, s.connecting)}…` : "Working…"
+      ? s.connecting ? t`Connecting to ${named(s, s.connecting)}…` : t`Working…`
       : s.globalOn
-        ? `Whole system · ${named(s, s.global)}`
-        : s.active ? `Connected · ${named(s, s.active)}` : "Not connected";
+        ? t`Whole system · ${named(s, s.global)}`
+        : s.active ? t`Connected · ${named(s, s.active)}` : t`Not connected`;
   const ready = s.auth.stage === "ready" && !s.busy && !s.restoring;
   const here = s.active ?? s.selected; // where Connect goes, and the location ticked
   return {
     // relay mode: a purple dot where Firefox VPN's is mint or pink (on macOS, monochrome: "Relay" beside it)
     icon: s.globalOn ? (s.relayOn ? "relayGlobal" : "global") : s.active ? (s.relayOn ? "relay" : "on") : "off",
-    title: s.busy ? "…" : s.relayOn ? "Relay" : s.active && !flagFile(s.active) ? flag(s.active) : "", // a flag with a picture goes into the icon (macOS)
+    title: s.busy ? "…" : s.relayOn ? t`Relay` : s.active && !flagFile(s.active) ? flag(s.active) : "", // a flag with a picture goes into the icon (macOS)
     flag: !s.busy && flagFile(s.active) ? s.active : null,
     tooltip: `Foxhole · ${status}`,
     menu: [
@@ -43,11 +45,11 @@ export function trayView(s, act) {
       { type: "separator" },
       // each click in its own arrow: Electron calls it with (menuItem, window, event)
       s.active
-        ? { label: "Disconnect", enabled: ready, click: () => act.disconnect() }
-        : { label: here ? `Connect to ${named(s, here)}` : "Connect", enabled: ready && !!here, click: () => act.connect(), ...flagIcon(here) },
-      { label: "Whole system", type: "checkbox", checked: s.active ? s.globalOn : s.wantGlobal, enabled: ready, click: () => act.toggleGlobal() },
+        ? { label: t`Disconnect`, enabled: ready, click: () => act.disconnect() }
+        : { label: here ? t`Connect to ${named(s, here)}` : t`Connect`, enabled: ready && !!here, click: () => act.connect(), ...flagIcon(here) },
+      { label: t`Whole system`, type: "checkbox", checked: s.active ? s.globalOn : s.wantGlobal, enabled: ready, click: () => act.toggleGlobal() },
       {
-        label: "Location",
+        label: t`Location`,
         enabled: ready && s.countries.length > 0,
         submenu: s.countries
           .filter((c) => c.available || c.locked)
@@ -58,14 +60,14 @@ export function trayView(s, act) {
       },
       { type: "separator" },
       ...(s.update?.ready
-        ? [{ label: `Restart to Update (${s.update.version})`, click: () => act.update() }]
+        ? [{ label: t`Restart to Update (${s.update.version})`, click: () => act.update() }]
         : s.update
           ? [s.update.auto
-            ? { label: s.update.phase ? `Updating to ${s.update.version}…` : `Update to Foxhole ${s.update.version}`, enabled: !s.update.phase, click: () => act.getUpdate() }
-            : { label: `Get Foxhole ${s.update.version}…`, click: () => act.releases() }]
+            ? { label: s.update.phase ? t`Updating to ${s.update.version}…` : t`Update to Foxhole ${s.update.version}`, enabled: !s.update.phase, click: () => act.getUpdate() }
+            : { label: t`Get Foxhole ${s.update.version}…`, click: () => act.releases() }]
           : []),
-      { label: "Show Foxhole", click: () => act.show() },
-      { label: "Quit Foxhole", click: () => act.quit() },
+      { label: t`Show Foxhole`, click: () => act.show() },
+      { label: t`Quit Foxhole`, click: () => act.quit() },
     ],
   };
 }

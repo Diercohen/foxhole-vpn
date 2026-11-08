@@ -23,7 +23,9 @@ const WIN_DIR = join(process.env.ProgramFiles ?? "C:\\Program Files", "Foxhole H
 const WIN_NET = join(WIN_DIR, "net.ps1");
 const WIN_T2S = join(WIN_DIR, "tun2socks.exe");
 const IS_WIN = process.platform === "win32";
-const VERSION = "1"; // raised when the script changes: the next whole-system mode asks once, to put the new one in
+// Each system's script's version, raised when it changes: the next whole-system mode there asks once, to put the new one in
+const VERSIONS: Record<string, string> = { linux: "2", darwin: "1", win32: "1" };
+const VERSION = VERSIONS[process.platform] ?? "1";
 const SUPPORTED = process.platform === "linux" || process.platform === "darwin"; // with sudo
 
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -76,6 +78,7 @@ cleanup() {
   try pkill -f -- '--device foxhole[0]'
   try ip link del foxhole0
   try ip -6 route del blackhole default metric 1
+  try iptables -D OUTPUT -o foxhole0 -p udp -m multiport --dports 80,443 -j REJECT
   try iptables -D OUTPUT -o foxhole0 -p udp -j REJECT
   try ip rule del priority 1080
   try ip rule del priority 1081
@@ -87,7 +90,7 @@ cleanup() {
 }
 
 case "$*" in
-  "version ${VERSION}") [ -x ${T2S} ]; exit $? ;;
+  "version ${VERSIONS.linux}") [ -x ${T2S} ]; exit $? ;;
   uninstall) rm -f /etc/sudoers.d/foxhole-*; rm -rf ${dir}; exit 0 ;;
   "pkill -f -- --device foxhole[0]" | \\
   "ip addr add 198.18.0.1/15 dev foxhole0" | \\
@@ -100,7 +103,8 @@ case "$*" in
   "ip rule del priority 1080" | \\
   "ip rule del priority 1081" | \\
   "ip route flush table 1080" | \\
-  "iptables -I OUTPUT -o foxhole0 -p udp -j REJECT" | \\
+  "iptables -I OUTPUT -o foxhole0 -p udp -m multiport --dports 80,443 -j REJECT" | \\
+  "iptables -D OUTPUT -o foxhole0 -p udp -m multiport --dports 80,443 -j REJECT" | \\
   "iptables -D OUTPUT -o foxhole0 -p udp -j REJECT" | \\
   "resolvectl domain foxhole0 ~." | \\
   "resolvectl revert foxhole0")
@@ -144,7 +148,7 @@ const darwinScript = () => {
 out() { if [ "$1" = -interface ]; then [ $# = 2 ] && dev "$2"; else [ $# = 1 ] && ip4 "$1"; fi; }
 
 case "$*" in
-  "version ${VERSION}") [ -x ${T2S} ]; exit $? ;;
+  "version ${VERSIONS.darwin}") [ -x ${T2S} ]; exit $? ;;
   uninstall) rm -f /etc/sudoers.d/foxhole-*; rm -rf ${dir}; exit 0 ;;
   "pkill -f utun12[3]" | \\
   "pkill -f foxhole-dn[s]" | \\
@@ -263,7 +267,7 @@ const stale = planStaleCleanup();
 export const winScripts = () => [stale[0].at(-1)!, NRPT_ADD, DNS_FLUSH];
 
 /** The Windows helper, connecting to the app's pipe. If the app goes without stopping global mode, it undoes that as `foxhole restore` would. */
-export const winScript = (task: string) => `# Foxhole's network helper, version ${VERSION}: what whole-system mode runs as SYSTEM, with no prompt. Only the commands below.
+export const winScript = (task: string) => `# Foxhole's network helper, version ${VERSIONS.win32}: what whole-system mode runs as SYSTEM, with no prompt. Only the commands below.
 $ErrorActionPreference = 'Stop'
 $t2s = Join-Path $PSScriptRoot 'tun2socks.exe'
 $allowed = @(${WIN_ALLOWED.map(plain).join(", ")})
@@ -380,7 +384,7 @@ async function winHelper(tun2socks: () => Promise<string>): Promise<{ priv: Priv
   if (await isWindowsAdmin()) return null; // nothing to ask, so nothing to spare
   const sid = await windowsSid();
   const task = taskName(sid);
-  if (helperInstalled() && readFileSync(WIN_NET, "utf8").includes(`version ${VERSION}:`) && (await taskExists(task))) {
+  if (helperInstalled() && readFileSync(WIN_NET, "utf8").includes(`version ${VERSIONS.win32}:`) && (await taskExists(task))) {
     try {
       return { priv: await taskPriv(task), tun2socksPath: WIN_T2S };
     } catch (err) {

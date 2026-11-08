@@ -17,6 +17,7 @@ import { siteContext } from "./mitm.js";
 import { DOH_HOST, question, answerAddrs } from "./dns.js";
 import { viaOf, currentSplit, type Split } from "./split.js";
 import { log } from "./log.js";
+import { hot } from "./hot.js";
 
 /** The TLS name every connection to Google uses: what a censor sees. */
 export const FRONT = "www.google.com";
@@ -31,6 +32,7 @@ const SCRIPT = "script.google.com";
 // Then those that turn the script away (its forced User-Agent; its shared servers taken for bots), and busy ones that
 // answer the same either way, to spare the script's quota. Never all of google.com: much of Google answers an Iranian
 // address with 403 (Gemini, Cloud, Firebase, its developer sites, www.googleapis.com) and works only through the script.
+// A hot config (hot.ts) can add more.
 const FRONTED = ["youtube.com", "youtu.be", "youtube-nocookie.com", "ytimg.com", "ggpht.com", "gvt1.com", "gvt2.com", "gstatic.com", "fonts.googleapis.com",
   "doubleclick.net", "googlesyndication.com", "googleadservices.com", "google-analytics.com", "googletagmanager.com", "googletagservices.com", "script.google.com",
   "meet.google.com", "calendar.google.com", "docs.google.com", "drive.google.com", "accounts.google.com", "myaccount.google.com", "scholar.google.com", "news.google.com", "support.google.com", "translate.google.com", "translate.googleapis.com",
@@ -41,7 +43,7 @@ const under = (host: string, d: string) => host === d || host.endsWith(`.${d}`);
  * Fronted, but not YouTube Music (it's not offered everywhere). YouTube's API is too: the video links it hands out
  * are tied to the address that asked, the user's own, which is where viaCache fetches the videos from. Pure.
  */
-export const fronted = (host: string): boolean => FRONTED.some((d) => under(host, d)) && !under(host, "music.youtube.com");
+export const fronted = (host: string): boolean => [...FRONTED, ...(hot()?.fronted ?? [])].some((d) => under(host, d)) && !under(host, "music.youtube.com");
 /** Google itself, which the censor leaves alone: passed on as it is, to the same front, without our certificate. */
 export const GOOGLE_DIRECT = new Set(["www.google.com", "google.com", "safebrowsing.google.com"]);
 

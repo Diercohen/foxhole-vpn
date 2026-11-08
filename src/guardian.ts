@@ -24,6 +24,9 @@ export function useRelay(r: RelayConfig | null): void {
   relay = r;
 }
 
+/** The relay set with useRelay(), if any (hot.ts gets its file through it when nothing else does). */
+export const relayInUse = (): RelayConfig | null => relay;
+
 /** A proxy pass: the short-lived JWT the proxy servers accept. */
 export interface ProxyPass {
   token: string; // raw JWT

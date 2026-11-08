@@ -5,12 +5,15 @@ import { lookup } from "node:dns/promises";
 import type { Connection } from "./connection.js";
 import { red, verbose } from "./ui.js";
 import { log } from "./log.js";
-import { route, splitOn, appsOn } from "./split.js";
+import { route, splitOn, appsOn, probeOn, type Via } from "./split.js";
+import { track, save as saveTraffic } from "./traffic.js";
+import { filterAddress, learnBlocked, listsVia, refreshLists, type Try } from "./smart.js";
 import { appFor } from "./apps.js";
 import { answers } from "./restore.js";
 import { nameOf, DOH_HOST } from "./dns.js";
 import { IP_HOST, TRACE_HOST } from "./netinfo.js";
 import { relayServe, fakeName, realIp, setDirectTo, setDirectDial } from "./relaymode.js";
+import { udpAssociate, closeUdp } from "./udp.js";
 
 // Throttled stderr: a browser opens many connections, so don't repeat the same
 // failure more than once every few seconds.
@@ -40,8 +43,10 @@ class UpstreamStatusError extends Error {
   constructor(
     readonly status: number,
     statusLine: string,
+    // Fastly's Proxy-Status says the VPN refuses this port (SSH, mail): asking again won't change it
+    readonly prohibited = false,
   ) {
-    super(statusLine);
+    super(prohibited ? `${statusLine} (the VPN refuses this port)` : statusLine);
   }
 }
 
@@ -57,11 +62,12 @@ function describe(err: unknown): string {
 
 // Local proxy on one port that speaks both SOCKS5 and HTTP, told apart by the
 // first byte (SOCKS5 always opens with 0x05; HTTP opens with a method name).
-// TCP only — the upstream is HTTP CONNECT. Each client connection is tunnelled
-// to the chosen Fastly server over TLS using the current proxy pass.
+// TCP is tunnelled by HTTP CONNECT, each client connection to the chosen Fastly server over TLS with the current
+// proxy pass; SOCKS5's UDP ASSOCIATE by connect-udp (udp.ts).
 
 const SOCKS_VERSION = 0x05;
 const CMD_CONNECT = 0x01;
+const CMD_UDP = 0x03;
 const ATYP_IPV4 = 0x01;
 const ATYP_DOMAIN = 0x03;
 const ATYP_IPV6 = 0x04;
@@ -69,6 +75,7 @@ const ATYP_IPV6 = 0x04;
 interface Target {
   host: string;
   port: number;
+  udp?: boolean; // a SOCKS5 UDP ASSOCIATE: host and port are where the client sends from (or zeros)
 }
 
 /** The next chunk a client sends. */
@@ -82,10 +89,10 @@ function nextChunk(socket: net.Socket): Promise<Buffer> {
 function readRequest(socket: net.Socket): Promise<Target> {
   return new Promise((resolve, reject) => {
     socket.once("data", (buf) => {
-      if (buf[0] !== SOCKS_VERSION || buf[1] !== CMD_CONNECT) {
+      if (buf[0] !== SOCKS_VERSION || (buf[1] !== CMD_CONNECT && buf[1] !== CMD_UDP)) {
         // 0x07 = command not supported.
         socket.write(Buffer.from([SOCKS_VERSION, 0x07, 0x00, ATYP_IPV4, 0, 0, 0, 0, 0, 0]));
-        return reject(new Error("Only CONNECT is supported"));
+        return reject(new Error("Only CONNECT and UDP ASSOCIATE are supported"));
       }
       const atyp = buf[3];
       let host: string;
@@ -107,7 +114,7 @@ function readRequest(socket: net.Socket): Promise<Target> {
         return reject(new Error("Unknown address type"));
       }
       const port = buf.readUInt16BE(offset);
-      resolve({ host, port });
+      resolve({ host, port, ...(buf[1] === CMD_UDP && { udp: true }) });
     });
     socket.once("error", reject);
   });
@@ -128,8 +135,26 @@ interface Upstream {
   ip?: string;
 }
 
-/** Opens a TLS tunnel to the upstream and issues HTTP CONNECT for `target`. */
-function openUpstream(server: Upstream, passToken: string, target: Target): Promise<tls.TLSSocket> {
+/** A new TLS connection to the VPN server: its pinned IP in global mode, else looked up; SNI and certificate by name. */
+function connectTls(server: Upstream): Promise<tls.TLSSocket> {
+  return new Promise((resolve, reject) => {
+    const fail = (err: Error) => {
+      clearTimeout(timer);
+      up.destroy();
+      reject(err);
+    };
+    const timer = setTimeout(() => fail(new Error("timed out")), UPSTREAM_TIMEOUT_MS);
+    const up = tls.connect({ host: server.ip ?? server.hostname, port: server.port, servername: server.hostname, ALPNProtocols: ["http/1.1"] }, () => {
+      clearTimeout(timer);
+      up.removeListener("error", fail);
+      resolve(up);
+    });
+    up.once("error", fail);
+  });
+}
+
+/** Issues HTTP CONNECT for `target` with the proxy pass on the TLS connection `up`, which is the tunnel once it's up. */
+function connectThrough(up: tls.TLSSocket, passToken: string, target: Target): Promise<tls.TLSSocket> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const fail = (err: Error) => {
@@ -140,23 +165,6 @@ function openUpstream(server: Upstream, passToken: string, target: Target): Prom
       reject(err);
     };
     const timer = setTimeout(() => fail(new Error("timed out")), UPSTREAM_TIMEOUT_MS);
-    const up = tls.connect(
-      {
-        host: server.ip ?? server.hostname, // pinned IP in global mode, else resolve
-        port: server.port,
-        servername: server.hostname, // TLS SNI/cert always uses the hostname
-        ALPNProtocols: ["http/1.1"],
-      },
-      () => {
-        const hostHeader = target.host.includes(":") ? `[${target.host}]` : target.host;
-        up.write(
-          `CONNECT ${hostHeader}:${target.port} HTTP/1.1\r\n` +
-            `Host: ${hostHeader}:${target.port}\r\n` +
-            `Proxy-Authorization: Bearer ${passToken}\r\n` +
-            `\r\n`,
-        );
-      },
-    );
     let header = Buffer.alloc(0);
     const onData = (chunk: Buffer) => {
       header = Buffer.concat([header, chunk]);
@@ -166,10 +174,11 @@ function openUpstream(server: Upstream, passToken: string, target: Target): Prom
         return;
       }
       up.removeListener("data", onData);
-      const statusLine = header.toString("latin1", 0, header.indexOf("\r\n")).trim();
+      const head = header.toString("latin1", 0, end);
+      const statusLine = head.split("\r\n", 1)[0].trim();
       const code = Number(statusLine.split(" ")[1]);
       if (code !== 200) {
-        fail(new UpstreamStatusError(code, statusLine));
+        fail(new UpstreamStatusError(code, statusLine, /^proxy-status:.*destination_ip_prohibited/im.test(head)));
         return;
       }
       settled = true;
@@ -182,6 +191,97 @@ function openUpstream(server: Upstream, passToken: string, target: Target): Prom
     up.on("data", onData);
     up.once("error", fail);
     up.once("close", () => fail(new Error("upstream closed the connection")));
+    const hostHeader = target.host.includes(":") ? `[${target.host}]` : target.host;
+    up.write(`CONNECT ${hostHeader}:${target.port} HTTP/1.1\r\nHost: ${hostHeader}:${target.port}\r\nProxy-Authorization: Bearer ${passToken}\r\n\r\n`);
+  });
+}
+
+// ── Ready connections. A tunnel's CONNECT needs a TCP and a TLS handshake with the VPN server first: three round trips
+// in all, ~800 ms from Iran (measured 2026-11). A few connections are made ahead of time, so a tunnel costs only its
+// CONNECT's round trip (~230 ms). Fastly keeps an idle one open for minutes (150 s seen); each is closed after
+// WARM_IDLE_MS unused, and only opening tunnels makes more, so an idle proxy keeps none. HTTP/2 would reuse one
+// connection as well, but Fastly's 64 KB flow-control window holds an upload there to ~1 Mbit/s.
+const WARM = 4;
+const WARM_IDLE_MS = 100_000;
+// A ready connection the network dropped without a word (a switch of Wi-Fi) never answers: after this, a new one races it
+const WARM_GRACE_MS = 2000;
+
+const warm = new Set<tls.TLSSocket>();
+let warmFor = ""; // the server they're to: one at a time, the one in use
+let warming = 0;
+const serverKey = (s: Upstream) => `${s.hostname} ${s.ip ?? ""} ${s.port}`;
+
+/** Makes ready connections to `server` up to WARM, closing those to another. */
+function topUp(server: Upstream): void {
+  const key = serverKey(server);
+  if (key !== warmFor) closeWarm(key);
+  for (let n = warm.size + warming; n < WARM; n++) {
+    warming++;
+    connectTls(server)
+      .then((up) => {
+        if (key !== warmFor) return void up.destroy();
+        warm.add(up);
+        up.on("error", () => {}); // a reset while it waits: its "close" takes it off the list
+        up.once("close", () => warm.delete(up));
+        up.setTimeout(WARM_IDLE_MS, () => up.destroy());
+      }, () => {}) // unreachable: the tunnel that needs one says so
+      .finally(() => warming--);
+  }
+}
+
+/** Closes the ready connections; `next`: the server the next ones are to, if any. */
+function closeWarm(next = ""): void {
+  for (const up of warm) up.destroy();
+  warm.clear();
+  warmFor = next;
+}
+
+/** A ready connection to `server`, if one's waiting; either way, another one is made. */
+function takeWarm(server: Upstream): tls.TLSSocket | null {
+  let up: tls.TLSSocket | null = null;
+  if (serverKey(server) === warmFor) {
+    for (const s of warm) {
+      warm.delete(s);
+      if (!s.destroyed) {
+        up = s;
+        break;
+      }
+    }
+  }
+  topUp(server);
+  up?.setTimeout(0);
+  return up;
+}
+
+/** Opens a tunnel to `target` through the upstream: on a ready connection, if one's waiting, else on a new one. */
+function openUpstream(server: Upstream, passToken: string, target: Target): Promise<tls.TLSSocket> {
+  const fresh = () => connectTls(server).then((up) => connectThrough(up, passToken, target));
+  const ready = takeWarm(server);
+  if (!ready) return fresh();
+  return new Promise((resolve, reject) => {
+    let done = false;
+    let racing = false;
+    const win = (up: tls.TLSSocket) => {
+      if (done) return void up.destroy(); // the race's loser
+      done = true;
+      clearTimeout(timer);
+      resolve(up);
+    };
+    const lose = (err: unknown) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      reject(err);
+    };
+    const race = () => {
+      if (racing) return;
+      racing = true;
+      clearTimeout(timer);
+      fresh().then(win, lose);
+    };
+    const timer = setTimeout(race, WARM_GRACE_MS);
+    // The server's own answer stands; a ready connection that turns out dead gives way to a new one at once.
+    connectThrough(ready, passToken, target).then(win, (err) => (err instanceof UpstreamStatusError ? lose(err) : race()));
   });
 }
 
@@ -197,8 +297,8 @@ async function openUpstreamWithRetry(
       return await openUpstream(server, passToken, target);
     } catch (err) {
       lastErr = err;
-      // A 4xx (bad pass, refused target) won't change on retry.
-      if (err instanceof UpstreamStatusError && err.status < 500) break;
+      // A 4xx (bad pass, refused target) or a refused port won't change on retry.
+      if (err instanceof UpstreamStatusError && (err.status < 500 || err.prohibited)) break;
       if (attempt < UPSTREAM_ATTEMPTS) await new Promise((r) => setTimeout(r, 250 * attempt));
     }
   }
@@ -236,9 +336,12 @@ async function dial(conn: Connection, target: Target): Promise<tls.TLSSocket | n
     return null;
   }
   try {
-    return await openUpstreamWithRetry(server, pass.token, target);
+    const up = await openUpstreamWithRetry(server, pass.token, target);
+    dialed(true);
+    return up;
   } catch (err) {
     warn(`upstream connect failed for ${target.host}:${target.port}: ${describe(err)}`);
+    if (!(err instanceof UpstreamStatusError)) dialed(false); // its server answered: the network's fine
     return null;
   }
 }
@@ -349,8 +452,8 @@ function firstBytes(socket: net.Socket, ms = 2000): Promise<Buffer> {
   });
 }
 
-/** Connects to `target` outside the VPN; in global mode from the uplink's address, past the tun. */
-function dialDirect(target: Target): Promise<net.Socket | null> {
+/** Connects to `target` outside the VPN, within `ms`; in global mode from the uplink's address, past the tun. */
+function dialDirect(target: Target, ms = UPSTREAM_TIMEOUT_MS): Promise<net.Socket | null> {
   return new Promise((resolve) => {
     const s = net.connect({ host: target.host, port: target.port, ...(directFrom ? { localAddress: directFrom, family: 4 } : {}) });
     const fail = (err: Error) => {
@@ -358,7 +461,7 @@ function dialDirect(target: Target): Promise<net.Socket | null> {
       s.destroy();
       resolve(null);
     };
-    s.setTimeout(UPSTREAM_TIMEOUT_MS, () => fail(new Error("timed out")));
+    s.setTimeout(ms, () => fail(new Error("timed out")));
     s.once("error", fail);
     s.once("connect", () => {
       s.setTimeout(0);
@@ -369,23 +472,186 @@ function dialDirect(target: Target): Promise<net.Socket | null> {
 }
 
 /**
- * Opens the way the rules give `target` (from `app`, when known), the VPN tunnel or a direct connection; null (warned)
- * if it can't. foxhole's own hosts always use the VPN.
+ * Opens the way the rules give `target` (from `app`, when known), the VPN tunnel or a direct connection, and sends it
+ * `hello` (the client's first bytes, when they were read first); null (warned) if it can't. foxhole's own hosts always
+ * use the VPN.
  */
-async function open(conn: Connection, target: Target, name?: string, app?: string): Promise<net.Socket | null> {
+async function open(conn: Connection, target: Target, name?: string, app?: string, hello?: Buffer | null): Promise<net.Socket | null> {
   const fake = fakeName(target.host); // relay mode's made-up address, still cached after a switch to the VPN: by name
   if (fake) target = { host: fake, port: target.port };
   const ip = net.isIP(target.host) ? target.host : undefined;
   const site = name ?? (ip ? nameOf(ip) : target.host);
-  if ((site && OWN_HOSTS.has(site.toLowerCase())) || route(site, ip, app) !== "direct") return dial(conn, target);
-  if (directOk) return dialDirect(target);
-  // macOS global mode: a direct site goes around the tun by its DNS answer (relay.ts), but with apps in the rules its
-  // connection comes through it (an app's own, or the relay's held back for apps listed for the VPN), so its address
-  // is routed out the uplink first.
+  const via = site && OWN_HOSTS.has(site.toLowerCase()) ? "vpn" : route(site, ip, app);
+  if (via === "probe") return probe(conn, target, site, hello);
+  // Direct where it can be. macOS global mode: a direct site goes around the tun by its DNS answer (relay.ts), but some
+  // connections come through it (an app's own with apps in the rules, the relay's held back for apps listed for the
+  // VPN, an Iranian address smart found by its range), so the address is routed out the uplink first.
   // ponytail: macOS routes by address, not app: from then on every app's connections to that address go around the
   // tun too, till global mode ends. Per-app routing without that needs a Network Extension.
-  if (ip && pinDirect && appsOn() && (await pastTun(ip))) return dialDirect(target);
-  return dial(conn, target);
+  const direct = via === "direct" && (directOk || (!!ip && !!pinDirect && !!(await pastTun(ip))));
+  return sent(direct ? await dialDirect(target) : await dial(conn, target), site ?? target.host, direct ? "direct" : "vpn", hello);
+}
+
+/** Where each upstream connection goes, for its data's count by site (traffic.ts), which splice starts. */
+const routeOf = new WeakMap<net.Socket, { name?: string; via: Via }>();
+
+/** `up`, sent `hello` first, and its site and way noted for the count. */
+function sent(up: net.Socket | null, name: string | undefined, via: Via, hello?: Buffer | null): net.Socket | null {
+  if (!up) return null;
+  routeOf.set(up, { name, via });
+  if (hello?.length) up.write(hello);
+  return up;
+}
+
+// ── Save data (smart's probe): a site no list names is tried direct with the client's first bytes. Iran's filter shows
+// as its DNS answering with the filter's own address, as a reset, or as silence; then the site goes through the VPN,
+// and is remembered as blocked for a few days (smart.ts), so it isn't tried again meanwhile.
+const PROBE_MS = 2500;
+
+/** The first bytes `s` gets within `ms`, or null if it ends, fails or stays silent. Leaves it paused. */
+function firstAnswer(s: net.Socket, ms: number): Promise<Buffer | null> {
+  return new Promise((resolve) => {
+    const done = (b: Buffer | null) => {
+      clearTimeout(timer);
+      s.removeListener("data", done).removeListener("close", none);
+      s.pause();
+      resolve(b);
+    };
+    const none = () => done(null);
+    const timer = setTimeout(none, ms);
+    s.on("error", () => {}); // a reset is the filter's answer: its "close" says so
+    s.on("data", done).once("close", none);
+  });
+}
+
+/** Save data: `target` direct if it opens that way with `hello`, else through the VPN. Sends `hello` either way. */
+async function probe(conn: Connection, target: Target, site: string | undefined, hello?: Buffer | null): Promise<net.Socket | null> {
+  const viaVpn = async () => sent(await dial(conn, target), site ?? target.host, "vpn", hello);
+  if (!hello?.length) return viaVpn(); // nothing to try it with: not the web
+  // macOS global mode takes a direct address around the tun for every app till it ends: with it would go whatever
+  // shares it (a CDN's), blocked sites too, past the proxy. So nothing is tried there.
+  if (pinDirect) return viaVpn();
+  let ip = net.isIP(target.host) ? target.host : null;
+  if (!ip) {
+    // the lookup a direct connection makes: Iran's DNS answers a blocked name with its filter's address
+    ip = await lookup(target.host).then((a) => a.address, () => null);
+    if (!ip || filterAddress(ip)) return learnBlocked(site), viaVpn();
+  }
+  if (!(await pastTun(ip))) return viaVpn(); // global mode, where direct can't get past the tun: nothing learned
+  // a filtered address can drop the handshake instead: it isn't waited for like a slow site
+  const direct = await dialDirect({ host: ip, port: target.port }, PROBE_MS);
+  if (!direct) return learnBlocked(site), viaVpn();
+  direct.write(hello);
+  const answer = await firstAnswer(direct, PROBE_MS);
+  // plain HTTP: the filter answers with its own page, which links to it
+  if (!answer || answer.includes("10.10.34.3")) {
+    direct.destroy();
+    learnBlocked(site);
+    return viaVpn();
+  }
+  direct.unshift(answer); // the client gets it first, through splice
+  return sent(direct, site ?? target.host, "direct");
+}
+
+// ── Smart DNS (smartdns.ts): another device of the home's, told this computer's address for a site that needs the
+// VPN, connects here on its port 443 or 80. Its first bytes name the site, which goes through the VPN.
+
+/** A connection that came by smart DNS's answer for a site's `port`: through the VPN to the site its first bytes name. */
+export async function serveByName(socket: net.Socket, conn: Connection, port: number): Promise<void> {
+  socket.on("error", () => socket.destroy());
+  const hello = await firstBytes(socket);
+  const name = sniffHost(hello);
+  // the relay can't: it reads the web with foxhole's own certificate, which a TV doesn't trust
+  const up = name && !socket.destroyed && !conn.relay ? sent(await dial(conn, { host: name, port }), name, "vpn", hello) : null;
+  if (!up) return void socket.destroy();
+  splice(socket, up);
+}
+
+// ── Blocked or sanctioned? The Split sheet's check of a typed site: its page tried directly and through the VPN, at
+// once. The filter shows as on save data's tries; a refusal of Iran (403, 451) only inside TLS, so the page is asked for.
+const CHECK_MS = 6000;
+
+/** The status `s` (a connection to `name`'s port 443) gets for `name`'s page, or why it gets none. Closes `s`. */
+function pageOver(s: net.Socket, name: string): Promise<Try> {
+  return new Promise((resolve) => {
+    const t = tls.connect({ socket: s, servername: name, ALPNProtocols: ["http/1.1"] });
+    const done = (r: Try) => {
+      clearTimeout(timer);
+      t.destroy();
+      s.destroy();
+      resolve(r);
+    };
+    const timer = setTimeout(() => done({ fail: "silent" }), CHECK_MS);
+    t.once("secureConnect", () => t.write(`GET / HTTP/1.1\r\nHost: ${name}\r\nUser-Agent: Mozilla/5.0\r\nAccept: text/html\r\nConnection: close\r\n\r\n`));
+    t.once("data", (b: Buffer) => done({ status: Number(/^HTTP\/1\.[01] (\d{3})/.exec(b.toString("latin1"))?.[1]) || 200 }));
+    // a reset is the filter's; anything else (a certificate not the site's, not TLS at all) someone else's answer
+    t.once("error", (e: NodeJS.ErrnoException) => done({ fail: e.code === "ECONNRESET" || e.code === "EPIPE" ? "cut" : "tls" }));
+    t.once("close", () => done({ fail: "cut" }));
+  });
+}
+
+/** `name` tried directly: null if it can't be here (global mode: macOS would route it around the tun for every app). */
+async function tryDirect(name: string): Promise<Try | null> {
+  if (pinDirect || !directOk) return null;
+  const ip = await lookup(name).then((a) => a.address, () => null);
+  if (!ip) return { fail: "dns" };
+  if (filterAddress(ip)) return { fail: "filter" };
+  const s = await dialDirect({ host: ip, port: 443 }, CHECK_MS);
+  return s ? pageOver(s, name) : { fail: "silent" };
+}
+
+/** `name` tried through the VPN, a few KB of its data. */
+async function tryVpn(conn: Connection, name: string): Promise<Try> {
+  const up = dial(conn, { host: name, port: 443 });
+  // a site that doesn't answer keeps the VPN's server trying it (and dial retrying) a long while
+  const s = await Promise.race([up, new Promise<null>((r) => setTimeout(r, CHECK_MS, null))]);
+  if (s) return pageOver(s, name);
+  void up.then((late) => late?.destroy());
+  return { fail: "silent" };
+}
+
+/** `name` tried directly and (`conn`: connected) through the VPN; null for a way it can't be tried. */
+export async function checkSite(conn: Connection | null, name: string): Promise<{ direct: Try | null; vpn: Try | null }> {
+  // the sanctioned list meanwhile, for the sites that turn Iran away at sign-in, past a page that opens
+  const lists = Promise.race([refreshLists(), new Promise((r) => setTimeout(r, CHECK_MS))]);
+  const [direct, vpn] = await Promise.all([tryDirect(name), conn ? tryVpn(conn, name) : null, lists]);
+  return { direct, vpn };
+}
+
+// ── The network itself, when the VPN's server doesn't answer: Iran can cut its international internet off and keep
+// its own up. Then nothing abroad opens, and it isn't the Wi-Fi, nor Foxhole.
+const HOME = ["www.digikala.com", "www.aparat.com"]; // Iran's own, up through a cut
+const WORLD = ["www.cloudflare.com", "www.microsoft.com"]; // abroad, and not filtered in Iran
+export const NET_CUT = "International internet looks cut off: Iran's own sites open, the rest of the world doesn't. It isn't your Wi-Fi, nor Foxhole.";
+export const NET_OFF = "No internet: not even Iran's own sites open. Check the Wi-Fi or mobile data.";
+
+/** NET_CUT or NET_OFF when the network is so, else null (the world opens, or it can't be told: global mode). */
+export async function netState(): Promise<string | null> {
+  if (pinDirect || !directOk) return null;
+  const opens = (hosts: string[]) =>
+    Promise.any(hosts.map((host) => dialDirect({ host, port: 443 }, 5000).then((s) => s?.destroy() ?? Promise.reject()))).then(() => true, () => false);
+  const [home, world] = await Promise.all([opens(HOME), opens(WORLD)]);
+  return world ? null : home ? NET_CUT : NET_OFF;
+}
+
+let netSink: ((said: string | null) => void) | null = null;
+let netSaid: string | null = null;
+let netAt = 0;
+
+/** Tells `fn` when the VPN's connections fail for the network's state (netState's words), and null once they work again. */
+export function onNetState(fn: (said: string | null) => void): void {
+  netSink = fn;
+}
+
+/** A dial's outcome: failures look at the network, once a minute at most (a page fails many at once). */
+function dialed(ok: boolean): void {
+  if (ok) {
+    if (netSaid) netSink?.((netSaid = null));
+    return;
+  }
+  if (!netSink || Date.now() - netAt < 60_000) return;
+  netAt = Date.now();
+  void netState().then((said) => said !== netSaid && netSink?.((netSaid = said)));
 }
 
 /**
@@ -456,6 +722,8 @@ function splice(a: net.Socket, b: net.Socket): void {
   // The client hung up while the tunnel was opening (tun2socks quitting, a cancelled
   // connection): its "close" already fired, so nothing below would ever close the tunnel.
   if (a.destroyed) return void b.destroy();
+  const r = routeOf.get(b);
+  if (r) track(a, r.name, r.via);
   a.pipe(b);
   b.pipe(a);
   const close = () => {
@@ -511,6 +779,11 @@ async function handleSocks(socket: net.Socket, conn: Connection, greeting: Buffe
     socket.write(Buffer.from([0x01, 0x00]));
   } else socket.write(Buffer.from([SOCKS_VERSION, 0x00])); // no authentication required
   const target = await readRequest(socket);
+  if (target.udp) {
+    // the relay carries only the web: as before UDP was carried at all, an app's UDP finds no way and it falls back
+    if (conn.relay) return void socket.end(Buffer.from([SOCKS_VERSION, 0x07, 0x00, ATYP_IPV4, 0, 0, 0, 0, 0, 0]));
+    return udpAssociate(socket, conn, pastTun);
+  }
   if (probing && target.host === PROBE.host && target.port === PROBE.port) return void ((probeSeen = true), socket.destroy());
   if (conn.relay) {
     replySuccess(socket); // the first bytes, which say where it goes, come only after
@@ -522,20 +795,20 @@ async function handleSocks(socket: net.Socket, conn: Connection, greeting: Buffe
   const app = await appOf(socket, target); // before the reply: once it has one, tun2socks' app may be done already
   let hello: Buffer | null = null;
   let name: string | undefined;
-  if (net.isIP(target.host) && splitOn() && (target.port === 443 || target.port === 80)) {
+  // Saving data, every site's first bytes are read so too: they try the direct way (probe).
+  if ((net.isIP(target.host) || probeOn()) && splitOn() && (target.port === 443 || target.port === 80)) {
     replySuccess(socket);
     hello = await firstBytes(socket);
     if (socket.destroyed) return;
     name = sniffHost(hello) ?? undefined;
   }
-  const up = await open(conn, target, name, app);
+  const up = await open(conn, target, name, app, hello);
   if (!up) {
     if (!hello) replyFailure(socket);
     socket.destroy();
     return;
   }
-  if (hello) up.write(hello);
-  else replySuccess(socket);
+  if (!hello) replySuccess(socket);
   splice(socket, up);
 }
 
@@ -597,10 +870,26 @@ async function handleHttp(socket: net.Socket, conn: Connection, first: Buffer, l
     ]);
   }
 
-  const up = conn.relay ? await relayDirect(conn, target, target.host) : await open(conn, target, undefined, await appOf(socket, target));
+  if (!request && !conn.relay && probeOn() && (target.port === 443 || target.port === 80)) {
+    // saving data: the client's first bytes try the direct way (probe), and they come only after the 200
+    const app = await appOf(socket, target);
+    socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    let hello = rest;
+    if (!hello.length) {
+      const got = firstBytes(socket);
+      socket.resume();
+      hello = await got;
+    }
+    if (socket.destroyed) return;
+    const up = await open(conn, target, sniffHost(hello) ?? undefined, app, hello);
+    if (!up) return void socket.destroy();
+    return splice(socket, up);
+  }
+  const up = conn.relay ? await relayDirect(conn, target, target.host) : await open(conn, target, undefined, await appOf(socket, target), request);
   if (!up) return httpError(socket, "502 Bad Gateway");
-  if (request) up.write(request);
-  else {
+  if (request) {
+    if (conn.relay) up.write(request); // open sent it already
+  } else {
     socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
     if (rest.length) up.write(rest);
   }
@@ -639,6 +928,7 @@ export async function startProxy(
     server.once("error", reject);
     server.listen(port, host, () => {
       const addr = server.address() as net.AddressInfo;
+      listsVia({ host: host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host, port: addr.port }); // smart's new lists come through the VPN
       resolve({
         port: addr.port,
         // server.close() alone waits for every client to hang up, and browsers keep
@@ -647,6 +937,9 @@ export async function startProxy(
           new Promise<void>((res) => {
             server.close(() => res());
             for (const s of sockets) s.destroy();
+            closeWarm();
+            closeUdp();
+            saveTraffic(); // the closed connections' data is in now
           }),
         reset: () => {
           for (const s of sockets) s.destroy();

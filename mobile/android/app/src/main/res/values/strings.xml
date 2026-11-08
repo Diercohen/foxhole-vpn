@@ -1,3 +1,15 @@
 <resources>
     <string name="app_name">Foxhole</string>
+    <!-- disguise mode's name in the launcher (Disguise.kt) -->
+    <string name="calculator">Calculator</string>
+    <string name="widget_off">Off</string>
+    <!-- the tile's, widget's and notification's, in the language Settings has (Status.words) -->
+    <string name="connecting">Connecting…</string>
+    <string name="on_at">On · %1$s</string>
+    <string name="paused">Paused</string>
+    <string name="pause">Pause</string>
+    <string name="resume">Resume</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="starting">Starting…</string>
+    <string name="widget_description">The month\'s VPN data left, and whether Foxhole is on</string>
 </resources>

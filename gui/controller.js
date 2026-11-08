@@ -9,6 +9,8 @@ import { Connection, RELAY_CODE } from "./dist/connection.js";
 import { FirefoxAuth, RefreshAuth, StaticAuth, destroyToken } from "./dist/auth.js";
 import { askTv, findTvs, parseTvLink, sendToTv, waitForSignIn } from "./dist/tvpair.js";
 import { qrSvgPath } from "./dist/qr.js";
+import { SHARE_PORT, serveShare, shareData, shareLink, parseShared, sharedWhat, importPlan } from "./dist/share.js";
+import { newNotice, noticeShown, onHot, refreshHot } from "./dist/hot.js";
 import { FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox, saveAccounts, signOut, withFirefox, withOwn, without } from "./dist/accounts.js";
 import { fetchEntitlement, fetchUsage } from "./dist/guardian.js";
 import { GuardianError, GuardianBlocked, useRelay } from "./dist/guardian.js";
@@ -16,11 +18,14 @@ import { loadRelay, relayUrl } from "./dist/httprelay.js";
 import { STEPS, KEY_PLACEHOLDER, relayTemplate, highlightJs, deploymentId } from "./dist/relaysetup.js";
 import { network, publicIp, lanIp, firewallHint, wifiAccess } from "./dist/netinfo.js";
 import { helperFor, helperInstalled, helperReady } from "./dist/helper.js";
-import { loadSettings, saveSettings, proxyHost, validPort, loginFor } from "./dist/settings.js";
+import { loadSettings, saveSettings, proxyHost, validPort, loginFor, telegramLink, onJoin, ruleable, withNetRule } from "./dist/settings.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenProblem } from "./dist/tokenserver.js";
-import { startProxy, onProxyWarning } from "./dist/proxy.js";
+import { startProxy, onProxyWarning, checkSite, netState, onNetState } from "./dist/proxy.js";
+import { startSmartDns, smartDnsHost, smartDnsProblem } from "./dist/smartdns.js";
 import { log, logLines, onLog } from "./dist/log.js";
-import { useSplit, splitSummary, parseRule, appOf, hits, recentSites } from "./dist/split.js";
+import { useSplit, splitSummary, parseRule, parseSite, appOf, wayOf, hits, recentSites, SMART } from "./dist/split.js";
+import { traffic, runsOut, sizeOf } from "./dist/traffic.js";
+import { knownBlocked, sanctioned, verdictOf, verdictText, tryText, wantOf } from "./dist/smart.js";
 import { listApps } from "./dist/apps.js";
 import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost } from "./dist/global.js";
 import { VERSION } from "./dist/update.js";
@@ -37,6 +42,8 @@ const label = (c) => countryName(c.code, c.name);
 const RELAY_ROW = { code: RELAY_CODE, name: "Relay", locked: false, available: true, servers: [] };
 /** No relay on a phone (the user's call): it's never set up there, so it carries nothing and isn't offered. */
 const NO_RELAY = process.platform === "android" || process.platform === "ios";
+// Smart DNS (smartdns.ts) needs ports 53, 443 and 80, which a phone's apps can't have
+const SMART_DNS = ["darwin", "win32", "linux"].includes(process.platform);
 /** Split tunneling by app: a computer's proxy finds each connection's app (apps.ts), Android's VPN leaves apps out or takes only some; iOS can't tell apps apart. */
 const APPS = process.platform !== "ios";
 
@@ -44,7 +51,13 @@ const APPS = process.platform !== "ios";
 const usageView = (u) =>
   !u ? null
     : u.unlimited ? { unlimited: true }
-    : { left: gb(u.remaining), max: gb(u.max), reset: u.reset ? shortDate(u.reset) : null, fraction: u.max ? Number((u.remaining * 1000n) / u.max) / 1000 : 0 };
+    : { left: gb(u.remaining), max: gb(u.max), reset: u.reset ? shortDate(u.reset) : null, fraction: u.max ? Number((u.remaining * 1000n) / u.max) / 1000 : 0, runsOut: runsOutView(u) };
+
+/** When the data left runs out at this month's rate, if before it resets (traffic.ts runsOut); else null. */
+const runsOutView = (u) => {
+  const d = runsOut(u.max, u.remaining, u.reset);
+  return d ? shortDate(d) : null;
+};
 
 /** Two accounts' emails are the same one (Mozilla's are case-insensitive); an unknown one matches none. */
 const sameEmail = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
@@ -75,6 +88,7 @@ export class Controller extends EventEmitter {
   #auth = { stage: "checking" };
   #email = null;
   #net; // undefined: not read yet
+  #netPaused = null; // the location a network's rule paused (Settings → On this network), connected again on leaving it
   #ip; // undefined: checking
   #ipNote = "";
   #netSeq = 0; // drops answers from an older check
@@ -82,6 +96,11 @@ export class Controller extends EventEmitter {
   #trustAsk = false; // the window asks to trust foxhole's certificate (relay mode)
   #caOk; // whether this computer trusts it; undefined: not checked yet
   #fwHint = null;
+  #smartDns = null; // the home's DNS server, while Settings has it on and the account's signed in (smartdns.ts)
+  #smartDnsAt = null; // the address it listens on
+  #smartDnsError = null;
+  #smartDnsYields = false; // a Mac's whole-system mode has port 53 for its own DNS relay
+  #smartDnsTurn = Promise.resolve(); // one start or stop at a time
   #settingsNote = null;
   #splitNote = null;
   #apps = []; // split tunneling's apps to pick from: [{ id, name }] (on Android the id is its package)
@@ -102,6 +121,11 @@ export class Controller extends EventEmitter {
   #tvHandle = null; // ...and the wait itself, once it's started
   #tvError = null; // why it couldn't wait
   #tvQr = null; // { link, qr }: its QR code, drawn once per link
+  #tgQr = null; // { link, qr }: Telegram's link to this proxy for other devices (sharing on), drawn once per link
+  #share = null; // the Share dialog's page on the local network, while it's open (share.ts): a promise of its server
+  #shareRelay = false; // its link carries the relay too
+  #shareError = null; // why the page couldn't be served
+  #shareQr = null; // { url, qr }: its QR code, drawn once per link
   #tvsFound = []; // the TVs found waiting on this device's network (tvFind), for a code typed
   #firefoxEmail = null; // Firefox's sign-in's, once read (peekFirefox: where reading it asks nothing)
   #others = new Map(); // an account's id → { usage, error }: the data left of those not in use (refreshAccounts)
@@ -134,8 +158,11 @@ export class Controller extends EventEmitter {
     useSplit(() => this.#settings.split); // live: a change applies to the next connection
     onLog(() => this.emit("log", logLines[logLines.length - 1]));
     onProxyWarning((msg) => this.#say("error", `proxy: ${msg}`));
+    onNetState((said) => this.#say(said ? "error" : "ok", said ?? "the internet is back")); // cut off or offline while connected
     onRelayNotice((msg) => this.#say("warn", msg));
     onRelaySplit((split) => this.#saveSplit(split)); // a bot-check page's "Open it directly"
+    onHot(() => this.#changed()); // its notice, for the window to show
+    void refreshHot(); // the network's newest fixes (hot.ts), before Mozilla's hosts are needed
     void this.#caTrusted().then((ok) => ((this.#caOk = ok), this.#changed()));
     const list = this.reloadList(); // needs no login: ready once the sign-in is
     this.#refreshNet();
@@ -173,6 +200,7 @@ export class Controller extends EventEmitter {
       else this.#conn = new Connection(auth);
       this.#email = this.#currentEmail();
       this.#auth = { stage: "ready" };
+      this.#followSmartDns();
       this.#tokenSource = auth;
       if (this.#switchTo === this.#accounts.current) {
         this.#switchTo = null;
@@ -385,6 +413,91 @@ export class Controller extends EventEmitter {
     void this.#resignIn();
   }
 
+  /** Telegram's link that sets this proxy on another device, with its sign-in, and its QR code; null unless shared. */
+  #telegram() {
+    const s = this.#settings, lan = lanIp();
+    if (!s.share || !lan) return null;
+    const link = telegramLink(lan, s.port, loginFor(s, lan));
+    if (this.#tgQr?.link !== link) this.#tgQr = { link, qr: qrSvgPath(link) };
+    return this.#tgQr;
+  }
+
+  /**
+   * The Share dialog opened (`relay`: its link carries the relay too, as ticked) or closed. While it's open, its page
+   * is on the local network, for a phone's camera to open from its QR code: the app to download, the settings to take.
+   */
+  async shareOpen(on, relay) {
+    if (on !== true) {
+      const server = await this.#share;
+      this.#share = null;
+      this.#shareError = null;
+      server?.close();
+      return void this.#changed();
+    }
+    this.#shareRelay = relay === true;
+    this.#shareError = null;
+    // on Android its own APK (Core.kt), for a phone without Foxhole
+    this.#share ??= serveShare({ name: this.#deviceName(), version: VERSION, apk: process.env.FOXHOLE_APK || null }).catch((err) => {
+      this.#share = null;
+      this.#shareError = err.code === "EADDRINUSE" ? `Another app here is using Foxhole's sharing port (${SHARE_PORT}).` : err.message;
+      this.#changed();
+      return null;
+    });
+    this.#changed();
+  }
+
+  /** The Share dialog's: its QR code (of the page, with the settings in it), the link to send elsewhere, what it shares. */
+  #shareView() {
+    if (!this.#share && !this.#shareError) return null;
+    const s = this.#settings, lan = lanIp();
+    const data = shareData(s, this.#shareRelay);
+    const url = lan ? `http://${lan}:${SHARE_PORT}/${data ? `#${data}` : ""}` : null;
+    if (this.#shareQr?.url !== url) {
+      let qr = null;
+      try {
+        qr = url && qrSvgPath(url);
+      } catch {
+        /* too much for a QR code: the link is sent instead */
+      }
+      this.#shareQr = { url, qr };
+    }
+    return {
+      error: this.#shareError,
+      host: lan,
+      qr: this.#shareQr.qr,
+      link: data && shareLink(data),
+      what: data ? sharedWhat(parseShared(data)) : [],
+      apk: !!process.env.FOXHOLE_APK,
+      relay: this.#shareRelay && !!s.relay,
+      hasRelay: !!s.relay,
+    };
+  }
+
+  /** What importing a shared settings link would change here (share.ts), a line each, to show first; throws if it isn't one. */
+  importCheck(text) {
+    return importPlan(this.#settings, this.#shared(text)).what;
+  }
+
+  /** Imports a shared settings link: its relay in place of this one, its sites with these rules (its own win), its switches on. */
+  async importSettings(text) {
+    const plan = importPlan(this.#settings, this.#shared(text));
+    if (plan.split && !this.#saveSplit(plan.split)) throw new Error(this.#splitNote?.text ?? "Couldn't save.");
+    if (plan.relay && (await this.#changeSetting({ relay: plan.relay })) !== true) throw new Error(this.#settingsNote?.text ?? "Couldn't save.");
+    log(`settings imported: ${plan.what.join("; ")}`);
+    return plan.what;
+  }
+
+  #shared(text) {
+    const shared = parseShared(String(text ?? ""));
+    if (!shared) throw new Error("That isn't a Foxhole settings link: copy all of it again.");
+    return shared;
+  }
+
+  /** This device's name, as other devices are shown it (a TV signed in from here, the Share page). */
+  #deviceName() {
+    return this.#android?.name || hostname().replace(/\.local$/, "");
+  }
+
   /** The TV's screen: its code and QR code (drawn once each), or why it can't wait. */
   #tvView() {
     if (!this.#tvHandle) return this.#tvError ? { error: this.#tvError } : null;
@@ -435,7 +548,7 @@ export class Controller extends EventEmitter {
     const uid = id === FIREFOX ? findAccount()?.uid : id;
     if (!uid || !email) throw new Error("Couldn't read this account's details: try another one.");
     const refreshToken = await auth.refreshToken(AbortSignal.timeout(15_000));
-    const from = this.#android?.name || hostname().replace(/\.local$/, "");
+    const from = this.#deviceName();
     let lastErr;
     for (const tv of tvs)
       try {
@@ -581,6 +694,7 @@ export class Controller extends EventEmitter {
   /** Re-reads the network and the public IP: the VPN exit's when connected, else the real one. */
   #refreshNet() {
     const seq = ++this.#netSeq;
+    if (this.#settings.smartDns) void this.#followSmartDns(); // to the network's new address
     const country = this.#global ? this.#globalCountry : this.#active;
     // Proxy mode: ask through the proxy. Global mode tunnels the direct check already (not on Android: the app's own
     // connections stay out of its VPN, or the proxy's would loop through it)
@@ -589,8 +703,10 @@ export class Controller extends EventEmitter {
     this.#changed();
     void this.#network().then((n) => {
       if (seq !== this.#netSeq) return;
+      const joined = this.#net !== undefined && n !== this.#net; // not the first look, at the start
       this.#net = n;
       this.#changed();
+      if (joined) this.#joined(n);
     });
     // relay mode: HTTP, as HTTPS in global mode would meet foxhole's own certificate, which Node doesn't trust
     void publicIp(proxy, 3, country === RELAY_ROW).then((ip) => {
@@ -648,11 +764,13 @@ export class Controller extends EventEmitter {
         this.#setEntitled(false, true);
         this.#say("error", "this account hasn't turned on Firefox's VPN yet");
       } else {
-        this.#saysBlocked(err);
+        const blocked = this.#saysBlocked(err);
         // fetch's own message is just "fetch failed"; the network reason is in its cause
         const cause = err.cause;
         const hint = this.#rows()[0] === RELAY_ROW ? " · or pick Relay, first in Locations" : "";
         this.#say("error", `connect failed: ${err.message}${cause ? ` (${cause.code ?? cause.message})` : ""}${hint}`);
+        const id = this.#message.id;
+        if (!blocked) void netState().then((said) => said && this.#message.id === id && this.#say("error", said)); // why, when it's the network (nothing said since)
       }
       if (this.#proxy && !this.#active) {
         await this.#proxy.close();
@@ -677,6 +795,7 @@ export class Controller extends EventEmitter {
 
   async disconnect() {
     if (this.#busy) return;
+    this.#netPaused = null;
     if (this.#global) await this.#disableGlobal();
     if (!this.#proxy) return;
     await this.#proxy.close();
@@ -695,6 +814,7 @@ export class Controller extends EventEmitter {
 
   /** A location picked or the power button (the desktop's: a phone has its own, mobile/node/main.mjs): while off, connects in the mode last picked. */
   async pick(code) {
+    this.#netPaused = null; // the user's choice from now on
     const off = !this.#active;
     await this.connect(code);
     if (!off || !this.#active || this.#settings.proxyOnly || this.#global) return;
@@ -804,6 +924,7 @@ export class Controller extends EventEmitter {
         this.#say("error", `${stopped} — restoring networking…`);
         void session?.stop().finally(() => {
           this.#say("error", `${stopped} — global off`);
+          this.#smartDnsBack();
           this.#refreshNet();
         });
       });
@@ -812,6 +933,10 @@ export class Controller extends EventEmitter {
         this.#say("ok", `global ON · rerouted ${detail}`);
         this.#refreshNet();
       });
+      if (process.platform === "darwin") {
+        this.#smartDnsYields = true; // its DNS relay is about to have port 53
+        await this.#followSmartDns();
+      }
       await session.start();
       this.#global = session;
       this.#globalCountry = this.#active;
@@ -823,6 +948,7 @@ export class Controller extends EventEmitter {
       this.#say("error", `global failed: ${err.message}`);
       await session?.stop().catch(() => {});
       this.#global = null;
+      this.#smartDnsBack();
     } finally {
       this.#busy = false;
       this.#refreshNet();
@@ -841,6 +967,7 @@ export class Controller extends EventEmitter {
       await session.stop();
       this.#say("info", "global off (SOCKS proxy still on)");
     } finally {
+      this.#smartDnsBack();
       this.#globalCountry = null;
       this.#leavingGlobal = false;
       this.#busy = false;
@@ -857,6 +984,69 @@ export class Controller extends EventEmitter {
 
   setShare(on) {
     return this.#changeSetting({ share: on === true });
+  }
+
+  /** Settings → On this network: what joining `net` does from now on ("connect", "pause", or null for nothing). */
+  setNetRule(net, rule) {
+    if (ruleable(net)) return this.#changeSetting({ networks: withNetRule(this.#settings.networks, net, rule) });
+  }
+
+  /** The device joined network `n`: its rule pauses or connects, or leaving the one that paused connects again (onJoin). */
+  #joined(n) {
+    const a = this.#android;
+    const what = onJoin(this.#settings.networks, n, { active: !!this.#active, paused: a ? a.netPaused() : !!this.#netPaused });
+    if (!what || this.#busy) return;
+    log(`${n}: ${what} (Settings → On this network)`);
+    if (a) return void a[what](n); // the phone's own, which its notification shows (mobile/node/main.mjs)
+    if (what === "pause") {
+      const code = this.#active;
+      return void this.disconnect().then(() => (this.#netPaused = code));
+    }
+    const code = this.#netPaused;
+    void this.pick(code ?? undefined);
+  }
+
+  /** Settings → Language: the window's (it draws itself anew), the tray's and the notification's. */
+  setLang(lang) {
+    if (lang === "en" || lang === "fa") return this.#changeSetting({ lang });
+  }
+
+  /** Smart DNS for the home's TV, console or iPhone: blocked and sanctioned sites through the VPN, set as their DNS server. */
+  setSmartDns(on) {
+    if (SMART_DNS) return this.#changeSetting({ smartDns: on === true || undefined });
+  }
+
+  /**
+   * Starts or stops Smart DNS as Settings has it, out of a Mac's whole-system mode's way, and moves it to the network's
+   * new address. Resolves once done. A port it can't have is said in Settings.
+   */
+  /** Whole-system mode is over: Smart DNS has port 53 again, if it stepped aside. */
+  #smartDnsBack() {
+    if (!this.#smartDnsYields) return;
+    this.#smartDnsYields = false;
+    void this.#followSmartDns();
+  }
+
+  #followSmartDns() {
+    return (this.#smartDnsTurn = this.#smartDnsTurn.then(async () => {
+      const want = SMART_DNS && !!this.#settings.smartDns && !!this.#conn && !this.#smartDnsYields;
+      const host = smartDnsHost(lanIp());
+      if (this.#smartDns && (!want || this.#smartDnsAt !== host)) {
+        this.#smartDns.close();
+        this.#smartDns = null;
+      }
+      if (!want) this.#smartDnsError = null;
+      if (!want || this.#smartDns) return this.#changed();
+      try {
+        if (!host) throw new Error("This computer isn't on a local network.");
+        this.#smartDns = await startSmartDns(this.#conn, { host, self: () => lanIp(), vpn: () => !!this.#active && this.#active !== RELAY_ROW });
+        this.#smartDnsAt = host;
+        this.#smartDnsError = null;
+      } catch (err) {
+        this.#smartDnsError = smartDnsProblem(err);
+      }
+      this.#changed();
+    }));
   }
 
   setPort(port) {
@@ -914,6 +1104,7 @@ export class Controller extends EventEmitter {
       useRelay(this.#relay()); // takes effect at once, no restart
       this.#followRelay();
     }
+    if ("smartDns" in patch) this.#followSmartDns();
     if ("share" in patch || "port" in patch) {
       this.#host = proxyHost(next);
       this.#port = next.port;
@@ -1024,8 +1215,28 @@ export class Controller extends EventEmitter {
     }
   }
 
+  /** This month's data by site through the VPN (traffic.ts), the biggest first: the Data sheet, which asks while open. */
+  traffic() {
+    const { since, sites } = traffic();
+    const sp = this.#settings.split;
+    const rules = new Map(sp.rules.map((r) => [r.match, r.via]));
+    return {
+      since: shortDate(new Date(since)),
+      direct: sites.some((x) => x.direct) ? sizeOf(sites.reduce((n, x) => n + x.direct, 0)) : "",
+      canSend: sp.default === "vpn", // "send direct" adds a rule, the other way from everything else
+      // stuck: blocked here (save data found it so) or refusing Iran, so it'd stop working direct
+      sites: sites.filter((x) => x.vpn > 0).slice(0, 15).map((x) => ({ site: x.site, vpn: x.vpn, size: sizeOf(x.vpn), rule: rules.get(x.site) ?? null, stuck: knownBlocked(x.site) || sanctioned(x.site) })),
+    };
+  }
+
   setSplitDefault(via) {
     if (via === "vpn" || via === "direct") this.#saveSplit({ ...this.#settings.split, default: via });
+  }
+
+  /** Iranian sites direct (smart.ts), and save data: the rest tried directly first. Save data is kept for the next time smart's on. */
+  setSmart(smart, probe = !!this.#settings.split.probe) {
+    const { smart: _, probe: __, ...sp } = this.#settings.split;
+    this.#saveSplit({ ...sp, ...(smart === true && { smart: true }), ...(probe === true && { probe: true }) });
   }
 
   toggleRule(match) {
@@ -1038,8 +1249,11 @@ export class Controller extends EventEmitter {
     this.#saveSplit({ ...sp, rules: sp.rules.filter((r) => r.match !== match) });
   }
 
-  /** Adds a typed site or app, going the other way than everything else. True once it's in the list. */
-  addRule(text) {
+  /**
+   * Adds a typed site or app, going the other way than everything else, or `via` (the check's offer, which switches
+   * the site's rule if it has one). True once it's in the list.
+   */
+  addRule(text, via) {
     const sp = this.#settings.split;
     const t = String(text ?? "").trim();
     let match = typeof text === "string" ? parseRule(text) : null;
@@ -1059,11 +1273,40 @@ export class Controller extends EventEmitter {
       this.#note("split", "error", t ? `Not a site${apps}: “${t.slice(0, 40)}”. Try bbc.co.uk, *.ir or 1.2.3.4${APPS ? " or Telegram" : ""}.` : `Type a site${apps} first.`);
       return false;
     }
-    if (sp.rules.some((r) => r.match.toLowerCase() === match.toLowerCase())) {
+    const had = sp.rules.find((r) => r.match.toLowerCase() === match.toLowerCase());
+    if (had && (via === "vpn" || via === "direct")) return this.#saveSplit({ ...sp, rules: sp.rules.map((r) => (r === had ? { ...r, via } : r)) });
+    if (had) {
       this.#note("split", "warn", `${appOf(match) !== null ? this.#appName(appOf(match)) : match} is already in the list.`);
       return false;
     }
-    return this.#saveSplit({ ...sp, rules: [...sp.rules, { match, via: flip(sp.default) }] });
+    return this.#saveSplit({ ...sp, rules: [...sp.rules, { match, via: via === "vpn" || via === "direct" ? via : flip(sp.default) }] });
+  }
+
+  /**
+   * Blocked or sanctioned? `text`'s site tried directly and, connected, through the VPN (proxy.ts checkSite): the verdict,
+   * each way's try, how it goes now, and the way to offer when that's not what the verdict wants. Null if not a site.
+   */
+  async checkSite(text) {
+    const site = parseSite(String(text ?? ""));
+    if (!site || !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(site)) {
+      this.#note("split", "error", "Type a site's name to check it, like x.com.");
+      return null;
+    }
+    const { direct, vpn } = await checkSite(this.#active && this.#active !== RELAY_ROW ? this.#conn : null, site);
+    const verdict = verdictOf(site, direct, vpn);
+    const [title, more] = verdictText(verdict, direct, vpn);
+    const now = wayOf(site);
+    const want = wantOf(verdict);
+    return {
+      site,
+      verdict,
+      title,
+      more,
+      direct: tryText(direct),
+      vpn: tryText(vpn),
+      now, // "probe": save data decides, the way the verdict wants
+      offer: want && now !== "probe" && now !== want ? want : null,
+    };
   }
 
   /** Saves the rules: the proxy reads them live, so the next connection follows them. */
@@ -1178,6 +1421,14 @@ export class Controller extends EventEmitter {
     }
     await this.#proxy?.close();
     this.#receiver?.close();
+    this.#smartDns?.close();
+    void this.#share?.then((server) => server?.close());
+  }
+
+  /** The window showed the hot config's notice, and it was closed: not again. */
+  newsShown(text) {
+    if (text === newNotice()) noticeShown(text);
+    this.#changed();
   }
 
   #alert(text, title = "Already signed in") {
@@ -1208,6 +1459,8 @@ export class Controller extends EventEmitter {
     const gc = this.#globalCountry;
     return {
       version: VERSION,
+      news: newNotice(), // the hot config's notice, till the window has shown it (newsShown)
+      netRules: this.#settings.networks ?? {},
       update: this.#updates?.state() ?? null,
       platform: process.platform,
       auth: this.#auth,
@@ -1231,6 +1484,7 @@ export class Controller extends EventEmitter {
       switched: this.#switched,
       tv: !!this.#android?.tv,
       tvWait: this.#tvView(),
+      share: this.#shareView(),
       net: this.#net ?? null,
       netChecking: this.#net === undefined,
       ip: this.#ip ?? null,
@@ -1243,11 +1497,16 @@ export class Controller extends EventEmitter {
       wantGlobal: !this.#settings.proxyOnly, // the mode shown while off
       settings: { ...this.#settings, relay: this.#settings.relay ? { deploymentId: this.#settings.relay.deploymentId, set: true } : null },
       lanIp: lanIp(),
+      shareTg: this.#telegram(),
+      smartDns: SMART_DNS ? { on: !!this.#smartDns, error: this.#smartDnsError, yields: this.#smartDnsYields } : null, // null: not on a phone
       fwHint: this.#fwHint,
       settingsNote: this.#settingsNote,
       split: {
         default: sp.default,
         defaultHits: hits.get("") ?? 0,
+        smart: !!sp.smart,
+        probe: !!sp.probe,
+        smartHits: hits.get(SMART) ?? 0,
         rules: sp.rules.map((r) => ({ ...r, hits: hits.get(r.match) ?? 0, app: appOf(r.match) !== null ? this.#appName(appOf(r.match)) : null })),
         recent: recentSites.filter((s) => !listed.has(s)).slice(0, 30),
         apps: APPS ? this.#apps.filter((a) => !listed.has(`app:${a.id}`)) : null, // null: no apps here (iOS)

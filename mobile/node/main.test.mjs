@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "foxhole-core-"));
 copyFileSync(join(here, "main.mjs"), join(dir, "main.mjs")); // a copy: its imports resolve beside it
+copyFileSync(join(here, "../../gui/renderer/fa.js"), join(dir, "fa.js")); // as prepare.mjs has it
 symlinkSync(join(here, "../../dist"), join(dir, "dist"));
 writeFileSync(join(dir, "package.json"), '{ "type": "module" }');
 writeFileSync(join(dir, "updater.js"), "export class Updater { start() {} state() { return null; } }");
@@ -27,7 +28,9 @@ export class Controller extends EventEmitter {
   reloadList(url, method) { return fetch(url, { method, body: method === "POST" ? "hi" : undefined }).then((r) => r.text()); }
   openSettings() {}
   #changed() { this.emit("change"); }
-  async connect(code) {
+  // the stand-in's way into main.mjs's hooks for controller.js (#joined: a network's rule), e.g. "pause:Wi-Fi · Home"
+  checkSite(what) { const [hook, arg] = what.split(":"); return this.#android[hook](arg); }
+  async connect(code = "DE") { // the location selected
     if (this.#busy) return;
     this.#busy = true; this.#connecting = code; this.#changed();
     await moment();
@@ -65,7 +68,9 @@ const core = spawn(process.execPath, ["--jitless", "main.mjs", "3"], { cwd: dir,
 const app = core.stdio[3];
 const out = (m) => app.write(`${JSON.stringify(m)}\n`);
 const notes = []; // what the notification said, in order: its title (" [Resume]" when paused), or "off"
+const texts = []; // and its text
 const vpn = []; // Android's VPN asked up and down
+const disguises = []; // disguise mode's codes, as the app was told them (Disguise.kt)
 const replies = new Map();
 let buf = "";
 app.setEncoding("utf8");
@@ -76,8 +81,9 @@ app.on("data", (chunk) => {
     buf = buf.slice(i + 1);
     if (m.t === "reply") replies.get(m.id)?.(m.v);
     if (m.t !== "ask") continue;
-    if (m.cmd === "keepAlive") notes.push(m.args.off ? "off" : `${m.args.title}${m.args.paused ? " [Resume]" : ""}`);
+    if (m.cmd === "keepAlive") notes.push(m.args.off ? "off" : `${m.args.title}${m.args.paused ? " [Resume]" : ""}`), texts.push(m.args.text ?? "");
     if (m.cmd === "vpnStart" || m.cmd === "vpnStop") vpn.push(m.cmd);
+    if (m.cmd === "disguise") disguises.push(m.args.code);
     out({ t: "answer", id: m.id, v: null });
   }
 });
@@ -168,7 +174,32 @@ try {
   await act("disconnect");
   await settle();
   assert.equal(notes.at(-1), "off");
-  console.log("main.mjs: fetch() without WebAssembly, Pause and Resume ok");
+
+  // Quick Settings' tile (FoxholeTile.kt): connects as the power button does, in the mode last picked (proxy only now)
+  out({ t: "tile" });
+  await settle();
+  assert.equal(notes.at(-1), "Proxy · Germany");
+  // a network's rule pauses as the notification's Pause does, saying where; leaving it (or the tile) resumes
+  await act("checkSite", "pause:Wi-Fi · Home");
+  await settle();
+  assert.equal(notes.at(-1), "Paused · Germany [Resume]");
+  assert.equal(texts.at(-1), "On Wi-Fi · Home: back on when you leave it");
+  assert.equal(await act("checkSite", "netPaused"), true);
+  out({ t: "tile" });
+  await settle();
+  assert.equal(notes.at(-1), "Proxy · Germany");
+  assert.equal(await act("checkSite", "netPaused"), false);
+  out({ t: "disconnect" });
+  await settle();
+  assert.equal(notes.at(-1), "off");
+
+  // Settings → Look like a calculator: the app is told the code, and the window's state has it; null, Foxhole again
+  assert.equal(await act("disguise", "2580"), true);
+  assert.equal((await act("state")).disguise, "2580");
+  await act("disguise", null);
+  assert.deepEqual(disguises, ["2580", null]);
+  assert.equal((await act("state")).disguise, null);
+  console.log("main.mjs: fetch() without WebAssembly, Pause and Resume, the tile, a network's pause and disguise mode ok");
 } finally {
   core.kill();
   rmSync(dir, { recursive: true, force: true });

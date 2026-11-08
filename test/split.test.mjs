@@ -15,6 +15,7 @@ import { parseLsof, parseSs, parseWin, appName, appFor, desktopIcon } from "../d
 import { startProxy, sniffHost, setDirectFrom, holdDirect, onProxyWarning } from "../dist/proxy.js";
 import { questionName, answerAddrs } from "../dist/dns.js";
 import { directRoutes } from "../dist/relay.js";
+process.env.HOME = process.env.USERPROFILE = mkdtempSync(path.join(os.tmpdir(), "foxhole-home-")); // the data counts (traffic.json) go here, not in ~/.config
 
 setTimeout(() => {
   console.error("FAIL - test timed out");

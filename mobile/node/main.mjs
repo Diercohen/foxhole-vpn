@@ -15,6 +15,7 @@ import { caPem, loadCa } from "./dist/mitm.js";
 import { useFastlyFallback } from "./dist/dns.js";
 import { currentSplit, appOf } from "./dist/split.js";
 import { log } from "./dist/log.js";
+import "./fa.js"; // FA_COUNTRIES, foxholeWords: Persian, for Settings → Language (prepare.mjs copies it from gui/renderer)
 
 net.setDefaultAutoSelectFamilyAttemptTimeout(3000); // as cli.ts: far VPN servers take 600-900 ms to answer
 useFastlyFallback(); // where the network drops Fastly's addresses Mozilla's hosts get (dns.ts)
@@ -54,10 +55,11 @@ if (typeof WebAssembly === "undefined")
 const ACTIONS = new Set([
   "update", "restartToUpdate",
   "state", "power", "connect", "disconnect", "toggleGlobal",
-  "setShare", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "appIcons", "setSplitDefault", "addRule", "toggleRule", "removeRule",
+  "setShare", "setLang", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "appIcons", "traffic", "setSplitDefault", "setSmart", "checkSite", "shareOpen", "importCheck", "importSettings", "newsShown", "setNetRule", "addRule", "toggleRule", "removeRule",
   "logs", "copy", "copyLogs", "reloadList",
   "addAccount", "useAccount", "removeAccount", "refreshAccounts", "dismissLow", "retrySignIn", "checkEntitled", "tvWait", "tvFind", "tvSend", "showWifiName",
   "trustCa", "untrustCa", "dismissTrust",
+  "disguise", // the phone's own: Look like a calculator
 ]);
 
 const app = new net.Socket({ fd: Number(process.argv[2]), readable: true, writable: true });
@@ -146,6 +148,12 @@ const controller = new Controller({
     globalSession,
     apps: () => ask("apps"), // split tunneling's: [{ id: its package, name }] (Phone.kt)
     network: () => ask("network").catch(() => null),
+    // Settings → On this network (controller.js #joined): paused there as the notification's Pause does, so Foxhole
+    // keeps running to see the phone leave it
+    netPaused: () => !!paused?.net,
+    pause: (net) => pause(net),
+    resume: () => resume(),
+    connect: () => connect(),
     wifiAccess: () => ask("wifiAccess"), // Android's question for the Wi-Fi's name (Phone.kt)
     caTrusted: () => (caPem() ? ask("caTrusted", { pem: caPem() }).catch(() => false) : Promise.resolve(false)),
     setCaTrust: async (add) =>
@@ -158,7 +166,8 @@ const controller = new Controller({
 let shown = true; // the app is on screen
 let timer = null;
 let kept = "";
-let paused = null; // paused from the notification: { code, global }, what its Resume connects to again
+let told = ""; // the tile's and the widget's status, as last sent (Status.kt)
+let paused = null; // paused from the notification: { code, global, net? }, what its Resume connects to again (net: by that network's rule)
 
 // The mode last picked in the window, Proxy only or Whole system: connecting goes back to it, after a restart too.
 // iOS has no whole-system mode; a TV has nothing else (nothing on it can be set to use a proxy): see global().
@@ -204,34 +213,62 @@ async function setMode() {
 function view() {
   const s = controller.state();
   if (s.active) paused = null; // connected again: by Resume, or in the app
-  return { ...s, paused, wantGlobal: global() };
+  return { ...s, paused, wantGlobal: global(), disguise: device.disguise ?? null };
+}
+
+/** Settings → Look like a calculator (Disguise.kt): disguised, opened with `code`; or null, Foxhole again. */
+async function disguise(code) {
+  await ask("disguise", { code: code ?? null });
+  device.disguise = code ?? null;
+  controller.emit("change");
+  return true;
 }
 
 function push() {
   timer = null;
   const s = view();
   if (shown) send({ t: "state", s });
-  const place = (code) => s.countries.find((c) => c.code === code)?.name ?? ""; // the relay's row is "Relay"
+  const t = foxholeWords(s.settings?.lang);
+  // in the language Settings has (no Intl here for country names: fa.js has them); the relay's row is "Relay"
+  const place = (code) => (s.settings?.lang === "fa" && FA_COUNTRIES[code]) || (s.countries.find((c) => c.code === code)?.name ?? "");
   const note = s.active
-    ? JSON.stringify({ title: `${s.globalOn ? "Whole system" : "Proxy"} · ${place(s.global ?? s.active)}`, text: s.proxy ? `${s.proxy.addr} · SOCKS5 + HTTP` : "" })
+    ? JSON.stringify({ title: `${s.globalOn ? t`Whole system` : t`Proxy`} · ${place(s.global ?? s.active)}`, text: s.proxy ? `${s.proxy.addr} · SOCKS5 + HTTP` : "" })
     : paused
       ? JSON.stringify({
-          title: `${s.connecting ? "Connecting…" : "Paused"} · ${place(paused.code)}`,
-          text: s.connecting ? "" : paused.global ? "Apps go direct until you resume" : "The proxy is off until you resume",
+          title: `${s.connecting ? t`Connecting…` : t`Paused`} · ${place(paused.code)}`,
+          text: s.connecting ? "" : paused.net ? t`On ${paused.net}: back on when you leave it` : paused.global ? t`Apps go direct until you resume` : t`The proxy is off until you resume`,
           paused: true,
         })
       : "";
+  if (process.platform === "android") {
+    const u = s.usage;
+    const status = JSON.stringify({
+      on: !!s.active,
+      busy: !!s.connecting,
+      paused: !!paused,
+      where: place(s.active ? (s.global ?? s.active) : (s.connecting ?? paused?.code)),
+      left: !u ? "" : u.unlimited ? t`Unlimited` : t`${u.left} left`,
+      fraction: !u ? -1 : u.unlimited ? 1 : u.fraction,
+      signedIn: s.auth?.stage === "ready",
+      lang: s.settings?.lang ?? "en", // the tile's, widget's and notification buttons' own words (Status.kt words)
+    });
+    if (status !== told) {
+      told = status;
+      void ask("status", JSON.parse(status)).catch((err) => log(`status: ${err.message}`));
+    }
+  }
+  // after the status: the notification's buttons are in its language
   if (note !== kept) {
     kept = note;
     void ask("keepAlive", note ? JSON.parse(note) : { off: true }).catch((err) => log(`notification: ${err.message}`));
   }
 }
 
-/** The notification's Pause: disconnects, remembering how for its Resume, the notification (and its icon) kept. */
-async function pause() {
+/** The notification's Pause (or a network's rule, `net`): disconnects, remembering how for its Resume, the notification (and its icon) kept. */
+async function pause(net) {
   const s = controller.state();
   if (!s.active || s.busy) return;
-  const was = { code: s.active, global: s.globalOn };
+  const was = { code: s.active, global: s.globalOn, ...(net && { net }) };
   await controller.disconnect();
   if (!controller.state().active) paused = was; // before push() runs: it would take the notification away
   controller.emit("change");
@@ -268,6 +305,7 @@ function handle(msg) {
           // paused from the notification: the power button, or a country picked, resumes as its Resume does
           if (paused && (msg.name === "power" || msg.name === "connect")) return resume(args[0]);
           if (msg.name === "toggleGlobal") return setMode();
+          if (msg.name === "disguise") return disguise(args[0]);
           if ((msg.name === "power" || msg.name === "connect") && !controller.state().active) return connect(args[0]);
           return controller[msg.name](...args);
         })
@@ -286,6 +324,11 @@ function handle(msg) {
       return void pause();
     case "resume":
       return void resume();
+    case "tile": // Quick Settings' tile (FoxholeTile.kt), maybe as it started the core: once it's ready, as the power button
+      return void started
+        .then(() => (paused ? resume() : connect()))
+        .catch((err) => log(`tile: ${err.message}`))
+        .finally(() => ((told = ""), push())); // the tile shows "Connecting…" till it hears
     case "disconnect": // paused, the notification just goes
       paused = null;
       controller.emit("change");
@@ -321,5 +364,6 @@ process.on("unhandledRejection", (err) => {
   log(`error: ${err?.stack ?? err}`);
 });
 
-void deviceKnown.then(() => controller.start()).catch((err) => log(`couldn't start: ${err.stack ?? err.message}`));
+const started = deviceKnown.then(() => controller.start()); // signed in, and the locations listed
+started.catch((err) => log(`couldn't start: ${err.stack ?? err.message}`));
 updater.start();

@@ -11,6 +11,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { lookup } from "node:dns/promises";
 import { startProxy } from "../dist/proxy.js";
+process.env.HOME = process.env.USERPROFILE = mkdtempSync(path.join(os.tmpdir(), "foxhole-home-")); // the data counts (traffic.json) go here, not in ~/.config
 
 setTimeout(() => {
   console.error("FAIL - test timed out");
@@ -36,12 +37,16 @@ const targetPort = await listen(target);
 
 // Fake upstream: drops the first `dropFirst` connections (a flaky network), then
 // accepts CONNECT with a Bearer pass and tunnels to the target.
+// `silentBefore`: connections made before then never answer (dropped by the network without a word).
 function makeUpstream(dropFirst) {
-  const state = { connections: 0, sawAuth: false };
+  const state = { connections: 0, sawAuth: false, connectOn: [], silentBefore: 0 };
   const server = tls.createServer({ key: readFileSync(key), cert: readFileSync(cert) }, (s) => {
+    s.on("error", () => {}); // a ready connection the proxy closes resets this end
     if (++state.connections <= dropFirst) return s.destroy();
+    const madeAt = Date.now();
     let buf = Buffer.alloc(0);
     const onData = (d) => {
+      if (madeAt < state.silentBefore) return;
       buf = Buffer.concat([buf, d]);
       const i = buf.indexOf("\r\n\r\n");
       if (i < 0) return;
@@ -49,6 +54,7 @@ function makeUpstream(dropFirst) {
       const head = buf.toString("latin1", 0, i);
       assert.match(head, /^CONNECT 127\.0\.0\.1:\d+ HTTP\/1\.1/, "CONNECT line");
       state.sawAuth = /Proxy-Authorization: Bearer faketoken/.test(head);
+      state.connectOn.push(madeAt);
       const tport = Number(head.match(/^CONNECT 127\.0\.0\.1:(\d+)/)[1]);
       const t = net.connect(tport, "127.0.0.1", () => {
         s.write("HTTP/1.1 200 OK\r\n\r\n");
@@ -80,7 +86,7 @@ async function roundTrip(proxyPort) {
   c.destroy();
 }
 
-async function scenario(name, dropFirst, expectedAttempts) {
+async function scenario(name, dropFirst) {
   const { server, state } = makeUpstream(dropFirst);
   const upstreamPort = await listen(server);
   // Minimal Connection stand-in (duck-typed to what proxy.ts uses).
@@ -93,10 +99,42 @@ async function scenario(name, dropFirst, expectedAttempts) {
   const handle = await startProxy(conn, "127.0.0.1", 0);
   await roundTrip(handle.port);
   assert.ok(state.sawAuth, "upstream received the Bearer proxy pass");
-  assert.equal(state.connections, expectedAttempts, `${name}: upstream attempts`);
+  assert.ok(state.connections > dropFirst, `${name}: dialed again past the dropped connections`);
   await handle.close();
   server.close();
   console.log(`ok - ${name}`);
+}
+
+// Tunnels after the first open on connections made ahead of time (no TCP and TLS handshakes to wait for); one the
+// network dropped without a word is raced by a new connection after a moment.
+async function ready() {
+  const { server, state } = makeUpstream(0);
+  const upstreamPort = await listen(server);
+  const conn = {
+    server: { hostname: "127.0.0.1", port: upstreamPort },
+    async currentPass() {
+      return { token: "faketoken", notBefore: 0, expires: 2 ** 31 };
+    },
+  };
+  const handle = await startProxy(conn, "127.0.0.1", 0);
+  await roundTrip(handle.port); // a new connection, and ready ones made meanwhile
+  await new Promise((r) => setTimeout(r, 300));
+  const made = state.connections;
+  assert.ok(made > 1, "ready connections made after the first tunnel");
+  let t = Date.now();
+  await roundTrip(handle.port);
+  assert.ok(state.connectOn.at(-1) < t, "the next tunnel's CONNECT came on a connection made before it was asked for");
+
+  await new Promise((r) => setTimeout(r, 300));
+  state.silentBefore = Date.now(); // every ready connection goes quiet
+  t = Date.now();
+  await roundTrip(handle.port);
+  const took = Date.now() - t;
+  assert.ok(took >= 1500 && took < 8000, `a silent ready connection gives way to a new one after a moment (${took} ms)`);
+  assert.ok(state.connectOn.at(-1) >= state.silentBefore, "that tunnel is on the new connection");
+  await handle.close();
+  server.close();
+  console.log("ok - tunnels open on ready connections; a silent one is raced by a new connection");
 }
 
 // HTTP proxy on the same port: CONNECT (https:// sites) and a plain http:// GET.
@@ -180,6 +218,7 @@ async function loopGuard() {
 async function githubSsh() {
   const seen = []; // the CONNECT line of each upstream dial
   const server = tls.createServer({ key: readFileSync(key), cert: readFileSync(cert) }, (s) => {
+    s.on("error", () => {});
     s.once("data", (d) => {
       seen.push(d.toString("latin1").split("\r\n")[0]);
       s.end("HTTP/1.1 200 OK\r\n\r\n");
@@ -229,9 +268,11 @@ async function closeMidDial() {
   let upClosed;
   const closed = new Promise((r) => (upClosed = r));
   const server = tls.createServer({ key: readFileSync(key), cert: readFileSync(cert) }, (s) => {
-    s.once("data", () => setTimeout(() => s.write("HTTP/1.1 200 OK\r\n\r\n"), 200)); // answers after the client left
+    s.once("data", () => {
+      s.once("close", upClosed); // the tunnel's own connection (ready ones close with the proxy too)
+      setTimeout(() => s.write("HTTP/1.1 200 OK\r\n\r\n"), 200); // answers after the client left
+    });
     s.on("error", () => {});
-    s.once("close", upClosed);
   });
   const upstreamPort = await listen(server);
   const conn = {
@@ -306,11 +347,12 @@ async function login() {
   console.log("ok - a proxy login is asked over SOCKS5 and HTTP");
 }
 
-await scenario("SOCKS5 bridge tunnels TCP through an authenticated upstream CONNECT", 0, 1);
+await scenario("SOCKS5 bridge tunnels TCP through an authenticated upstream CONNECT", 0);
+await ready();
 await login();
 await closeMidDial();
 await httpScenarios();
-await scenario("a dropped upstream connection is retried automatically", 1, 2);
+await scenario("a dropped upstream connection is retried automatically", 5);
 await loopGuard();
 await githubSsh();
 target.close();

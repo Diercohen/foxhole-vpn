@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Controller } from "./controller.js";
 import { createTray } from "./tray.js";
+import "./renderer/fa.js"; // foxholeWords: Persian, for Settings → Language
 import { createBadge } from "./badge.js";
 import { Updater } from "./updater.js";
 import { AUTOSTART_FLAG, loginItem } from "./autostart.js";
@@ -21,6 +22,7 @@ if (!app.requestSingleInstanceLock()) process.exit(0);
 net.setDefaultAutoSelectFamilyAttemptTimeout(3000);
 useFastlyFallback(); // where the network drops Fastly's addresses Mozilla's hosts get (dns.ts)
 
+const TELEGRAM = /^tg:\/\/socks\?server=127\.0\.0\.1&port=\d{1,5}$/;
 const LINKS = {
   repo: REPO_URL, releases: `${REPO_URL}/releases`, firefox: "https://www.mozilla.org/firefox/new/",
   relay: `${REPO_URL}#where-vpnmozillaorg-is-blocked-eg-iran`,
@@ -32,7 +34,7 @@ const LINKS = {
 // What the window may ask for: the Controller's actions, nothing else of it
 const ACTIONS = new Set([
   "state", "power", "connect", "disconnect", "toggleGlobal", "submitPassword", "cancelPassword",
-  "setShare", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "appIcons", "setSplitDefault", "addRule", "toggleRule", "removeRule",
+  "setShare", "setLang", "setSmartDns", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "appIcons", "traffic", "setSplitDefault", "setSmart", "checkSite", "shareOpen", "importCheck", "importSettings", "newsShown", "setNetRule", "addRule", "toggleRule", "removeRule",
   "logs", "copy", "copyLogs", "openFirefox", "copySnippet", "reloadList",
   "addAccount", "useAccount", "removeAccount", "refreshAccounts", "dismissLow", "retrySignIn", "checkEntitled", "tvFind", "tvSend", "showWifiName",
   "trustCa", "untrustCa", "dismissTrust", "copyEnv",
@@ -136,7 +138,7 @@ function openSignIn() {
   if (signInWin) return signInWin.focus();
   signedIn = null;
   signInWin = new BrowserWindow({
-    width: 520, height: 760, parent: win ?? undefined, title: "Sign in to your Mozilla account", backgroundColor: "#ffffff", autoHideMenuBar: true,
+    width: 520, height: 760, parent: win ?? undefined, title: foxholeWords(controller.state().settings.lang)`Sign in to your Mozilla account`, backgroundColor: "#ffffff", autoHideMenuBar: true,
     webPreferences: { preload: here("signin.cjs"), partition: `signin-${Date.now()}`, sandbox: true, contextIsolation: true },
   });
   const wc = signInWin.webContents;
@@ -199,7 +201,8 @@ app.whenReady().then(() => {
   badge.update(controller.state());
   if (!startHidden) win.once("ready-to-show", () => win.show());
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  win.webContents.on("will-navigate", (e) => e.preventDefault());
+  // nowhere else, but the page may reload itself: Settings → Language draws it anew (Electron counts a reload as a navigation)
+  win.webContents.on("will-navigate", (e, url) => url !== win.webContents.getURL() && e.preventDefault());
   // Closing the window leaves Foxhole running in the tray; it quits from there (or Cmd+Q).
   let told = false; // Windows and Linux hide tray icons easily: say once where it went
   win.on("close", (e) => {
@@ -208,7 +211,8 @@ app.whenReady().then(() => {
     win.hide();
     if (told || process.platform === "darwin" || !Notification.isSupported()) return;
     told = true;
-    new Notification({ title: "Foxhole is still running", body: "It's in the tray: open it or quit it from there.", icon: here("build/icon.png") }).show();
+    const t = foxholeWords(controller.state().settings.lang);
+    new Notification({ title: t`Foxhole is still running`, body: t`It's in the tray: open it or quit it from there.`, icon: here("build/icon.png") }).show();
   });
   void win.loadFile(here("renderer/index.html"));
 
@@ -270,7 +274,8 @@ app.whenReady().then(() => {
     return name === "restartToUpdate" ? restartToUpdate() : controller[name](...args);
   });
   // a named link, or a page of the repo (the update's notes link its pull requests)
-  const link = (which) => LINKS[which] ?? (typeof which === "string" && which.startsWith(`${REPO_URL}/`) ? which : null);
+  // a named link, a page of the repo, or Telegram's own link to this computer's proxy (the proxy card's button)
+  const link = (which) => LINKS[which] ?? (typeof which === "string" && (which.startsWith(`${REPO_URL}/`) || TELEGRAM.test(which)) ? which : null);
   ipcMain.handle("open", (e, which) => e.sender === win.webContents && link(which) && shell.openExternal(link(which)));
 
   // Shutting down or restarting with global mode on: hold it until the routes and DNS are back (Linux, macOS)

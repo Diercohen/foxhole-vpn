@@ -68,7 +68,8 @@ for (const step of planDirectTeardown().map((c) => c.join(" "))) assert.ok(stale
 const script = staleCleanupScript({ gw: "192.168.0.1", dev: "wlo1" });
 assert.ok(script.startsWith("'pkill' '-f' '--' '--device foxhole[0]' 2>/dev/null; ") && script.endsWith("; true"), script);
 assert.ok(stale.includes("ip link del foxhole0") && stale.includes("ip -6 route del blackhole default metric 1"), "tun and IPv6 blackhole");
-assert.ok(stale.includes("iptables -D OUTPUT -o foxhole0 -p udp -j REJECT"), "UDP reject rule");
+assert.ok(stale.includes("iptables -D OUTPUT -o foxhole0 -p udp -m multiport --dports 80,443 -j REJECT"), "QUIC reject rule");
+assert.ok(stale.includes("iptables -D OUTPUT -o foxhole0 -p udp -j REJECT"), "and 1.1.0's all-UDP one");
 const stalePins = planStaleCleanup({ gw: "192.168.0.1", dev: "wlo1" }).map((c) => c.join(" "));
 assert.ok(stalePins.includes("ip route del 10.0.0.0/8 via 192.168.0.1 dev wlo1 proto boot metric 0"), "private pins, only as foxhole adds them");
 assert.ok(!stale.some((c) => c.startsWith("ip route del 10.")), "no uplink known: private routes left alone");

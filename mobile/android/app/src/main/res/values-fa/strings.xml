@@ -1,0 +1,14 @@
+<resources>
+    <!-- on a phone set to Persian, disguise mode's name in the launcher: its own calculator's -->
+    <string name="calculator">ماشین‌حساب</string>
+    <!-- Foxhole in Persian (Settings → Language, or a phone set to Persian): the tile, widget and notification -->
+    <string name="widget_off">خاموش</string>
+    <string name="widget_description">حجم باقی‌ماندهٔ VPN در این ماه، و روشن بودن Foxhole</string>
+    <string name="connecting">در حال اتصال…</string>
+    <string name="on_at">روشن · %1$s</string>
+    <string name="paused">مکث</string>
+    <string name="pause">مکث</string>
+    <string name="resume">ادامه</string>
+    <string name="disconnect">قطع اتصال</string>
+    <string name="starting">در حال شروع…</string>
+</resources>

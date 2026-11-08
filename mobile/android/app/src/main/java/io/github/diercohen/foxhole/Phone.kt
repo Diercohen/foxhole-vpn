@@ -44,9 +44,17 @@ object Phone {
         }
         "network" -> Core.answer(id, network(ctx))
         "wifiAccess" -> main.post { wifiAccess(ctx, id) }
-        "device" -> Core.answer(id, JSONObject().put("tv", isTv(ctx)).put("name", deviceName(ctx)))
+        "device" -> Core.answer(id, JSONObject().put("tv", isTv(ctx)).put("name", deviceName(ctx)).put("disguise", Disguise.code(ctx)))
+        "disguise" -> { // Settings → Look like a calculator: its code, or null to be Foxhole again
+          Disguise.set(ctx, if (args.isNull("code")) null else args.getString("code"))
+          Core.answer(id, null)
+        }
         "keepAlive" -> {
           FoxholeService.keep(ctx, if (args.optBoolean("off")) null else Triple(args.getString("title"), args.getString("text"), args.optBoolean("paused")))
+          Core.answer(id, null)
+        }
+        "status" -> { // for the tile and the widget
+          Status.set(ctx, args)
           Core.answer(id, null)
         }
         "vpnStart" -> vpnStart(ctx, id, args.getInt("port"), strings(args, "skip"), strings(args, "only"))
@@ -115,7 +123,7 @@ object Phone {
    * on screen, to turn it on there).
    */
   private fun wifiAccess(ctx: Context, id: Int) {
-    val activity = MainActivity.shown ?: return Core.fail(id, "open Foxhole to allow it")
+    val activity = FoxholeActivity.shown ?: return Core.fail(id, "open Foxhole to allow it")
     val prefs = ctx.getSharedPreferences("foxhole", Context.MODE_PRIVATE)
     fun open(action: String, data: Uri? = null) =
       try {
@@ -134,10 +142,10 @@ object Phone {
     located = { precise, approximate ->
       if (precise) locationOn() else Core.answer(id, if (approximate) "approximate" else "denied")
     }
-    activity.requestPermissions(arrayOf(FINE, Manifest.permission.ACCESS_COARSE_LOCATION), MainActivity.LOCATION)
+    activity.requestPermissions(arrayOf(FINE, Manifest.permission.ACCESS_COARSE_LOCATION), FoxholeActivity.LOCATION)
   }
 
-  /** Android's answer (MainActivity). */
+  /** Android's answer (FoxholeActivity). */
   fun locationAnswered(permissions: Array<out String>, results: IntArray) {
     val granted = permissions.filterIndexed { i, _ -> results.getOrNull(i) == PackageManager.PERMISSION_GRANTED }
     located?.invoke(FINE in granted, Manifest.permission.ACCESS_COARSE_LOCATION in granted)
@@ -154,9 +162,9 @@ object Phone {
   /** `skip`: split tunneling's direct apps, left out of the VPN; `only`: when any, the only apps in it (packages). */
   private fun vpnStart(ctx: Context, id: Int, port: Int, skip: ArrayList<String>, only: ArrayList<String>) {
     val question = VpnService.prepare(ctx) ?: return FoxholeService.vpnOn(ctx, id, port, skip, only)
-    val activity = MainActivity.shown ?: return Core.fail(id, "open Foxhole to allow its VPN")
+    val activity = FoxholeActivity.shown ?: return Core.fail(id, "open Foxhole to allow its VPN")
     consent = { ok -> if (ok) FoxholeService.vpnOn(ctx, id, port, skip, only) else Core.fail(id, "Android's VPN wasn't allowed") }
-    @Suppress("DEPRECATION") main.post { activity.startActivityForResult(question, MainActivity.VPN_CONSENT) }
+    @Suppress("DEPRECATION") main.post { activity.startActivityForResult(question, FoxholeActivity.VPN_CONSENT) }
   }
 
   /** Split tunneling's apps to pick from: those with an icon in the launcher (a TV's too), by name, but this one, each with its icon. */
@@ -272,7 +280,7 @@ object Phone {
     return null
   }
 
-  /** The app is on screen again (MainActivity): back from Settings with the leave to install, the update's installer. */
+  /** The app is on screen again (FoxholeActivity): back from Settings with the leave to install, the update's installer. */
   fun resumed(ctx: Context) {
     val apk = waitingApk ?: return
     if (!ctx.packageManager.canRequestPackageInstalls()) return
@@ -282,7 +290,7 @@ object Phone {
 
   /** Opens a screen of Settings (or another app's); false if there's no such screen. */
   private fun open(ctx: Context, intent: Intent): Boolean {
-    val activity = MainActivity.shown
+    val activity = FoxholeActivity.shown
     if (activity == null) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     return runCatching { (activity ?: ctx).startActivity(intent) }.isSuccess
   }

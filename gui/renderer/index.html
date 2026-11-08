@@ -3,9 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"> <!-- the phone apps (desktop windows ignore it); iOS zooms into a focused field otherwise -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'">
 <title>Foxhole</title>
 <link rel="stylesheet" href="style.css">
+<script src="fa.js" defer></script>
 <script src="app.js" defer></script>
 <script src="fox3d.js" defer></script>
 </head>
@@ -36,6 +37,8 @@
   <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2.5 9a14 14 0 0 1 19 0"/><path d="M5.6 12.4a9.5 9.5 0 0 1 12.8 0"/><path d="M8.7 15.8a5 5 0 0 1 6.6 0"/><path d="M12 19.5h.01"/></symbol>
   <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 2.6 3.8 5.6 3.8 9s-1.2 6.4-3.8 9c-2.6-2.6-3.8-5.6-3.8-9S9.4 5.6 12 3z"/></symbol>
   <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v4M15 3v4"/><path d="M6 7h12v3.5a6 6 0 0 1-12 0z"/><path d="M12 16.5V21"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></symbol>
+  <symbol id="i-telegram" viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></symbol>
   <symbol id="i-split" viewBox="0 0 24 24"><path d="M3 6h4.5l9 12H21"/><path d="M3 18h4.5l2.6-3.4"/><path d="M13.9 9.4 16.5 6H21"/><path d="M18 3l3 3-3 3"/><path d="M18 15l3 3-3 3"/></symbol>
   <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/></symbol>
   <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3.5"/><path d="m7.5 9.5 3 2.5-3 2.5M13 15h4"/></symbol>
@@ -46,6 +49,7 @@
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-apps" viewBox="0 0 24 24"><rect x="4" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.8"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.8"/><path d="m20 20-4.2-4.2"/></symbol>
+  <symbol id="i-calc" viewBox="0 0 24 24"><rect x="5" y="2.5" width="14" height="19" rx="2.8"/><path d="M8.5 6.5h7"/><path d="M8.5 11h.01M12 11h.01M15.5 11h.01M8.5 14.5h.01M12 14.5h.01M15.5 14.5h.01M8.5 18h.01M12 18h.01M15.5 18h.01"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10" rx="2.8"/><path d="M8 10.5V7.8a4 4 0 0 1 8 0v2.7"/><path d="M12 14.5v2"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.7-4.4L4 8"/><path d="M4 3.5V8h4.5"/><path d="M4 13a8 8 0 0 0 14.7 4.4L20 16"/><path d="M20 20.5V16h-4.5"/></symbol>
   <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-8.5 8.5"/><path d="M18 14v3.5a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 4 17.5v-9A2.5 2.5 0 0 1 6.5 6H10"/></symbol>
@@ -58,6 +62,7 @@
   <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
   <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path d="M14 4h3.5A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5H14"/><path d="m9.5 8-4 4 4 4M5.5 12H15"/></symbol>
+  <symbol id="i-share" viewBox="0 0 24 24"><circle cx="17.5" cy="5.5" r="2.8"/><circle cx="6.5" cy="12" r="2.8"/><circle cx="17.5" cy="18.5" r="2.8"/><path d="m9 10.6 6-3.6M9 13.4l6 3.6"/></symbol>
   <symbol id="i-tv" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="12.5" rx="2.5"/><path d="M8 21h8M9 2.5l3 2.5 3-2.5"/></symbol>
   <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4.5 7.5h3l1.8-2.5h5.4l1.8 2.5h3A1.5 1.5 0 0 1 21 9v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18V9a1.5 1.5 0 0 1 1.5-1.5z"/><circle cx="12" cy="13" r="3.6"/></symbol>
   <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></symbol>
@@ -79,13 +84,13 @@
   </div>
   <div class="grow"></div>
   <button class="pill update" id="update" hidden><svg class="i"><use href="#i-up"/></svg><span></span></button>
-  <div class="chip data" id="data-chip">
+  <button class="chip data" id="data-chip" aria-label="Data: what's left, and the sites that spend it">
     <svg class="gauge" viewBox="0 0 36 36" aria-hidden="true">
       <circle class="track" cx="18" cy="18" r="15"/>
       <circle class="bar" id="data-ring" cx="18" cy="18" r="15" transform="rotate(-90 18 18)"/>
     </svg>
     <div class="txt"><span class="k" id="data-k">Data</span><span class="v" id="data-v">—</span></div>
-  </div>
+  </button>
   <button class="chip account" id="account" title="Account and settings">
     <span class="avatar" id="acct-avatar">?</span><span class="name" id="acct-name"></span>
   </button>
@@ -127,18 +132,18 @@
       <button class="card link" id="c-loc"><span id="loc-flag"></span><div class="body"><div class="k">Location</div><div class="v"></div><div class="s">Tap to change</div></div><svg class="i chev"><use href="#i-chevron"/></svg></button>
       <div class="card" id="c-net"><span class="ico"><svg class="i"><use href="#i-wifi"/></svg></span><div class="body"><div class="k">Network</div><div class="v"></div><div class="s"></div></div></div>
       <div class="card" id="c-ip"><span class="ico"><svg class="i"><use href="#i-globe"/></svg></span><div class="body"><div class="k">Public IP</div><div class="v"></div><div class="s"></div></div></div>
-      <div class="card" id="c-proxy"><span class="ico"><svg class="i"><use href="#i-plug"/></svg></span><div class="body"><div class="k">Proxy</div><div class="v"></div><div class="s"></div></div><button class="mini copy" id="copy-proxy" title="Copy the address" hidden><svg class="i"><use href="#i-copy"/></svg></button></div>
+      <div class="card" id="c-proxy"><span class="ico"><svg class="i"><use href="#i-plug"/></svg></span><div class="body"><div class="k">Proxy</div><div class="v"></div><div class="s"></div></div><button class="mini" id="tg-proxy" title="Use in Telegram: it asks to use this proxy" hidden><svg class="i"><use href="#i-telegram"/></svg></button><button class="mini copy" id="copy-proxy" title="Copy the address" hidden><svg class="i"><use href="#i-copy"/></svg></button></div>
       <button class="card link" id="c-split"><span class="ico"><svg class="i"><use href="#i-split"/></svg></span><div class="body"><div class="k">Split tunneling</div><div class="v"></div><div class="s" id="split-card-s">Choose sites and apps that skip the VPN</div></div><svg class="i chev"><use href="#i-chevron"/></svg></button>
     </div>
   </section>
 
   <aside class="locations glass spot rise" id="sheet-locations" style="--d:2">
     <div class="loc-head"><h2>Locations</h2><span id="loc-count"></span><button class="icon-btn close" data-close title="Close"><svg class="i"><use href="#i-close"/></svg></button></div>
-    <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="search" placeholder="Search countries" spellcheck="false" autocomplete="off"></label>
+    <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="search" dir="auto" placeholder="Search countries" spellcheck="false" autocomplete="off"></label>
     <div class="list" id="list"></div>
     <div class="tip">
       <svg class="i"><use href="#i-spark"/></svg>
-      <p>Claude, ChatGPT, Gemini, Netflix, YouTube Music, Spotify and banks often block shared VPN IPs: pick a <b>paid</b> location for them. Foxhole made the paid servers <em>free</em> for you.</p>
+      <p data-t>Claude, ChatGPT, Gemini, Netflix, YouTube Music, Spotify and banks often block shared VPN IPs: pick a <b>paid</b> location for them. Foxhole made the paid servers <em>free</em> for you.</p>
     </div>
   </aside>
 </main>
@@ -153,24 +158,33 @@
         <div><div class="label">Everything else</div><div class="hint" id="split-default-hint"></div></div>
         <div class="seg small" id="split-default" data-v="0"><span class="thumb"></span><button data-via="vpn">VPN</button><button data-via="direct">Direct</button></div>
       </div>
+      <div class="smart" id="split-smart">
+        <div class="row-line">
+          <span class="flag code">IR</span>
+          <div><b>Iranian sites direct</b><span id="smart-hint"></span></div>
+          <button class="switch" id="smart" role="switch" aria-checked="false" aria-label="Iranian sites direct"></button>
+        </div>
+        <div class="row-line" id="probe-row">
+          <span class="dot"><svg class="i"><use href="#i-spark"/></svg></span>
+          <div><b>Save data</b><span id="probe-hint"></span></div>
+          <button class="switch" id="probe" role="switch" aria-checked="false" aria-label="Save data"></button>
+        </div>
+      </div>
     </div>
     <form class="group" id="split-add">
       <div class="label" id="split-add-label">Add a site or app</div>
       <div class="input-row">
         <input id="split-input" placeholder="bbc.co.uk, *.ir, 1.2.3.4 or an app: Telegram" spellcheck="false" autocomplete="off">
+        <button class="btn" type="button" id="split-check-btn" title="Is it blocked or sanctioned here? It's tried directly and through the VPN"><svg class="i"><use href="#i-search"/></svg><span>Check</span></button>
         <button class="btn primary" type="submit"><svg class="i"><use href="#i-plus"/></svg>Add</button>
       </div>
+      <div class="check" id="split-check" aria-live="polite" hidden></div>
       <div class="hint" id="split-new-hint"></div>
       <div class="note" id="split-note"></div>
       <div class="chips" id="split-recent"></div>
       <div class="chips" id="split-apps"></div>
       <div class="hint" id="split-apps-hint"></div>
     </form>
-    <div class="suggest" id="split-suggest" hidden>
-      <span class="flag code">IR</span>
-      <div><b>Send Iranian sites direct</b><span>Adds <code>*.ir</code>: they see your real IP, the rest goes through the VPN.</span></div>
-      <button class="btn" id="add-ir"><svg class="i"><use href="#i-plus"/></svg>Add *.ir</button>
-    </div>
     <div class="group">
       <div class="label"><span id="split-list-label">Sites and apps</span> <span class="count" id="split-count"></span></div>
       <div class="rules" id="split-rules"></div>
@@ -182,11 +196,21 @@
 <section class="sheet glass" id="sheet-settings" aria-label="Settings">
   <header><span class="badge"><svg class="i"><use href="#i-sliders"/></svg></span><div><h2>Settings</h2><p>The proxy, sharing it, and your account.</p></div><button class="icon-btn close" data-close><svg class="i"><use href="#i-close"/></svg></button></header>
   <div class="scroll">
+    <div class="group" id="lang-group">
+      <div class="label"><svg class="i"><use href="#i-globe"/></svg>Language</div>
+      <div class="seg small" id="lang" data-v="0"><span class="thumb"></span><button type="button" data-lang="en" lang="en">English</button><button type="button" data-lang="fa" lang="fa">فارسی</button></div>
+    </div>
     <div class="group desktop-only" id="autostart-group" hidden>
       <div class="row-line">
         <div><div class="label"><svg class="i"><use href="#i-power"/></svg>Start when you log in</div><div class="hint" id="autostart-hint"></div></div>
         <button class="switch" id="autostart" role="switch" aria-checked="false" aria-label="Start when you log in"></button>
       </div>
+    </div>
+    <div class="group not-tv" id="net-group">
+      <div class="label"><svg class="i"><use href="#i-wifi"/></svg>On this network</div>
+      <div class="hint" id="net-hint"></div>
+      <div class="seg small three" id="net-rule" data-v="0"><span class="thumb"></span><button type="button" data-net-rule="">Nothing</button><button type="button" data-net-rule="connect">Connect</button><button type="button" data-net-rule="pause">Pause</button></div>
+      <div class="chips" id="net-rules"></div>
     </div>
     <div class="group">
       <div class="row-line">
@@ -194,6 +218,30 @@
         <button class="switch" id="share" role="switch" aria-checked="false" aria-label="Share with devices on this network"></button>
       </div>
       <div class="share-box" id="share-box"></div>
+    </div>
+    <div class="group not-tv">
+      <div class="label"><svg class="i"><use href="#i-share"/></svg>Share Foxhole</div>
+      <div class="hint" id="give-hint"></div>
+      <div class="row-btns">
+        <button class="btn" type="button" id="give-open"><svg class="i"><use href="#i-share"/></svg>Share</button>
+        <button class="btn" type="button" id="take-open"><svg class="i"><use href="#i-plus"/></svg>Import settings</button>
+      </div>
+    </div>
+    <form class="group android-only not-tv" id="disguise-form">
+      <div class="label"><svg class="i"><use href="#i-calc"/></svg>Look like a calculator</div>
+      <div class="hint" id="disguise-hint"></div>
+      <div class="input-row" id="disguise-set">
+        <input id="disguise-code" inputmode="numeric" maxlength="12" placeholder="A code of 4 to 12 digits" autocomplete="off">
+        <button class="btn primary" type="submit">Disguise</button>
+      </div>
+      <button class="btn" type="button" id="disguise-off" hidden>Show Foxhole again</button>
+    </form>
+    <div class="group" id="dns-group" hidden>
+      <div class="row-line">
+        <div><div class="label"><svg class="i"><use href="#i-tv"/></svg>Smart DNS for a TV or console</div><div class="hint" id="dns-hint"></div></div>
+        <button class="switch" id="smart-dns" role="switch" aria-checked="false" aria-label="Smart DNS for a TV or console"></button>
+      </div>
+      <div class="share-box" id="dns-box"></div>
     </div>
     <form class="group" id="port-form">
       <div class="label">Proxy port</div>
@@ -215,7 +263,7 @@
     <div class="relay-zone">
       <form class="group" id="relay-form">
         <div class="label"><svg class="i"><use href="#i-shield"/></svg>VPN relay<span class="tier" id="relay-badge"></span></div>
-        <div class="hint">Where <code>vpn.mozilla.org</code> is blocked (e.g. Iran), your own free Google Apps Script reaches it for Foxhole. Once it's set up, <b>Relay</b>, first in Locations, can also carry your browsing when nothing else gets through.</div>
+        <div class="hint" data-t>Where <code>vpn.mozilla.org</code> is blocked (e.g. Iran), your own free Google Apps Script reaches it for Foxhole. Once it's set up, <b>Relay</b>, first in Locations, can also carry your browsing when nothing else gets through.</div>
         <div class="hint" id="relay-state"></div>
         <input id="relay-id" placeholder="Apps Script deployment ID" autocomplete="off" spellcheck="false">
         <div class="pw-wrap"><input id="relay-key" type="password" placeholder="Auth key" autocomplete="off"><button class="mini" type="button" id="relay-reveal" title="Show"><svg class="i"><use href="#i-eye"/></svg></button></div>
@@ -248,6 +296,22 @@
       <div class="grow"><b>Foxhole <span id="about-ver"></span></b><span id="about-update">Firefox's free VPN for your whole system. Unofficial, not affiliated with Mozilla.</span></div>
       <button class="btn" id="open-repo"><svg class="i"><use href="#i-github"/></svg>GitHub</button>
     </div>
+  </div>
+</section>
+
+<section class="sheet glass" id="sheet-data" aria-label="Data">
+  <header><span class="badge"><svg class="i"><use href="#i-chart"/></svg></span><div><h2>Data</h2><p>This month's VPN data, and the sites that spend it.</p></div><button class="icon-btn close" data-close><svg class="i"><use href="#i-close"/></svg></button></header>
+  <div class="scroll">
+    <div class="group">
+      <div class="data-left" id="data-left"></div>
+      <div class="hint" id="data-pace"></div>
+    </div>
+    <div class="group">
+      <div class="label">Through the VPN <span class="count" id="data-since"></span></div>
+      <div class="rules" id="data-sites"></div>
+      <div class="hint" id="data-direct"></div>
+    </div>
+    <p class="fine" id="data-fine">Counted by Foxhole on this computer, the sites' own data only. Your other devices on this account spend the same month's data.</p>
   </div>
 </section>
 
@@ -355,7 +419,7 @@
       <div><h2 id="apps-title">Pick an app</h2><p id="apps-count"></p></div>
       <button class="icon-btn close" id="apps-close" title="Close"><svg class="i"><use href="#i-close"/></svg></button>
     </header>
-    <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="apps-search" type="search" placeholder="Search apps" spellcheck="false" autocomplete="off" enterkeyhint="go" aria-controls="apps-list"></label>
+    <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="apps-search" dir="auto" type="search" placeholder="Search apps" spellcheck="false" autocomplete="off" enterkeyhint="go" aria-controls="apps-list"></label>
     <div class="app-list" id="apps-list" role="listbox" aria-labelledby="apps-title"></div>
     <p class="hint note" id="apps-hint"></p>
   </div>
@@ -389,7 +453,7 @@
 <div class="modal backdrop" id="unentitled-modal">
   <div class="box glass">
     <h2>Turn on Firefox's VPN</h2>
-    <p><b id="unentitled-email"></b> can't use the VPN yet. It's free, but each account turns it on once, in Firefox signed in to it: click the <b>VPN</b> button in Firefox's toolbar, then <b>Get started</b>.</p>
+    <p data-t><b id="unentitled-email"></b> can't use the VPN yet. It's free, but each account turns it on once, in Firefox signed in to it: click the <b>VPN</b> button in Firefox's toolbar, then <b>Get started</b>.</p>
     <img class="howto" src="img/firefox-vpn.png" alt="Firefox's VPN panel, opened from the VPN button at the toolbar's right, with its Get started button">
     <div class="actions">
       <button class="btn" type="button" id="unentitled-close">Close</button>
@@ -427,6 +491,32 @@
     <div class="note" id="tvsend-note"></div>
     <span class="link fine" id="tvsend-close">Close</span>
   </div>
+</div>
+
+<!-- Sharing Foxhole (share.ts): its page's QR code on the local network, with the app and the settings, or the settings' link -->
+<div class="modal backdrop" id="give-modal">
+  <div class="box glass">
+    <div class="lock-orb"><svg class="i"><use href="#i-share"/></svg></div>
+    <h2>Share Foxhole</h2>
+    <div id="give-body"></div>
+    <span class="link fine" id="give-close">Close</span>
+  </div>
+</div>
+
+<!-- Shared settings to import: a link pasted, or the one Android opened Foxhole with; what it changes, then Import -->
+<div class="modal backdrop" id="take-modal">
+  <form class="box glass" id="take-form">
+    <div class="lock-orb"><svg class="i"><use href="#i-share"/></svg></div>
+    <h2>Import settings</h2>
+    <p data-t>Paste a Foxhole settings link (<span class="mono">foxhole://settings…</span>), from someone you trust.</p>
+    <textarea id="take-link" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="The settings link"></textarea>
+    <ul class="give-what" id="take-what"></ul>
+    <div class="note" id="take-note"></div>
+    <div class="actions">
+      <button class="btn" type="button" id="take-close">Cancel</button>
+      <button class="btn primary" type="submit" id="take-go" disabled><svg class="i"><use href="#i-check"/></svg>Import</button>
+    </div>
+  </form>
 </div>
 
 <!-- The Wi-Fi's name, which the system shows only to apps allowed Location: why, before the system asks (app.js askWifi) -->

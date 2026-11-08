@@ -2,8 +2,11 @@
 // foxhole's own proxy, which global mode's tun2socks feeds as well, so both modes agree.
 import net from "node:net";
 import { domainToASCII } from "node:url";
+import { iranian, knownBlocked, refreshLists, sanctioned } from "./smart.js";
 
 export type Via = "vpn" | "direct";
+/** How a connection goes: as a rule or the default says, or (save data) direct if it opens that way, else the VPN. */
+export type Route = Via | "probe";
 
 export interface SplitRule {
   // a domain with its subdomains ("*.x" means the same as "x"), an IP address or CIDR, or an app ("app:Telegram"; on
@@ -35,7 +38,17 @@ export const appsOn = (s: Split = current()): boolean => s.rules.some((r) => r.m
 export interface Split {
   default: Via; // for every site no rule matches
   rules: SplitRule[];
+  // With the default "vpn": Iranian sites direct before it (smart.ts), and with `probe` (save data) every other site
+  // too where it opens that way
+  smart?: boolean;
+  probe?: boolean;
 }
+
+/** The key smart's own decisions are counted under in `hits`. */
+export const SMART = "smart:ir";
+
+/** Smart is in force: on, with the rest through the VPN (with everything direct it decides nothing). Pure. */
+export const smartOn = (s: Split): boolean => !!s.smart && s.default === "vpn";
 
 export const NO_SPLIT: Split = { default: "vpn", rules: [] };
 
@@ -126,7 +139,10 @@ export function useSplit(get: () => Split): void {
 export const currentSplit = (): Split => current();
 
 /** True when any connection could go direct, so the proxy needs each site's name. */
-export const splitOn = (s: Split = current()): boolean => s.rules.length > 0 || s.default === "direct";
+export const splitOn = (s: Split = current()): boolean => s.rules.length > 0 || s.default === "direct" || smartOn(s);
+
+/** True when sites are tried direct first (save data): each one's first bytes are needed to try it with. */
+export const probeOn = (s: Split = current()): boolean => smartOn(s) && !!s.probe;
 
 /** Connections each rule routed, by its match ("" for the default): the TUI shows them. */
 export const hits = new Map<string, number>();
@@ -134,11 +150,12 @@ export const hits = new Map<string, number>();
 /** Site names seen lately, the newest first: suggestions when adding a rule. */
 export const recentSites: string[] = [];
 
-/** VPN or direct for a connection (from `app`, when known), counted for the TUI. */
-export function route(name?: string, ip?: string, app?: string): Via {
+/** VPN, direct or (save data) "probe" for a connection (from `app`, when known), counted for the TUI. */
+export function route(name?: string, ip?: string, app?: string): Route {
   const s = current();
   const r = ruleFor(s, name, ip, app);
-  const key = r?.match ?? "";
+  const smart = !r && smartOn(s) ? smartRoute(s, name, ip) : null;
+  const key = r?.match ?? (smart === "direct" ? SMART : "");
   hits.set(key, (hits.get(key) ?? 0) + 1);
   if (name && !net.isIP(name)) {
     const n = name.toLowerCase();
@@ -147,21 +164,35 @@ export function route(name?: string, ip?: string, app?: string): Via {
     recentSites.unshift(n);
     recentSites.length = Math.min(recentSites.length, 50);
   }
-  return r?.via ?? s.default;
+  return r?.via ?? smart ?? s.default;
 }
 
-/** VPN or direct for `name`, uncounted: a DNS lookup isn't a connection. */
+/** Smart's way for a site no rule names (smartOn): Iranian direct; else, saving data, a try unless that's no use. */
+function smartRoute(s: Split, name?: string, ip?: string): Route {
+  void refreshLists(); // once a run, in the background: new lists every week
+  if (iranian(name, ip)) return "direct";
+  return s.probe && !sanctioned(name) && !knownBlocked(name) ? "probe" : "vpn";
+}
+
+/** route's way for `name`, uncounted: how it goes now, for the Split sheet's check. */
+export function wayOf(name: string): Route {
+  const s = current();
+  return ruleFor(s, name)?.via ?? (smartOn(s) ? smartRoute(s, name) : s.default);
+}
+
+/** VPN or direct for `name`, uncounted: a DNS lookup isn't a connection. A site tried first is looked up in the tunnel. */
 export function viaOf(name: string): Via {
   const s = current();
-  return ruleFor(s, name)?.via ?? s.default;
+  return ruleFor(s, name)?.via ?? (smartOn(s) && iranian(name) ? "direct" : s.default);
 }
 
-/** "3 sites direct", "1 site, 2 apps direct", "only 2 sites via VPN", or null when nothing is split: for the main screen. Pure. */
+/** "3 sites direct", "1 site, 2 apps direct", "only 2 sites via VPN", "Iranian sites direct", or null when nothing is split: for the main screen. Pure. */
 export function splitSummary(s: Split): string | null {
   const off = s.rules.filter((r) => r.via !== s.default);
   const apps = off.filter((r) => appOf(r.match) !== null).length;
   const count = (n: number, what: string) => (n ? `${n} ${what}${n === 1 ? "" : "s"}` : "");
   const sites = [count(off.length - apps, "site"), count(apps, "app")].filter(Boolean).join(", ");
+  if (smartOn(s)) return [s.probe ? "smart, saving data" : "Iranian sites direct", sites && `${sites} direct`].filter(Boolean).join(", ");
   if (s.default === "vpn") return sites ? `${sites} direct` : null;
   return sites ? `only ${sites} via VPN` : "all direct";
 }

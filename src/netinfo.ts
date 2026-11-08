@@ -139,10 +139,13 @@ export async function firewallHint(port: number): Promise<string[] | null> {
   return firewallCommands(firewalld, ufw, port);
 }
 
-/** This computer's interface on the local network, skipping VPN, container and loopback interfaces. */
+/**
+ * This computer's interface on the local network, skipping VPN, container and loopback interfaces, and a phone's mobile
+ * data (Qualcomm's rmnet, MediaTek's ccmni, …): on a phone sharing its hotspot, the hotspot's is the one others reach.
+ */
 function lanInterface(ifaces: ReturnType<typeof networkInterfaces> = networkInterfaces()): { name: string; address: string } | null {
   for (const [name, addrs] of Object.entries(ifaces)) {
-    if (/^(lo|docker|br-|veth|virbr|tun|tap|wg|utun|ppp|tailscale|zt|foxhole|vEthernet|Loopback)/i.test(name)) continue;
+    if (/^(lo|docker|br-|veth|virbr|tun|tap|wg|utun|ppp|tailscale|zt|foxhole|vEthernet|Loopback|(r_)?rmnet|ccmni|seth_|pdp|wwan|v4-|clat)/i.test(name)) continue;
     const a = addrs?.find((x) => x.family === "IPv4" && !x.internal && !x.address.startsWith("169.254."));
     if (a) return { name, address: a.address };
   }

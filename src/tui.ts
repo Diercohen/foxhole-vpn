@@ -2,22 +2,29 @@ import readline from "node:readline";
 import { PassThrough } from "node:stream";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { hostname } from "node:os";
 import { userHome, findAccount } from "./profile.js";
 import { fetchServerList, type Country } from "./serverlist.js";
 import { Connection, RELAY_CODE } from "./connection.js";
 import { GuardianError, GuardianBlocked, useRelay } from "./guardian.js";
 import { network, publicIp, lanIp, firewallHint } from "./netinfo.js";
-import { loadSettings, saveSettings, proxyHost, validPort, loginFor, type Settings } from "./settings.js";
+import { loadSettings, saveSettings, proxyHost, validPort, loginFor, telegramLink, onJoin, ruleable, withNetRule, type Settings } from "./settings.js";
+import { qrLines } from "./qr.js";
+import { SHARE_PORT, serveShare, shareData, shareLink, parseShared, sharedWhat, importPlan, type ShareServer } from "./share.js";
+import { traffic, runsOut, sizeOf } from "./traffic.js";
+import { knownBlocked, sanctioned, verdictOf, verdictText, tryText, wantOf } from "./smart.js";
 import { forgetToken } from "./tokenserver.js";
 import { FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox, saveAccounts, signOut, withFirefox, without, type Accounts } from "./accounts.js";
 import { fetchUsage, type Usage } from "./guardian.js";
-import { startProxy, onProxyWarning, type ProxyHandle } from "./proxy.js";
+import { startProxy, onProxyWarning, checkSite, netState, onNetState, type ProxyHandle } from "./proxy.js";
+import { startSmartDns, smartDnsHost, smartDnsProblem, type SmartDns } from "./smartdns.js";
 import { logLines, onLog } from "./log.js";
-import { useSplit, splitOn, splitSummary, parseRule, appOf, hits, recentSites, type Split, type Via } from "./split.js";
+import { useSplit, splitOn, splitSummary, parseRule, parseSite, appOf, wayOf, hits, recentSites, SMART, type Split, type Via } from "./split.js";
 import { listApps } from "./apps.js";
 import { helperFor, helperInstalled, helperReady } from "./helper.js";
 import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost, type Priv } from "./global.js";
-import { checkUpdate, canUpdate, runUpdate, restart, versionLines, latestVersion, fetchNotes, UPDATE_COMMAND, type Notes, type Block, type Span } from "./update.js";
+import { hot, onHot } from "./hot.js";
+import { checkUpdate, canUpdate, runUpdate, restart, versionLines, latestVersion, fetchNotes, UPDATE_COMMAND, VERSION, type Notes, type Block, type Span } from "./update.js";
 import { bold, dim, under, italic, strike, green, red, yellow, cyan, lit, unlit, purple, litPurple, flag, EMOJI, emoji, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
 import { fox, FOX_W, FOX_H, type Mood } from "./fox.js";
 import { loadRelay } from "./httprelay.js";
@@ -52,10 +59,15 @@ const SIDE_W = LEFT_W + 4 + 1 + TABLE_W + 1;
 
 /** The Settings popup's rows, in order. */
 const SETTINGS = [
+  { key: "netRule", label: "On this network" },
   { key: "share", label: "Share with devices on this network" },
   { key: "port", label: "Proxy port" },
   { key: "username", label: "Username" },
   { key: "password", label: "Password" },
+  { key: "telegram", label: "Use in Telegram" },
+  { key: "smartDns", label: "Smart DNS for a TV or console" },
+  { key: "give", label: "Share settings" },
+  { key: "take", label: "Import settings" },
   { key: "relaySetup", label: "Set up" }, // these last ones in the VPN relay box
   { key: "relayId", label: "Deployment ID" },
   { key: "relayKey", label: "Auth key" },
@@ -107,6 +119,12 @@ export function order(list: Country[]): Country[] {
   });
 }
 
+/** The hot config's notice (hot.ts) in yellow, wrapped to `width`: 3 lines at most. */
+const newsLines = (width: number): string[] => {
+  const n = hot()?.notice;
+  return n ? wrap(n, width).slice(0, 3).map(yellow) : [];
+};
+
 /** A block of the update's notes (update.ts Block) as lines, set as GitHub set it (bold, italic, code, links), wrapped to `width`. */
 function noteLines(b: Block, width: number): string[] {
   const set = (s: Span, w: string) => {
@@ -145,12 +163,19 @@ export class Tui {
   #port: number;
   #settings: Settings = loadSettings();
   #settingsOpen = false; // the Settings popup is open
+  #tgOpen = false; // over it, Telegram's: the proxy's QR code for a phone, and Telegram on this computer
+  // over it, Share settings' (share.ts): its page on the local network while it's open, and whether the relay's in it
+  #give: { server: Promise<ShareServer | null>; relay: boolean; error: string; note: string } | null = null;
+  #take: { text: string; what: string[] } | null = null; // a settings link pasted in Import settings, checked: enter imports it
+  #dataOpen = false; // the Data popup: this month's data by site (traffic.ts), to send the big ones direct
+  #dataSel = 0;
+  #dataNote = "";
   #wizard: RelayWizard | null = null; // the relay's setup, over Settings
   #blocked = false; // the popup saying vpn.mozilla.org is blocked here, with the relay's setup a key away
   #blockedTold = false; // said once already: a background check doesn't say it again, a connect does
   #relayIntro = false; // the popup saying what Relay is (its row, before one is set up), with the setup a key away
   #setSel = 0;
-  #edit: { key: "port" | "username" | "password" | "relayId" | "relayKey"; text: string } | null = null; // the setting being typed
+  #edit: { key: "port" | "username" | "password" | "relayId" | "relayKey" | "take"; text: string } | null = null; // the setting being typed
   readonly #login = (address: string | undefined) => loginFor(this.#settings, address); // live: a change applies to the next client
   #settingsNote = "";
   #fwHint: string[] | null = null; // commands that open the proxy's port in an active firewall (Linux)
@@ -163,6 +188,7 @@ export class Tui {
   #active: Country | null = null;
   #message = "";
   #busy = false;
+  #netPaused: Country | null = null; // the location a network's rule paused (Settings → On this network), connected again on leaving it
   #global: GlobalSession | null = null;
   #globalCountry: Country | null = null;
   #tun2socksPath: string | null = null;
@@ -180,6 +206,13 @@ export class Tui {
   #splitShown = 0; // how many rows are shown
   #splitEdit: string | null = null; // the site being typed
   #splitTab: { query: string; i: number } | null = null; // Tab going through recent sites
+  #smartDns: SmartDns | null = null; // the home's DNS server, while Settings has it on (smartdns.ts)
+  #smartDnsAt: string | null = null; // the address it listens on
+  #smartDnsError = "";
+  #smartDnsYields = false; // a Mac's whole-system mode has port 53 for its own DNS relay
+  #smartDnsTurn = Promise.resolve(); // one start or stop at a time
+  #checkLines: string[] | null = null; // the typed site's check (? while typing), shown for the help
+  #checked: { site: string; via: Via } | null = null; // its offer: enter adds the site that way
   #splitNote = "";
   #apps: string[] = []; // apps to Tab through while typing, and to pick from (apps.ts)
   #pick: { query: string; sel: number } | null = null; // the app picker (p in the Split popup): what's searched for, the row
@@ -220,6 +253,7 @@ export class Tui {
   /** Resolves "logout" when the user logged out, so the caller can forget the token. */
   async run(): Promise<"logout" | undefined> {
     useSplit(() => this.#settings.split); // live: a change applies to the next connection
+    this.#followSmartDns();
     // the Split popup's counts climb as sites load, and relay mode's on the data row
     let seen = -1;
     setInterval(() => {
@@ -228,12 +262,14 @@ export class Tui {
     }, 1000).unref();
     onRelayNotice((msg) => ((this.#message = yellow(msg)), this.#render()));
     onRelaySplit((split) => this.#saveSplit(split)); // a bot-check page's "Open it directly"
+    onHot(() => this.#render()); // a new notice, under the buttons
     setInterval(() => this.#animate(), 100).unref();
     onLog(() => this.#logsOpen && this.#renderSoon());
     onProxyWarning((msg) => {
       this.#message = red(`proxy: ${msg}`);
       this.#render();
     });
+    onNetState((said) => ((this.#message = said ? red(said) : green("the internet is back")), this.#render())); // cut off or offline while connected
     // A closed terminal fails every write and read (EIO): that must not crash the quit that
     // puts global mode's routes back (it comes as SIGHUP, with nothing left to draw on).
     process.stdout.on("error", () => {});
@@ -272,6 +308,7 @@ export class Tui {
 
   /** Re-reads the network and the public IP: the VPN exit's when connected, else the real one. */
   #refreshNet(): void {
+    if (this.#settings.smartDns) void this.#followSmartDns(); // to the network's new address
     const seq = ++this.#netSeq;
     const country = this.#global ? this.#globalCountry : this.#active;
     // Proxy mode: ask through the proxy. Global mode tunnels the direct check already.
@@ -281,8 +318,10 @@ export class Tui {
     this.#ip = undefined;
     void network().then((n) => {
       if (seq !== this.#netSeq) return;
+      const joined = this.#net !== undefined && n !== this.#net; // not the first look, at the start
       this.#net = n;
       this.#render();
+      if (joined) this.#joined(n);
     });
     // relay mode: HTTP, as HTTPS in global mode would meet foxhole's own certificate, which Node doesn't trust
     void publicIp(proxy, 3, country === RELAY_ROW).then((ip) => {
@@ -573,6 +612,8 @@ export class Tui {
           await this.#global.stop().catch(() => {});
         }
         await this.#proxy?.close();
+        this.#smartDns?.close();
+        void this.#give?.server.then((server) => server?.close());
         process.stdin.removeListener("data", onData);
         process.stdout.removeListener("resize", onResize);
         try {
@@ -622,6 +663,7 @@ export class Tui {
         if (this.#acctOpen) return this.#acctKey(s, key);
         if (this.#settingsOpen) return this.#settingsKey(s, key);
         if (this.#splitOpen) return this.#splitKey(s, key);
+        if (this.#dataOpen) return this.#dataKey(key);
         if (key.name === "q") return void quit();
         if (key.name === "l") return void ((this.#logsOpen = true), (this.#logsNote = ""), this.#render());
         if (this.#busy) return;
@@ -632,6 +674,7 @@ export class Tui {
           void caTrusted().then((ok) => ((this.#caOk = ok), this.#render()));
           return this.#render();
         }
+        if (key.name === "m") return void ((this.#dataOpen = true), (this.#dataSel = 0), (this.#dataNote = ""), this.#render());
         if (key.name === "t") {
           this.#splitOpen = true;
           this.#splitNote = "";
@@ -684,10 +727,10 @@ export class Tui {
    */
   #mouse(b: number, x: number, y: number, press: (name: string) => void): void {
     if (b === 64 || b === 65) return press(b === 64 ? "up" : "down");
-    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#restoring || this.#wizard || this.#blocked || this.#relayIntro || this.#trustAsk || this.#acctOpen || this.#lowOpen || this.#notesOpen) return;
+    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#dataOpen || this.#restoring || this.#wizard || this.#blocked || this.#relayIntro || this.#trustAsk || this.#acctOpen || this.#lowOpen || this.#notesOpen) return;
     const h = this.#hit;
     const fx = x - h.left, fy = y - h.top;
-    if (this.#settingsOpen) {
+    if (this.#settingsOpen && !this.#tgOpen && !this.#give) {
       const k = fy - h.setTop, i = k > RELAY_AT ? k - 1 : k; // the relay's box takes a line above its rows
       if (this.#edit || k === RELAY_AT || i < 0 || i >= SETTINGS.length || fx < h.setX || fx >= h.setX + h.setW) return;
       this.#setSel = i;
@@ -713,7 +756,7 @@ export class Tui {
       const a = h.buttons.lastIndexOf("[", fx), z = h.buttons.indexOf("]", fx);
       if (a < 0 || z < 0 || h.buttons.lastIndexOf("]", fx - 1) > a) return;
       const label = h.buttons.slice(a + 1, z);
-      press(label.startsWith("⏎") ? "return" : label.startsWith("Split") ? "t" : label[0].toLowerCase());
+      press(label.startsWith("⏎") ? "return" : label.startsWith("Split") ? "t" : label.startsWith("Data") ? "m" : label[0].toLowerCase());
     }
   }
 
@@ -752,10 +795,12 @@ export class Tui {
         forgetToken(); // so the next start shows the token window
         this.#message = red("token rejected (expired) — quit and run foxhole again to get a new one");
       } else {
-        this.#saysBlocked(err);
+        const blocked = this.#saysBlocked(err);
         // fetch's own message is just "fetch failed"; the network reason is in its cause
         const cause = (err as Error).cause as { code?: string; message?: string } | undefined;
         this.#message = red(`connect failed: ${(err as Error).message}${cause ? ` (${cause.code ?? cause.message})` : ""}`) + this.#relayHint();
+        const failed = this.#message;
+        if (!blocked) void netState().then((said) => said && this.#message === failed && ((this.#message = red(said)), this.#render())); // why, when it's the network (nothing said since)
       }
       if (this.#proxy && !this.#active) {
         await this.#proxy.close();
@@ -769,6 +814,7 @@ export class Tui {
   }
 
   async #disconnect(): Promise<void> {
+    this.#netPaused = null;
     if (this.#global) await this.#disableGlobal();
     if (!this.#proxy) return;
     await this.#proxy.close();
@@ -781,8 +827,23 @@ export class Tui {
     this.#render();
   }
 
+  /** The computer joined network `n`: its rule pauses or connects, or leaving the one that paused connects again (onJoin). */
+  #joined(n: string | null): void {
+    const what = onJoin(this.#settings.networks, n, { active: !!this.#active, paused: !!this.#netPaused });
+    if (!what || this.#busy) return;
+    this.#message = dim(`${n}: ${what === "pause" ? "paused here, on again when you leave it" : what === "resume" ? "left the network that paused it" : "connecting"} (Settings → On this network)`);
+    if (what === "pause") {
+      const was = this.#active;
+      return void this.#disconnect().then(() => (this.#netPaused = was));
+    }
+    const back = this.#netPaused;
+    if (back && this.#countries.includes(back)) this.#sel = this.#countries.indexOf(back);
+    void this.#connectInMode();
+  }
+
   /** Enter: while off, connects in the mode last picked; while on, moves to the selected country as it is. */
   async #connectInMode(): Promise<void> {
+    this.#netPaused = null; // the user's choice from now on
     const off = !this.#active;
     await this.#connect();
     if (!off || !this.#active || this.#settings.proxyOnly || this.#global) return;
@@ -908,6 +969,7 @@ export class Tui {
         this.#render();
         void session?.stop().finally(() => {
           this.#message = red(`tun2socks stopped (${code}) — global off`);
+          this.#smartDnsBack();
           this.#refreshNet();
           this.#render();
         });
@@ -917,6 +979,10 @@ export class Tui {
         if (event === "restored") this.#refreshNet();
         this.#render();
       });
+      if (process.platform === "darwin") {
+        this.#smartDnsYields = true; // its DNS relay is about to have port 53
+        await this.#followSmartDns();
+      }
       await session.start();
       this.#global = session;
       this.#globalCountry = this.#active;
@@ -930,6 +996,7 @@ export class Tui {
       this.#message = red(`global failed: ${(err as Error).message}`);
       await session?.stop().catch(() => {});
       this.#global = null;
+      this.#smartDnsBack();
     } finally {
       this.#busy = false;
       this.#refreshNet();
@@ -949,6 +1016,7 @@ export class Tui {
       await session.stop();
       this.#message = dim("global off (SOCKS proxy still on)");
     } finally {
+      this.#smartDnsBack();
       this.#busy = false;
       this.#refreshNet();
       this.#render();
@@ -964,13 +1032,29 @@ export class Tui {
 
   /** Keystrokes while the Settings popup is open. */
   #settingsKey(s: string, key: readline.Key): void {
+    if (this.#give) return this.#giveKey(s, key);
+    if (this.#take) {
+      if (key.name === "return") void this.#import(this.#take.text);
+      else if (key.name === "escape") this.#take = null;
+      return this.#render();
+    }
+    if (this.#tgOpen) {
+      // Telegram on this computer takes the proxy from its own link, and asks first
+      if (key.name === "return") openUrl(telegramLink("127.0.0.1", this.#settings.port, null, true));
+      else if (key.name === "escape") this.#tgOpen = false;
+      return this.#render();
+    }
     const e = this.#edit;
     if (e) {
       if (key.name === "escape") this.#edit = null;
       else if (key.name === "backspace") e.text = e.text.slice(0, -1);
       else if (key.name === "return") {
         if (e.key === "port" && !validPort(Number(e.text))) this.#settingsNote = red("A port is a number from 1 to 65535.");
-        else {
+        else if (e.key === "take") {
+          const shared = parseShared(e.text);
+          if (!shared) this.#settingsNote = red("That isn't a Foxhole settings link: copy all of it again.");
+          else (this.#take = { text: e.text, what: importPlan(this.#settings, shared).what }), (this.#edit = null);
+        } else {
           this.#edit = null;
           if (e.key === "relayId" || e.key === "relayKey") this.#relayCheck = null; // it was of the old ones
           return void this.#changeSetting(
@@ -987,6 +1071,8 @@ export class Tui {
         e.text = newAuthKey(); // a strong key, to paste into Code.gs's AUTH_KEY
       } else if (e.key === "port") {
         if (/^\d$/.test(s) && e.text.length < 5) e.text += s;
+      } else if (e.key === "take") {
+        if (s && /^[\x21-\x7e]+$/.test(s) && e.text.length + s.length <= 8192) e.text += s; // a link: no spaces, nothing else
       } else if (s && s.length === 1 && s >= " " && !key.ctrl && !key.meta && Buffer.byteLength(e.text + s) <= 255) {
         // HTTP Basic splits the username from the password at the first ":"
         if (e.key === "username" && s === ":") this.#settingsNote = red("A username can't contain “:”.");
@@ -1011,14 +1097,100 @@ export class Tui {
       case "space": {
         const item = SETTINGS[this.#setSel].key;
         if (item === "share") return void this.#changeSetting({ share: !this.#settings.share });
+        if (item === "netRule") {
+          if (!ruleable(this.#net)) return;
+          const next = { connect: "pause", pause: null } as const;
+          const rule = this.#settings.networks?.[this.#net];
+          return void this.#changeSetting({ networks: withNetRule(this.#settings.networks, this.#net, rule ? next[rule] : "connect") });
+        }
+        if (item === "smartDns") return void this.#changeSetting({ smartDns: !this.#settings.smartDns || undefined });
         if (item === "relaySetup") return void ((this.#wizard = new RelayWizard(() => this.#render())), this.#render());
         if (item === "relayCert") return void this.#trust(!this.#caOk);
         if (item === "relayCheck") return void this.#checkRelay();
+        if (item === "telegram") return void ((this.#tgOpen = true), this.#render());
+        if (item === "give") return this.#giveOpen();
         // typed in place: the username and relay id start from the current value, the rest from scratch
         this.#edit = { key: item, text: item === "username" ? this.#settings.username : item === "relayId" ? (this.#settings.relay?.deploymentId ?? "") : "" };
         this.#settingsNote = "";
       }
     }
+    this.#render();
+  }
+
+  /** Share settings opened: its page on the local network, for a phone's camera (share.ts), till it's closed. */
+  #giveOpen(): void {
+    const give = { server: Promise.resolve<ShareServer | null>(null), relay: false, error: "", note: "" };
+    give.server = serveShare({ name: hostname().replace(/\.local$/, ""), version: VERSION, apk: null }).catch((err) => {
+      give.error = err.code === "EADDRINUSE" ? `Another app here is using Foxhole's sharing port (${SHARE_PORT}).` : (err as Error).message;
+      this.#render();
+      return null;
+    });
+    this.#give = give;
+    this.#render();
+  }
+
+  /** Keystrokes in Share settings: r the relay in it or not, c copies the link, esc closes it (and its page). */
+  #giveKey(s: string, key: readline.Key): void {
+    const g = this.#give!;
+    const data = shareData(this.#settings, g.relay);
+    if (key.name === "escape") {
+      void g.server.then((server) => server?.close());
+      this.#give = null;
+    } else if (s === "r" && this.#settings.relay) (g.relay = !g.relay), (g.note = "");
+    else if (s === "c" && data) {
+      void copyText(shareLink(data)).then((ok) => {
+        g.note = ok ? green("✓ copied the link") : yellow(process.platform === "linux" ? "couldn't copy: install wl-clipboard or xclip" : "couldn't copy to the clipboard");
+        this.#render();
+      });
+    }
+    this.#render();
+  }
+
+  /** Share settings: the QR code of its page (the settings in it) if it fits, what it shares, and the link. */
+  #givePopup(frameHeight: number): string[] {
+    const g = this.#give!;
+    const data = shareData(this.#settings, g.relay);
+    const lan = lanIp();
+    let qr: string[] = [];
+    try {
+      if (data && lan) qr = qrLines(`http://${lan}:${SHARE_PORT}/#${data}`);
+    } catch {
+      /* too much for a QR code: the link alone */
+    }
+    const link = data ? shareLink(data) : "";
+    const linkLines = link.match(/.{1,62}/g) ?? [];
+    const center = (l: string) => " ".repeat(Math.max(0, Math.floor((62 - vw(l)) / 2))) + l;
+    const wide = qr.length > 0 && vw(qr[0]) <= 62;
+    const fits = wide && qr.length + linkLines.length + 14 <= frameHeight;
+    const body = g.error
+      ? wrap(g.error, 62).map(red)
+      : !data
+        ? [yellow("Nothing to share yet: no relay, and split tunneling as it comes.")]
+        : [
+            ...(fits
+              ? ["", ...qr.map(center), "", "Scan it with the phone's camera, on this Wi-Fi: it opens these", "settings in Foxhole."]
+              : [dim(!lan ? "Not on a network: no QR code to scan." : wide ? "A taller terminal shows its QR code." : "Its QR code is too big for a terminal: send the link instead.")]),
+            "",
+            ...sharedWhat(parseShared(data)!).map((w) => `${green("✓")} ${w}`),
+            ...(g.relay ? [yellow("Anyone with this code or link can use your relay.")] : []),
+            "",
+            dim("Elsewhere? Send this link, to paste in Foxhole's Import settings:"),
+            ...linkLines.map((l) => cyan(l)),
+          ];
+    const keys = [this.#settings.relay && (g.relay ? "r without your relay" : "r with your relay too"), data && "c copy the link", "esc back"].filter(Boolean).join(" · ");
+    return box([...body, "", ...(g.note ? [g.note] : []), dim(keys)], { title: bold(cyan("⇪ Share settings")), width: 66 });
+  }
+
+  /** Imports a settings link pasted (share.ts): its relay in place of this one, its sites with these rules, its switches on. */
+  async #import(text: string): Promise<void> {
+    const shared = parseShared(text);
+    this.#take = null;
+    if (!shared) return;
+    const plan = importPlan(this.#settings, shared);
+    if (plan.split) this.#saveSplit(plan.split);
+    if (plan.relay) await this.#changeSetting({ relay: plan.relay });
+    const saved = (!plan.split || this.#settings.split === plan.split) && (!plan.relay || this.#settings.relay === plan.relay);
+    this.#settingsNote = saved ? green("✓ Imported: foxhole uses them from now on.") : this.#settingsNote || red("Couldn't save the settings file.");
     this.#render();
   }
 
@@ -1065,7 +1237,9 @@ export class Tui {
     if (this.#pick) return this.#pickKey(s, key);
     if (e !== null) {
       if (key.name === "tab") return void (this.#nextRecent(), this.#render());
+      if (s === "?") return void this.#check(e);
       this.#splitTab = null;
+      if (key.name !== "return" && this.#checkLines) (this.#checkLines = this.#checked = null), (this.#splitNote = ""); // a check of what was typed before
       if (key.name === "escape") this.#splitEdit = null;
       else if (key.name === "return") return this.#addRule(e);
       else if (key.name === "backspace") this.#splitEdit = e.slice(0, -1);
@@ -1103,9 +1277,19 @@ export class Tui {
       case "backspace":
         if (sel >= 1 && sel <= n) return this.#saveSplit({ ...sp, rules: sp.rules.filter((_, i) => i !== sel - 1) });
         break;
-      case "i":
-        if (!n && sp.default === "vpn") return this.#addRule("*.ir");
+      case "i": {
+        // smart: Iranian sites direct (smart.ts); its save data stays as it was for the next time
+        if (sp.default !== "vpn") break;
+        const { smart, ...rest } = sp;
+        return this.#saveSplit(smart ? rest : { ...rest, smart: true });
+      }
+      case "s": {
+        if (sp.default !== "vpn" || !sp.smart) break;
+        const { probe, ...rest } = sp;
+        this.#saveSplit(probe ? rest : { ...rest, probe: true });
+        if (!probe) this.#splitNote = dim("Other sites are tried directly first: your provider sees which.");
         break;
+      }
       case "p":
         this.#pick = { query: "", sel: 0 };
         this.#splitNote = "";
@@ -1151,14 +1335,46 @@ export class Tui {
       return this.#render();
     }
     this.#splitEdit = null;
+    const via = this.#checked?.site === match ? this.#checked.via : null; // the check's offer
+    this.#checkLines = this.#checked = null;
     const i = sp.rules.findIndex((r) => r.match.toLowerCase() === match.toLowerCase());
+    if (i >= 0 && via && sp.rules[i].via !== via) {
+      this.#splitSel = i + 1;
+      return this.#saveSplit({ ...sp, rules: sp.rules.map((r, j) => (j === i ? { ...r, via } : r)) });
+    }
     if (i >= 0) {
       this.#splitSel = i + 1;
       this.#splitNote = yellow(`${match} is already in the list.`);
       return this.#render();
     }
     this.#splitSel = sp.rules.length + 1; // the new row
-    this.#saveSplit({ ...sp, rules: [...sp.rules, { match, via: flip(sp.default) }] });
+    this.#saveSplit({ ...sp, rules: [...sp.rules, { match, via: via ?? flip(sp.default) }] });
+  }
+
+  /** Blocked or sanctioned? The typed site tried directly and, connected, through the VPN (proxy.ts checkSite). */
+  async #check(text: string): Promise<void> {
+    const site = parseSite(text);
+    if (!site || !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(site)) {
+      this.#splitNote = red("Type a site's name to check it, like x.com.");
+      return this.#render();
+    }
+    const vpn = this.#active && this.#active !== RELAY_ROW;
+    this.#checkLines = [cyan(`Checking ${fit(site, 40)}…`), dim(vpn ? "Directly and through the VPN: a few seconds." : "Directly: a few seconds.")];
+    this.#splitNote = "";
+    this.#render();
+    const got = await checkSite(vpn ? this.#conn : null, site);
+    if (this.#splitEdit === null || parseSite(this.#splitEdit) !== site) return; // typed over meanwhile
+    const verdict = verdictOf(site, got.direct, got.vpn);
+    const [title, more] = verdictText(verdict, got.direct, got.vpn);
+    const want = wantOf(verdict);
+    const now = wayOf(site);
+    this.#checked = want && now !== "probe" && now !== want ? { site, via: want } : null;
+    const tone = verdict === "blocked" ? red : verdict === "sanctioned" || verdict === "partly" ? yellow : verdict === "open" ? green : bold;
+    const way = now === "probe" ? "Save data sends it the way it opens." : `It ${now === "vpn" ? "uses the VPN" : "goes direct"} now.`;
+    // three lines where typing's help has two: the smart line isn't there while typing
+    this.#checkLines = [tone(bold(title)), `directly: ${tryText(got.direct)} · VPN: ${tryText(got.vpn)}`, dim(more)];
+    this.#splitNote = this.#checked ? `${way} ${cyan(`enter: ${want === "vpn" ? "use the VPN for it" : "send it direct"}`)}` : dim(way);
+    this.#render();
   }
 
   /** Tab while typing: the next site seen lately, or app on this computer, that has what was typed, and isn't listed yet. */
@@ -1214,6 +1430,7 @@ export class Tui {
       // relay mode follows: through the new relay, or off without one
       if (this.#active === RELAY_ROW) void (loadRelay(next) ? this.#connect(RELAY_ROW) : this.#disconnect());
     }
+    if ("smartDns" in patch) this.#followSmartDns();
     if ("share" in patch || "port" in patch) {
       this.#host = proxyHost(next);
       this.#port = next.port;
@@ -1221,6 +1438,39 @@ export class Tui {
       await this.#restartProxy();
     }
     this.#render();
+  }
+
+  /** Whole-system mode is over: Smart DNS has port 53 again, if it stepped aside. */
+  #smartDnsBack(): void {
+    if (!this.#smartDnsYields) return;
+    this.#smartDnsYields = false;
+    void this.#followSmartDns();
+  }
+
+  /**
+   * Starts or stops Smart DNS as Settings has it, out of a Mac's whole-system mode's way, and moves it to the network's
+   * new address. Resolves once done. A port it can't have is said in Settings.
+   */
+  #followSmartDns(): Promise<void> {
+    return (this.#smartDnsTurn = this.#smartDnsTurn.then(async () => {
+      const want = !!this.#settings.smartDns && !this.#smartDnsYields;
+      const host = smartDnsHost(lanIp());
+      if (this.#smartDns && (!want || this.#smartDnsAt !== host)) {
+        this.#smartDns.close();
+        this.#smartDns = null;
+      }
+      if (!want) this.#smartDnsError = "";
+      if (!want || this.#smartDns) return this.#render();
+      try {
+        if (!host) throw new Error("This computer isn't on a local network.");
+        this.#smartDns = await startSmartDns(this.#conn, { host, self: () => lanIp(), vpn: () => !!this.#active && this.#active !== RELAY_ROW });
+        this.#smartDnsAt = host;
+        this.#smartDnsError = "";
+      } catch (err) {
+        this.#smartDnsError = smartDnsProblem(err as NodeJS.ErrnoException);
+      }
+      this.#render();
+    }));
   }
 
   /** Moves a running proxy to the current address and port. Not in global mode: tun2socks is tied to the old one. */
@@ -1270,11 +1520,17 @@ export class Tui {
           : masked
             ? "••••••••"
             : full.length > 22 ? full.slice(0, 11) + "…" + full.slice(-6) : full;
+    const netRule = ruleable(this.#net) ? s.networks?.[this.#net] : undefined;
     const values = [
+      !ruleable(this.#net) ? dim(this.#net ? "can't tell it apart" : "offline") : (netRule === "connect" ? green("connect") : netRule === "pause" ? yellow("pause") : dim("nothing")) + dim("  ⏎ change"),
       onOff(s.share),
       e?.key === "port" ? e.text + cursor : String(s.port),
       e?.key === "username" ? e.text + cursor : s.username || dim("optional"),
       e?.key === "password" ? "•".repeat(e.text.length) + cursor : s.password ? "••••••••" : dim("optional"),
+      dim("⏎ QR code for your phone"),
+      onOff(!!s.smartDns) + (s.smartDns && this.#smartDnsYields ? yellow("  paused") : s.smartDns && this.#smartDnsError ? red("  ✗ can't start") : ""),
+      dim("⏎ QR code and link"),
+      e?.key === "take" ? (e.text.length > 23 ? "…" + e.text.slice(-22) : e.text) + cursor : this.#take ? yellow("⏎ import") : dim("⏎ paste a link"),
       (s.relay ? green("on") : dim("off")) + dim("  ⏎ step by step"),
       relayVal(e?.key === "relayId" ? e.text : s.relay?.deploymentId ?? "", e?.key === "relayId", false),
       relayVal(e?.key === "relayKey" ? e.text : s.relay?.authKey ?? "", e?.key === "relayKey", true),
@@ -1311,6 +1567,35 @@ export class Tui {
         : [dim("One port serves SOCKS5 and HTTP. Default 1080.")],
       username: loginHelp("username"),
       password: loginHelp("password"),
+      telegram: [dim("Telegram through the VPN, other apps not: its proxy set by a"), dim("QR code on your phone, or in a click on this computer.")],
+      netRule: (!ruleable(this.#net)
+        ? wrap(this.#net ? "Foxhole can't see this Wi-Fi's name, so it can't tell it from another." : "Not on a network.", 62)
+        : wrap(`${this.#net}: ` + (netRule === "connect"
+          ? "Foxhole connects when this computer joins it, in the mode last picked."
+          : netRule === "pause"
+            ? "Foxhole disconnects when this computer joins it, and connects again as before when it leaves."
+            : "Foxhole can connect by itself when this computer joins it, or pause here (at home, where the router has a VPN) and connect again when it leaves."), 62)).map(dim),
+      smartDns: !s.smartDns
+        ? [dim("YouTube and blocked or sanctioned sites on a TV, a console or an"), dim("iPhone, with no app: only its DNS is set to this computer.")]
+        : this.#smartDnsYields
+          ? [yellow("On a Mac it works in Proxy only mode: Whole system mode needs"), yellow("port 53 for its own DNS.")]
+          : this.#smartDnsError
+          ? wrap(this.#smartDnsError, 62).map(red)
+          : [
+              `Set the TV's or console's DNS to ${bold(cyan(lanIp() ?? "this computer's IP"))}.`,
+              dim("Sites Iran blocks, and those refusing Iran, then use the VPN."),
+              this.#active ? dim("Only the web: not games or calls.") : yellow("Connect first: till then it gets the network's own answers."),
+            ],
+      give: [dim("Your relay and split tunneling, for the family's other devices:"), dim("a QR code for a phone to scan, or a link to send.")],
+      take: e?.key === "take"
+        ? [dim("Paste a Foxhole settings link · enter check · esc cancel")]
+        : this.#take
+          ? [
+              ...this.#take.what.map((w) => `${green("✓")} ${w}`),
+              ...(this.#take.what.some((w) => w.startsWith("VPN relay")) ? wrap("A relay sees what goes through it: take one only from someone you trust.", 62).map(yellow) : []),
+              dim("enter import · esc cancel"),
+            ]
+          : [dim("Settings someone shared with you: paste their link"), dim("(foxhole://settings…), see what it changes, then import it.")],
       relaySetup: s.relay ? relayOn : relayGuide,
       relayId: e?.key === "relayId"
         ? [dim("Paste your Apps Script deployment id · enter save · esc cancel")]
@@ -1332,6 +1617,82 @@ export class Tui {
       // the relay's rows in purple, its own part of foxhole (as in the desktop app), with whether it's on; 62: the popup's 66 less this box's sides
       ["", ...rows.slice(0, RELAY_AT), ...box(rows.slice(RELAY_AT), { width: 62, color: purple, title: `${bold(purple("VPN relay"))} ${s.relay ? lit(" ENABLED ") : unlit(" DISABLED ")}` }), "", ...help, this.#settingsNote, dim("↑↓ select · enter change · esc close")],
       { title: bold(cyan("⚙ Settings")), width: 66 },
+    );
+  }
+
+  /** Telegram's popup: the QR code that sets this proxy in a phone's Telegram (sharing on), and this computer's. */
+  #telegramPopup(frameHeight: number): string[] {
+    const s = this.#settings;
+    const lan = lanIp();
+    const link = s.share && lan ? telegramLink(lan, s.port, loginFor(s, lan)) : null;
+    const qr = link ? qrLines(link) : [];
+    const center = (l: string) => " ".repeat(Math.max(0, Math.floor((62 - vw(l)) / 2))) + l;
+    const phone = !link
+      ? [yellow("Turn on “Share with devices on this network” to use this"), yellow("proxy from your phone's Telegram.")]
+      : qr.length + 9 <= frameHeight
+        ? ["", ...qr.map(center), "", "Scan it with your phone's camera: Telegram asks to use this proxy."]
+        : [dim("A taller terminal shows its QR code. Or open this on the phone:"), ...wrap(link, 62).map((l) => cyan(l))];
+    return box([...phone, "", dim("enter Telegram on this computer · esc back")], { title: bold(cyan("✈ Telegram")), width: 66 });
+  }
+
+  /** The sites the Data popup lists: those that used the VPN this month, the biggest first. */
+  #dataRows() {
+    return traffic().sites.filter((x) => x.vpn > 0).slice(0, 12);
+  }
+
+  /** Keystrokes in the Data popup: ↑↓ pick a site, enter sends it direct (a rule), esc or m closes. */
+  #dataKey(key: readline.Key): void {
+    const rows = this.#dataRows();
+    const sp = this.#settings.split;
+    if (key.name === "escape" || key.name === "m") this.#dataOpen = false;
+    else if (key.name === "up" || key.name === "k") this.#dataSel = Math.max(0, this.#dataSel - 1);
+    else if (key.name === "down" || key.name === "j") this.#dataSel = Math.min(rows.length - 1, this.#dataSel + 1);
+    else if (key.name === "return" && rows[this.#dataSel]) {
+      const site = rows[this.#dataSel].site;
+      if (sp.default !== "vpn") this.#dataNote = yellow("Everything not listed goes direct already: see Split tunneling.");
+      else if (sp.rules.some((r) => r.match === site)) this.#dataNote = yellow(`${site} has a rule already: see Split tunneling.`);
+      // blocked here (save data found it so), or refusing Iran: direct, it would stop working
+      else if (knownBlocked(site) || sanctioned(site)) this.#dataNote = yellow(`${site} doesn't open direct here: it stays on the VPN.`);
+      else {
+        this.#saveSplit({ ...sp, rules: [...sp.rules, { match: site, via: "direct" }] });
+        this.#dataNote = green(`✓ ${site} goes direct now`) + dim(": new connections skip the VPN.");
+      }
+    }
+    this.#render();
+  }
+
+  /** The Data popup: the month's data left and when it runs out at its rate, then the sites that spent it. */
+  #dataPopup(frameHeight: number): string[] {
+    const u = this.#conn.usage;
+    const { since, sites } = traffic();
+    const rows = this.#dataRows();
+    const top = rows[0]?.vpn || 1;
+    const direct = sites.reduce((n, x) => n + x.direct, 0);
+    const out = u && !u.unlimited ? runsOut(u.max, u.remaining, u.reset) : null;
+    const left = !u ? dim("Data left: unknown till connected.") : u.unlimited ? green("Unlimited data.") : `${bold(gb(u.remaining))} of ${gb(u.max)} left${u.reset ? dim(` · resets ${shortDate(u.reset)}`) : ""}`;
+    const pace = out ? yellow(`At this rate it runs out around ${shortDate(out)}.`) : u && !u.unlimited && u.reset ? dim("At this rate it lasts till it resets.") : "";
+    const listed = new Set(this.#settings.split.rules.filter((r) => r.via === "direct").map((r) => r.match));
+    const room = Math.max(3, frameHeight - 16);
+    const lines = rows.slice(0, room).map((x, i) => {
+      const here = i === this.#dataSel;
+      const bar = "█".repeat(Math.max(1, Math.round((x.vpn / top) * 16)));
+      return `${here ? cyan("❯") : " "} ${(here ? bold : (t: string) => t)(fit(x.site, 28).padEnd(28))} ${cyan(bar.padEnd(16))} ${sizeOf(x.vpn).padStart(7)}${listed.has(x.site) ? green("  direct now") : ""}`;
+    });
+    return box(
+      [
+        "",
+        left,
+        pace,
+        "",
+        rows.length ? `Through the VPN since ${shortDate(new Date(since))}, on this computer:` : dim("Nothing through the VPN yet this month on this computer."),
+        ...lines,
+        "",
+        direct ? dim(`Direct: ${sizeOf(direct)}, none of it the VPN's data.`) : "",
+        this.#dataNote,
+        "",
+        dim("↑↓ select · enter send it direct · esc close"),
+      ],
+      { title: bold(cyan("◔ Data this month")), width: 66 },
     );
   }
 
@@ -1371,7 +1732,8 @@ export class Tui {
       ? dim("unknown")
       : u.unlimited
         ? green("unlimited")
-        : `${bold(gb(u.remaining).replace(" GB", ""))} of ${gb(u.max)} left` + (u.reset ? dim(` · resets ${shortDate(u.reset)}`) : ""); // as Firefox shows it
+        : `${bold(gb(u.remaining).replace(" GB", ""))} of ${gb(u.max)} left` + // as Firefox shows it; then when it runs out at this rate, if before it resets
+          (runsOut(u.max, u.remaining, u.reset) ? yellow(` · runs out ~${shortDate(runsOut(u.max, u.remaining, u.reset)!)}`) : u.reset ? dim(` · resets ${shortDate(u.reset)}`) : "");
     const gc = this.#globalCountry;
     const place = (c: Country) => (c === RELAY_ROW ? "Relay" : flagged(c.code, countryName(c.code, c.name)));
     const state = this.#global
@@ -1404,7 +1766,7 @@ export class Tui {
       ["status", status],
     ].map(([label, value]) => `${dim(label.padEnd(8))} ${fit(value, room4value)}`);
 
-    const version = versionLines(true);
+    const version = [...newsLines(Math.min(cols - 4, 76)), ...versionLines(true)];
     // A short window drops the tips, then the fox, before the buttons (they name the keys) get cut off.
     const foot = 4 + version.length; // a blank line, the buttons, a blank line, the version, the link
     const foxOn = wide ? rows - foot >= FOX_H + 9 : rows - 18 - version.length - (FOX_H + 1) >= 5;
@@ -1456,10 +1818,10 @@ export class Tui {
       : sel === RELAY_SETUP ? bold(purple("[⏎ What's Relay?]")) : bold((sel === RELAY_ROW ? purple : cyan)("[⏎ Connect]"));
     // Lit while any site is split off, like a switch that's on
     const splitBtn = splitOn(sp) ? ["[Split ", under("T"), "unnel]"].map(lit).join("") : dim(`[Split ${under("T")}unnel]`);
-    const buttons = [connectBtn, globalBtn, splitBtn, dim(key("S", "ettings")), dim(key("L", "ogs")), dim(key("Q", "uit"))].join("  ");
+    const buttons = [connectBtn, globalBtn, splitBtn, dim(key("S", "ettings")), dim("[Data]"), dim(key("L", "ogs")), dim(key("Q", "uit"))].join("  ");
     const table = (minWidth: number) => grid(["", "Code", "Tier", "Country"], body, { caption: bold("Locations"), captionRight: dim(range), minWidth });
     // Under a popup, its shape alone: the backdrop's colors go, which would leave half of each two-color cell
-    const covered = this.#restoring || this.#pwMode || this.#settingsOpen || this.#splitOpen || this.#logsOpen;
+    const covered = this.#restoring || this.#pwMode || this.#settingsOpen || this.#splitOpen || this.#logsOpen || this.#dataOpen;
     const foxLines = foxOn ? fox(this.#mood(), Date.now(), covered, relayOn) : [];
     let panels: string[];
     let foxX: number, foxY: number; // where the fox is in the frame
@@ -1521,9 +1883,11 @@ export class Tui {
           : this.#acctOpen
           ? this.#accountsPopup()
           : this.#settingsOpen
-          ? this.#settingsPopup()
+          ? this.#tgOpen ? this.#telegramPopup(frame.length) : this.#give ? this.#givePopup(frame.length) : this.#settingsPopup()
           : this.#splitOpen
             ? this.#splitPopup(frame.length)
+            : this.#dataOpen
+            ? this.#dataPopup(frame.length)
             : this.#logsOpen
             ? this.#logsPopup(width, frame.length)
             : null;
@@ -1611,7 +1975,7 @@ export class Tui {
     const sel = this.#splitSel;
     const help =
       e !== null
-        ? [dim("A site: bbc.co.uk (and its subdomains), *.co.uk, ir, 1.2.3.4"), dim("or an app: Telegram · tab: seen lately · enter add · esc cancel")]
+        ? (this.#checkLines ?? [dim("A site: bbc.co.uk (and subdomains), *.co.uk, ir · ? checks it"), dim("or an app: Telegram · tab: seen lately · enter add · esc cancel")])
         : sel === 0
           ? [sp.default === "vpn" ? "Sites and apps not listed use the VPN: list the ones to bypass it." : "Sites and apps not listed go direct: list those needing the VPN.", dim("enter switches it")]
           : sel <= sp.rules.length && appOf(sp.rules[sel - 1].match) !== null
@@ -1619,9 +1983,14 @@ export class Tui {
             : sel <= sp.rules.length
               ? [dim("A site covers its subdomains; the most specific rule wins."), dim("Direct sites see your real IP. Applies to new connections.")]
               : [dim(`A new site or app goes ${sp.default === "vpn" ? "direct" : "through the VPN"}: unlike the rest.`), ""];
-    const tip = !sp.rules.length && sp.default === "vpn" && e === null ? [`Tip: press ${under("i")} to send Iranian sites (*.ir) direct.`] : [];
+    const tick = (on: boolean | undefined, what: string, key: string) => `${on ? green("✓") : dim("○")} ${what} ${dim(`(${under(key)})`)}`;
+    // smart (smart.ts) only decides with everything else through the VPN
+    const smart =
+      sp.default === "vpn" && e === null
+        ? [`${tick(sp.smart, "Iranian sites direct", "i")}${sp.smart ? `   ${tick(sp.probe, "Save data", "s")}   ${took(SMART)}` : ""}`]
+        : [];
     return box(
-      ["", ...rows, "", ...help, ...tip, this.#splitNote, "", dim("↑↓ select · enter VPN/direct · a add · p apps · x del · esc close")],
+      ["", ...rows, "", ...smart, ...help, this.#splitNote, "", dim("↑↓ select · enter VPN/direct · a add · p apps · x del · esc close")],
       { title: bold(cyan("⇄ Split tunneling")), width: 66 },
     );
   }
