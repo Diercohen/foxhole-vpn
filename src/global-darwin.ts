@@ -12,8 +12,8 @@ import { currentSplit } from "./split.js";
 
 const exec = promisify(execFile);
 
-const UTUN = "utun123";
-const TUN_ADDR = "198.18.0.1";
+export const UTUN = "utun123";
+export const TUN_ADDR = "198.18.0.1";
 const DNS_MARK = "foxhole-dns"; // tags the root DNS relay's command line for pkill
 
 export interface MacRoute {
@@ -108,7 +108,7 @@ export function macConflictingVpn(netstat: string, orig: MacRoute): boolean {
   return isVpnDev(orig.dev) || /^(0|128\.0)\/1\s/m.test(netstat);
 }
 
-async function waitFor(what: string, probe: () => Promise<unknown>, ms = 5000): Promise<void> {
+export async function waitFor(what: string, probe: () => Promise<unknown>, ms = 5000): Promise<void> {
   const end = Date.now() + ms;
   for (;;) {
     try {

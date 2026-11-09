@@ -22,6 +22,7 @@ import { loadSettings, saveSettings, proxyHost, validPort, loginFor, telegramLin
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenProblem } from "./dist/tokenserver.js";
 import { startProxy, onProxyWarning, checkSite, netState, onNetState } from "./dist/proxy.js";
 import { startSmartDns, smartDnsHost, smartDnsProblem } from "./dist/smartdns.js";
+import { startGateway } from "./dist/gateway.js";
 import { log, logLines, onLog } from "./dist/log.js";
 import { useSplit, splitSummary, parseRule, parseSite, appOf, wayOf, hits, recentSites, SMART } from "./dist/split.js";
 import { traffic, runsOut, sizeOf } from "./dist/traffic.js";
@@ -44,6 +45,8 @@ const RELAY_ROW = { code: RELAY_CODE, name: "Relay", locked: false, available: t
 const NO_RELAY = process.platform === "android" || process.platform === "ios";
 // Smart DNS (smartdns.ts) needs ports 53, 443 and 80, which a phone's apps can't have
 const SMART_DNS = ["darwin", "win32", "linux"].includes(process.platform);
+// ponytail: a Mac's until it's proven on a phone. Linux needs net.ipv4.ip_forward and FORWARD rules (ufw, Docker), Windows netsh forwarding and WIN_ALLOWED.
+const GATEWAY = process.platform === "darwin";
 /** Split tunneling by app: a computer's proxy finds each connection's app (apps.ts), Android's VPN leaves apps out or takes only some; iOS can't tell apps apart. */
 const APPS = process.platform !== "ios";
 
@@ -101,6 +104,10 @@ export class Controller extends EventEmitter {
   #smartDnsError = null;
   #smartDnsYields = false; // a Mac's whole-system mode has port 53 for its own DNS relay
   #smartDnsTurn = Promise.resolve(); // one start or stop at a time
+  #gateway = null; // what stops the router for a Smart DNS device's Telegram (gateway.ts), while it runs
+  #gatewayPort = null; // the proxy port it was started with
+  #gatewayError = null;
+  #routerNeedsHelper = false; // Smart DNS is on, but the network helper it needs for the router isn't set up yet
   #settingsNote = null;
   #splitNote = null;
   #apps = []; // split tunneling's apps to pick from: [{ id, name }] (on Android the id is its package)
@@ -853,19 +860,29 @@ export class Controller extends EventEmitter {
     // as whole-system mode starts, unless Foxhole runs as Administrator.
     if (this.#android || process.platform === "win32" || (await isPrivileged())) return this.#enableGlobal(null);
     if (await helperReady()) return this.#enableGlobal(""); // the network helper needs no password (helper.ts)
+    return this.#sudoFor("global", "confirm with Touch ID to go global…", (password) => this.#enableGlobal(password));
+  }
+
+  /** The administrator's say-so: Touch ID where sudo takes it, then `go`; otherwise the password popup (submitPassword). */
+  async #sudoFor(what, touchText, go) {
     let note = null;
     if (sudoUsesTouchId()) {
       // sudo takes the fingerprint here, so a typed password would go unused
       this.#busy = true;
-      this.#say("warn", "confirm with Touch ID to go global…");
+      this.#say("warn", touchText);
       const ok = await touchIdSudo();
       this.#busy = false;
-      if (ok) return this.#enableGlobal("");
+      if (ok) return go("");
       this.#message = null;
       note = "No Touch ID: type your password instead."; // cancelled, or no sensor (lid closed)
     }
-    this.#pw = { error: note, checking: false, for: "global" };
+    this.#pw = { error: note, checking: false, for: what };
     this.#changed();
+  }
+
+  /** tun2socks's path: a download goes through the VPN, its progress in the status line. */
+  async #tun2socks() {
+    return (this.#tun2socksPath ??= await ensureTun2socks({ proxy: this.via(), say: (msg) => this.#say("info", msg) }));
   }
 
   cancelPassword() {
@@ -886,6 +903,7 @@ export class Controller extends EventEmitter {
     }
     this.#pw = null;
     if (what === "global") void this.#enableGlobal(password);
+    else if (what === "router") void this.#allowRouter(password);
     else void this.#trust(what === "trust", sudoPriv(password));
   }
 
@@ -901,8 +919,7 @@ export class Controller extends EventEmitter {
         session = this.#android.globalSession({ server, proxyHost: this.#host, proxyPort: this.#proxy.port });
       } else {
         this.#say("info", "preparing tun2socks…");
-        // a download goes through the VPN, its progress in the status line
-        const tun2socks = async () => (this.#tun2socksPath ??= await ensureTun2socks({ proxy: this.via(), say: (msg) => this.#say("info", msg) }));
+        const tun2socks = () => this.#tun2socks();
         if (process.platform === "win32") this.#say("info", "going global… if Windows asks, allow PowerShell (Foxhole's network helper)");
         const helper = await helperFor(password, tun2socks);
         if (!helper) await tun2socks();
@@ -1012,14 +1029,29 @@ export class Controller extends EventEmitter {
   }
 
   /** Smart DNS for the home's TV, console or iPhone: blocked and sanctioned sites through the VPN, set as their DNS server. */
-  setSmartDns(on) {
-    if (SMART_DNS) return this.#changeSetting({ smartDns: on === true || undefined });
+  async setSmartDns(on) {
+    if (!SMART_DNS) return;
+    await this.#changeSetting({ smartDns: on === true || undefined });
+    await this.#smartDnsTurn;
+    if (on === true && this.#routerNeedsHelper) return this.allowRouter();
   }
 
-  /**
-   * Starts or stops Smart DNS as Settings has it, out of a Mac's whole-system mode's way, and moves it to the network's
-   * new address. Resolves once done. A port it can't have is said in Settings.
-   */
+  /** A Smart DNS device's Telegram, with this computer as its router (gateway.ts): the network helper does it, set up once with this. */
+  allowRouter() {
+    if (!GATEWAY || this.#busy) return;
+    return this.#sudoFor("router", "confirm with Touch ID to let devices use this computer as a router…", (password) => this.#allowRouter(password));
+  }
+
+  async #allowRouter(password) {
+    this.#busy = true;
+    this.#say("info", "setting up the network helper…");
+    const helper = await helperFor(password, () => this.#tun2socks());
+    this.#busy = false;
+    if (!helper) return this.#say("error", "Couldn't set up the network helper: connect first, then try again.");
+    this.#message = null;
+    await this.#followSmartDns();
+  }
+
   /** Whole-system mode is over: Smart DNS has port 53 again, if it stepped aside. */
   #smartDnsBack() {
     if (!this.#smartDnsYields) return;
@@ -1027,6 +1059,10 @@ export class Controller extends EventEmitter {
     void this.#followSmartDns();
   }
 
+  /**
+   * Starts or stops Smart DNS as Settings has it, out of a Mac's whole-system mode's way, and moves it to the network's
+   * new address, and the device's router with it. Resolves once done. A port it can't have is said in Settings.
+   */
   #followSmartDns() {
     return (this.#smartDnsTurn = this.#smartDnsTurn.then(async () => {
       const want = SMART_DNS && !!this.#settings.smartDns && !!this.#conn && !this.#smartDnsYields;
@@ -1036,17 +1072,49 @@ export class Controller extends EventEmitter {
         this.#smartDns = null;
       }
       if (!want) this.#smartDnsError = null;
-      if (!want || this.#smartDns) return this.#changed();
-      try {
-        if (!host) throw new Error("This computer isn't on a local network.");
-        this.#smartDns = await startSmartDns(this.#conn, { host, self: () => lanIp(), vpn: () => !!this.#active && this.#active !== RELAY_ROW });
-        this.#smartDnsAt = host;
-        this.#smartDnsError = null;
-      } catch (err) {
-        this.#smartDnsError = smartDnsProblem(err);
+      if (want && !this.#smartDns) {
+        try {
+          if (!host) throw new Error("This computer isn't on a local network.");
+          this.#smartDns = await startSmartDns(this.#conn, { host, self: () => lanIp(), vpn: () => !!this.#active && this.#active !== RELAY_ROW });
+          this.#smartDnsAt = host;
+          this.#smartDnsError = null;
+        } catch (err) {
+          this.#smartDnsError = smartDnsProblem(err);
+        }
       }
+      // only with port 53 held: then no whole-system session, here or in another Foxhole, has the tun
+      await this.#followGateway(GATEWAY && want && !!this.#smartDns);
       this.#changed();
     }));
+  }
+
+  /** The router runs even with the VPN off: the device gets all its Internet through it. */
+  async #followGateway(want) {
+    if (this.#gateway && (!want || this.#gatewayPort !== this.#port)) {
+      await this.#gateway().catch(() => {});
+      this.#gateway = null;
+    }
+    if (!want) (this.#gatewayError = null), (this.#routerNeedsHelper = false);
+    if (!want || this.#gateway) return;
+    const proxyPort = this.#port;
+    try {
+      this.#routerNeedsHelper = !(await helperReady());
+      if (this.#routerNeedsHelper) return; // Settings asks
+      this.#gateway = await startGateway({
+        ...(await helperFor("", () => this.#tun2socks())),
+        proxyPort,
+        onExit: (code) => {
+          const stop = this.#gateway;
+          this.#gateway = null;
+          this.#gatewayError = `tun2socks stopped (${code})`;
+          void stop?.().catch(() => {}).finally(() => this.#changed());
+        },
+      });
+      this.#gatewayPort = proxyPort;
+      this.#gatewayError = null;
+    } catch (err) {
+      this.#gatewayError = err.message;
+    }
   }
 
   setPort(port) {
@@ -1104,13 +1172,13 @@ export class Controller extends EventEmitter {
       useRelay(this.#relay()); // takes effect at once, no restart
       this.#followRelay();
     }
-    if ("smartDns" in patch) this.#followSmartDns();
     if ("share" in patch || "port" in patch) {
       this.#host = proxyHost(next);
       this.#port = next.port;
       this.#checkFirewall();
       await this.#restartProxy();
     }
+    if ("smartDns" in patch || "port" in patch) this.#followSmartDns(); // the router follows the proxy's port
     this.#changed();
     return true;
   }
@@ -1419,6 +1487,7 @@ export class Controller extends EventEmitter {
       this.#changed();
       await this.#global.stop().catch(() => {});
     }
+    await this.#gateway?.().catch(() => {});
     await this.#proxy?.close();
     this.#receiver?.close();
     this.#smartDns?.close();
@@ -1499,6 +1568,7 @@ export class Controller extends EventEmitter {
       lanIp: lanIp(),
       shareTg: this.#telegram(),
       smartDns: SMART_DNS ? { on: !!this.#smartDns, error: this.#smartDnsError, yields: this.#smartDnsYields } : null, // null: not on a phone
+      smartRouter: GATEWAY ? { on: !!this.#gateway, error: this.#gatewayError, needsHelper: this.#routerNeedsHelper } : null,
       fwHint: this.#fwHint,
       settingsNote: this.#settingsNote,
       split: {

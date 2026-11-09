@@ -78,7 +78,7 @@ function localize(s) {
     c.name = countryName(c);
     if (COUNTRIES.get(c.en) !== c.name) COUNTRIES.set(c.en, c.name), trDone.clear(); // the texts with it, anew
   }
-  for (const k of ["message", "splitNote", "settingsNote", "notice", "pw", "auth", "tvWait", "share", "update", "smartDns"])
+  for (const k of ["message", "splitNote", "settingsNote", "notice", "pw", "auth", "tvWait", "share", "update", "smartDns", "smartRouter"])
     if (s[k]) for (const f of ["text", "title", "error"]) if (typeof s[k][f] === "string") s[k][f] = tr(s[k][f]);
   for (const k of ["ipNote", "listError", "splitSummary"]) s[k] = tr(s[k]);
   if (s.share?.what) s.share.what = s.share.what.map(tr);
@@ -748,7 +748,7 @@ const tgShare = () => S.shareTg ? t`<div class="tg-share"><svg class="tg-qr" vie
            <div><b>${icon("telegram")}Telegram on ${PHONE ? t`another phone` : t`your phone`}</b><span>Scan this with its camera: Telegram asks to use this proxy, with its sign-in.</span><button class="mini" data-copy="${esc(S.shareTg.link)}" title="Copy the link">${icon("copy")}</button></div></div>` : "";
 
 function renderSettings() {
-  section("settings", [S.settings.share, S.settings.port, S.settings.username, S.settings.password, S.settings.relay, S.lanIp, S.fwHint, S.caOk, S.shareTg?.link, S.settings.smartDns, S.smartDns, !!S.active], () => {
+  section("settings", [S.settings.share, S.settings.port, S.settings.username, S.settings.password, S.settings.relay, S.lanIp, S.fwHint, S.caOk, S.shareTg?.link, S.settings.smartDns, S.smartDns, S.smartRouter, !!S.active], () => {
     const s = S.settings;
     const share = $("#share");
     share.classList.toggle("on", s.share);
@@ -790,6 +790,24 @@ function renderSettings() {
   note.textContent = S.settingsNote?.text ?? "";
 }
 
+/** The Telegram step, on a Mac: its app has no proxy set in it, as the device has this computer as its router (gateway.ts). */
+function routerStep(box) {
+  const r = S.smartRouter;
+  if (!r) return "";
+  if (r.needsHelper) return t`<li><div><b>For Telegram, which doesn't use DNS:</b> this computer has to be the device's router, and that needs your permission once. <button class="btn" type="button" data-act="allowRouter">Allow</button></div></li>`;
+  if (r.error) return t`<li><div><b>For Telegram, which doesn't use DNS:</b> this computer couldn't become the device's router. <div class="warn-line">${esc(r.error)}</div></div></li>`;
+  return t`<li><div><b>For Telegram, which doesn't use DNS:</b> in the same Wi-Fi network's details, set <b>Configure IP</b> to Manual, keep the address and subnet mask it shows, and set <b>Router</b> to ${box} <div class="warn-line">All its Internet then goes through this computer. While this computer is off or asleep it has none: set Configure IP back to Automatic.</div></div></li>`;
+}
+
+/** What to do for a device on Smart DNS, step by step. */
+function dnsSteps(ip) {
+  const box = t`<div class="addr"><span class="mono">${esc(ip)}</span><button class="mini" data-copy="${esc(ip)}" title="Copy">${icon("copy")}</button></div>`;
+  return `<ol class="steps">${S.active ? "" : t`<li><div><b>Connect Foxhole</b> here. Until you do, blocked sites and Telegram won't open on the device.</div></li>`}`
+    + t`<li><div><b>Set the device's DNS.</b> In its network settings, set DNS by hand to ${box}</div></li>`
+    + t`<li><div><b>iPhone only: let its apps through.</b> Turn them on in <b>Settings → Privacy & Security → Local Network</b>. Only Safari works without this.</div></li>`
+    + routerStep(box) + "</ol>";
+}
+
 /** Smart DNS (controller.js, smartdns.ts): what to set on the TV, or why it couldn't start. Not on a phone. */
 function drawSmartDns() {
   $("#dns-group").hidden = !S.smartDns;
@@ -806,12 +824,9 @@ function drawSmartDns() {
   $("#dns-box").innerHTML = !on ? ""
     : S.smartDns.yields ? t`<div class="warn-line">On a Mac it works in Proxy only mode: Whole system mode needs port 53 for its own DNS.</div>`
     : err ? `<div class="warn-line">${esc(cmd ? err.slice(0, err.indexOf(cmd)) : err)}</div>${cmd ? t`<div class="cmd"><span class="mono">${esc(cmd)}</span><button class="mini" data-copy="${esc(cmd)}" title="Copy">${icon("copy")}</button></div><div class="hint">Then turn this off and on again.</div>` : ""}`
-    : t`<div class="hint">On the device, in its network settings, set DNS by hand to</div>
-       <div class="addr"><span class="mono">${esc(ip)}</span><button class="mini" data-copy="${esc(ip)}" title="Copy">${icon("copy")}</button></div>
-       ${S.active ? "" : t`<div class="warn-line">Not connected: until you connect, it gets the network's own answers, blocked sites included.</div>`}
-       <div class="hint">Only the web and WhatsApp's messages go through, not games or calls. An iPhone's Private Relay, and a browser's secure DNS, skip it. When this ${DEVICE} is off, set the device's DNS back to automatic.</div>`
-      + t`<div class="hint">On an iPhone, apps other than Safari need permission: turn them on in <b>Settings → Privacy & Security → Local Network</b>.</div>`
-      + (tgShare() || t`<div class="hint">Telegram doesn't use DNS: turn on Share with devices on this network for its QR code.</div>`);
+    : dnsSteps(ip)
+      + t`<div class="hint">Only the web and WhatsApp's messages go through, not games or calls. An iPhone's Private Relay, and a browser's secure DNS, skip it. When this ${DEVICE} is off, set the device's DNS back to automatic.</div>`
+      + (S.smartRouter || S.shareTg ? "" : t`<div class="hint">Telegram doesn't use DNS: turn on Share with devices on this network for its QR code.</div>`);
 }
 
 // ── The administrator password ─────────────────────────────────────────────────────────────
@@ -827,8 +842,8 @@ function renderPassword() {
     const input = $("#pw-input");
     input.disabled = S.pw.checking;
     const f = S.pw.for ?? "global"; // what it's for: whole-system mode, or relay mode's certificate
-    $("#pw-why").innerHTML = t`${f === "global" ? t`Whole-system mode routes all of this computer's traffic through the VPN, which needs` : t`${f === "trust" ? t`Trusting` : t`Removing`} Foxhole's certificate for the system and its browsers needs`} administrator rights. Enter your <b>login password</b> (used by sudo)${f === "global" && S.helper === false ? t`, once: Foxhole sets up a small network helper with it, so it won't ask again` : ""}:`;
-    $("#pw-ok").innerHTML = S.pw.checking ? t`<span class="spin"></span><span>Checking…</span>` : `<span>${{ global: t`Go whole system`, trust: t`Trust it`, untrust: t`Remove it` }[f]}</span>`;
+    $("#pw-why").innerHTML = t`${f === "global" ? t`Whole-system mode routes all of this computer's traffic through the VPN, which needs` : f === "router" ? t`Making this computer a device's router needs` : t`${f === "trust" ? t`Trusting` : t`Removing`} Foxhole's certificate for the system and its browsers needs`} administrator rights. Enter your <b>login password</b> (used by sudo)${(f === "global" || f === "router") && S.helper === false ? t`, once: Foxhole sets up a small network helper with it, so it won't ask again` : ""}:`;
+    $("#pw-ok").innerHTML = S.pw.checking ? t`<span class="spin"></span><span>Checking…</span>` : `<span>${{ global: t`Go whole system`, router: t`Allow`, trust: t`Trust it`, untrust: t`Remove it` }[f]}</span>`;
     $("#pw-ok").disabled = S.pw.checking;
     const note = $("#pw-note");
     note.dataset.tone = "error";

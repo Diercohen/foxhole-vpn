@@ -12,7 +12,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { PRIVATE_CIDRS, sudoPriv, type Priv } from "./global.js";
+import { PRIVATE_CIDRS, TELEGRAM_CIDRS, sudoPriv, type Priv } from "./global.js";
 import { DNS_FLUSH, NRPT_ADD, isWindowsAdmin, planStaleCleanup, ps, taskExists, taskPriv, uacPriv, windowsSid } from "./global-win32.js";
 import { log, logStream } from "./log.js";
 
@@ -25,7 +25,7 @@ const WIN_NET = join(WIN_DIR, "net.ps1");
 const WIN_T2S = join(WIN_DIR, "tun2socks.exe");
 const IS_WIN = process.platform === "win32";
 // Each system's script's version, raised when it changes: the next whole-system mode there asks once, to put the new one in
-const VERSIONS: Record<string, string> = { linux: "2", darwin: "2", win32: "1" };
+const VERSIONS: Record<string, string> = { linux: "2", darwin: "3", win32: "1" };
 const VERSION = VERSIONS[process.platform] ?? "1";
 const SUPPORTED = process.platform === "linux" || process.platform === "darwin"; // with sudo
 
@@ -156,6 +156,9 @@ case "$*" in
   "killall -HUP mDNSResponder" | \\
   "ipconfig setverbose 1" | \\
   "ifconfig utun123 198.18.0.1 198.18.0.1 up" | \\
+  "sysctl -w net.inet.ip.forwarding=1" | \\
+  "sysctl -w net.inet.ip.forwarding=0" | \\
+  ${TELEGRAM_CIDRS.flatMap((c) => [`"route -n add -net ${c} 198.18.0.1"`, `"route -n delete -net ${c}"`]).join(" | \\\n  ")} | \\
   "route -n add -net 0.0.0.0/1 198.18.0.1" | \\
   "route -n add -net 128.0.0.0/1 198.18.0.1" | \\
   "route -n delete -net 0.0.0.0/1" | \\

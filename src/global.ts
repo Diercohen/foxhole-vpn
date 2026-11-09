@@ -35,6 +35,10 @@ const RESOLV = "/etc/resolv.conf";
 // ("Destination IP Prohibited") and tunnelling them would break LAN access.
 export const PRIVATE_CIDRS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"];
 
+// Telegram's IPv4 ranges (core.telegram.org/resources/cidr.txt), for a Smart DNS device's router (gateway.ts). The network
+// helper's allow-list is made from them: a change here needs its VERSION raised.
+export const TELEGRAM_CIDRS = ["91.108.56.0/22", "91.108.4.0/22", "91.108.8.0/22", "91.108.16.0/22", "91.108.12.0/22", "149.154.160.0/20", "91.105.192.0/23", "91.108.20.0/22", "185.76.151.0/24"];
+
 // DNS is resolved through the tunnel via DoH (the VPN forbids port 53). On Linux the
 // forwarder listens on a free port it picks; systemd-resolved is pointed at it.
 export { DOH_HOST }; // lives in dns.ts, where the proxy can reach it

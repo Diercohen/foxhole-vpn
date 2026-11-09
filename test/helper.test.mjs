@@ -8,7 +8,7 @@ import { WIN_ALLOWED, helperScript, installScript, winInstall, winScript, winScr
 import { DNS_FLUSH, NRPT_ADD, pinRoute, planStaleCleanup as winStale, ps } from "../dist/global-win32.js";
 import { directRoutes } from "../dist/relay.js";
 import { useSplit } from "../dist/split.js";
-import { PRIVATE_CIDRS, QUIC_REJECT, pinCmd, planDirect, planDirectTeardown, planSetup, planStaleCleanup, planTeardown } from "../dist/global.js";
+import { PRIVATE_CIDRS, TELEGRAM_CIDRS, QUIC_REJECT, pinCmd, planDirect, planDirectTeardown, planSetup, planStaleCleanup, planTeardown } from "../dist/global.js";
 
 const T2S = "/usr/local/libexec/foxhole/tun2socks";
 const script = helperScript("linux")
@@ -86,6 +86,8 @@ for (const argv of [
   ["ifconfig", "utun123", "198.18.0.1", "198.18.0.1", "up"], [`${M}/tun2socks`, "--device", "utun123", "--proxy", "socks5://127.0.0.1:1080"],
   ["networksetup", "-setdnsservers", "Wi-Fi", "127.0.0.1"], ["networksetup", "-setdnsservers", "USB 10/100/1000 LAN", "Empty"], ["networksetup", "-setdnsservers", "Wi-Fi", "192.168.1.1", "fe80::1"],
   ["ipconfig", "setverbose", "1"], ["killall", "-HUP", "mDNSResponder"], ["pkill", "-f", "utun12[3]"], ["pkill", "-f", "foxhole-dn[s]"],
+  ...TELEGRAM_CIDRS.flatMap((c) => [["route", "-n", "add", "-net", c, "198.18.0.1"], ["route", "-n", "delete", "-net", c]]),
+  ["sysctl", "-w", "net.inet.ip.forwarding=1"], ["sysctl", "-w", "net.inet.ip.forwarding=0"],
 ]) {
   const r = mac(argv);
   assert.equal(r.stdout, `RUN ${argv.join(" ")}\n`, `${argv.join(" ")}: ${r.stderr}`);
@@ -98,6 +100,8 @@ for (const argv of [
   ["ipconfig", "setverbose", "0"], ["ipconfig", "set", "en0", "NONE"], ["ifconfig", "en0", "down"], ["ifconfig", "utun123", "1.2.3.4", "1.2.3.4", "up"], ["killall", "Finder"], ["pkill", "-f", "."],
   [`${M}/tun2socks`, "--device", "utun123", "--proxy", "socks5://1.2.3.4:1080"], [`${M}/tun2socks`, "--device", "utun123", "--proxy", "socks5://127.0.0.1:1", "--tun-post-up", "id"], ["/Users/me/tun2socks", "--device", "utun123", "--proxy", "socks5://127.0.0.1:1"],
   ["guard", "-", "en0"], ["version"], ["version", "0"],
+  ["route", "-n", "add", "-net", "8.8.8.0/24", "198.18.0.1"], ["route", "-n", "add", "-net", "91.108.4.0/22", "1.2.3.4"], ["route", "-n", "delete", "-net", "8.8.8.0/24"],
+  ["sysctl", "-w", "net.inet.ip.forwarding=2"], ["sysctl", "-w", "kern.maxfiles=1"],
 ]) {
   const r = mac(argv);
   assert.ok(!r.stdout.startsWith("RUN"), `ran: ${argv.join(" ")}`);

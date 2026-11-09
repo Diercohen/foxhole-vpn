@@ -555,6 +555,7 @@ input:focus { background: rgba(0, 0, 0, 0.34); box-shadow: inset 0 0 0 1px color
 .sheet.on .group:nth-child(6) { animation-delay: 300ms; }
 .group { padding: 18px 0; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
 .group:last-child { border-bottom: 0; }
+#port-form { border-bottom: 0; padding-bottom: 0; } /* the proxy's port and its login are one section */
 .label { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 680; }
 .label .i { color: var(--ink-3); }
 .label .count { margin-inline-start: 2px; font-size: 12px; font-weight: 600; color: var(--ink-3); }
@@ -679,6 +680,9 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .cmd { display: flex; align-items: center; gap: 10px; padding: 6px 6px 6px 12px; border-radius: 12px; background: rgba(0, 0, 0, 0.3); box-shadow: inset 0 0 0 1px var(--line); }
 .cmd .mono { flex: 1; overflow-x: auto; white-space: nowrap; color: var(--ink-2); }
 .warn-line { font-size: 12.5px; color: var(--amber); }
+#dns-box .steps { padding: 0; margin: 0; }
+#dns-box .steps li > div { flex: 1; min-width: 0; }
+#dns-box .steps .addr, #dns-box .steps .warn-line, #dns-box .steps .btn { margin-top: 8px; }
 .account-line, .about { flex-direction: row !important; align-items: center; gap: 14px !important; }
 .account-line .grow, .about .grow { display: flex; flex-direction: column; gap: 2px; }
 .account-line span, .about span { font-size: 12.5px; color: var(--ink-3); }
