@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
-import { fetchPass, fetchUsage, pinGuardian, useRelay, GuardianError } from "../dist/guardian.js";
+import { fetchPass, fetchUsage, pinGuardian, useRelay, GuardianBlocked, GuardianError } from "../dist/guardian.js";
 
 setTimeout(() => {
   console.error("FAIL - test timed out");
@@ -58,8 +58,10 @@ for (const s of seen) assert.deepStrictEqual(s, { sni: "vpn.mozilla.org", host: 
 await assert.rejects(fetchPass("bad"), (err) => err instanceof GuardianError && err.status === 401);
 
 // A 451 is Mozilla refusing this network's region by its address: with a relay set, the call goes again through it
-// (Google's address); with none, it stays the error. Other refusals (401) aren't the address's, so they aren't relayed.
-await assert.rejects(fetchPass("region"), (err) => err instanceof GuardianError && err.status === 451, "no relay: the 451 stands");
+// (Google's address); with none, it's what a relay gets around, as a blocked vpn.mozilla.org. Other refusals (401)
+// aren't the address's, so they aren't relayed.
+await assert.rejects(fetchPass("region"), (err) => err instanceof GuardianBlocked && err.region === true, "no relay: one is what's needed");
+await assert.rejects(fetchUsage("region"), (err) => err instanceof GuardianBlocked && err.region, "the usage's check says so too");
 const relayed = [];
 const relayServer = http.createServer((req, res) => {
   let body = "";

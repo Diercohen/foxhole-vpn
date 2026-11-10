@@ -41,8 +41,8 @@ const flip = (v) => (v === "vpn" ? "direct" : "vpn");
 const label = (c) => countryName(c.code, c.name);
 /** The Relay "location", first in the list once a relay is set up: the web through the user's own Apps Script (relaymode.ts). */
 const RELAY_ROW = { code: RELAY_CODE, name: "Relay", locked: false, available: true, servers: [] };
-/** No relay on a phone (the user's call): it's never set up there, so it carries nothing and isn't offered. */
-const NO_RELAY = process.platform === "android" || process.platform === "ios";
+/** No relay on an iPhone (not there yet): it's never set up there, so it carries nothing and isn't offered. */
+const NO_RELAY = process.platform === "ios";
 // Smart DNS (smartdns.ts) needs ports 53, 443 and 80, which a phone's apps can't have
 const SMART_DNS = ["darwin", "win32", "linux"].includes(process.platform);
 // ponytail: a Mac's until it's proven on a phone. Linux needs net.ipv4.ip_forward and FORWARD rules (ufw, Docker), Windows netsh forwarding and WIN_ALLOWED.
@@ -73,6 +73,7 @@ export class Controller extends EventEmitter {
   #conn = null;
   #countries = [];
   #blocked = 0; // times vpn.mozilla.org was found blocked here: the window says so (with the relay's setup) as it goes up
+  #blockedRegion = false; // the last time, it answered 451: Mozilla refuses this country
   #blockedTold = false; // said once already: a background check doesn't say it again, a connect does
   #listError = null;
   #selected = loadLastCountry(); // where the power button connects
@@ -124,7 +125,9 @@ export class Controller extends EventEmitter {
   #switchTo = null; // an account picked (useAccount), until it's signed in with
   #switched = 0; // counts the switches done: the window closes Settings on each
   #unentitledAsk = 0; // counts the times it's found not to: each shows the window's how-to again
-  #tvIn = null; // a TV's wait for a sign-in from another device (tvpair.ts): a promise of it
+  #tvIn = null; // a TV's wait for a sign-in from another device (tvpair.ts), or a TV's or phone's for a relay: a promise of it
+  #tvWant = "signin"; // what it waits for: "signin", or "relay" alone
+  #relayGot = 0; // counts the relays that came from another device: the window closes its dialog on each
   #tvHandle = null; // ...and the wait itself, once it's started
   #tvError = null; // why it couldn't wait
   #tvQr = null; // { link, qr }: its QR code, drawn once per link
@@ -382,8 +385,12 @@ export class Controller extends EventEmitter {
 
   // ── A TV's sign-in from another device (tvpair.ts) ──────────────────────────────────────────────────────────
 
-  /** The TV's sign-in screen shown (on) or put away: meanwhile it waits for a sign-in from a computer or phone. */
-  async tvWait(on) {
+  /**
+   * The TV's sign-in screen shown (on) or put away: meanwhile it waits for a sign-in from a computer or phone. With
+   * `want` "relay", a TV or phone waits for a relay alone (made on a computer: one can't be made here).
+   */
+  async tvWait(on, want = "signin") {
+    if (on && this.#tvIn && want !== this.#tvWant) await this.tvWait(false); // the other wait goes first
     if (!on) {
       const h = await this.#tvIn;
       this.#tvIn = this.#tvHandle = null;
@@ -391,10 +398,12 @@ export class Controller extends EventEmitter {
       return this.#changed();
     }
     this.#tvError = null;
+    this.#tvWant = want === "relay" ? "relay" : "signin";
     this.#tvIn ??= waitForSignIn({
-      name: this.#android?.name || "TV",
+      name: this.#android?.name || (this.#android?.tv ? "TV" : "Phone"),
+      want: this.#tvWant,
       host: () => lanIp(),
-      accept: (account, from) => this.#tvAccept(account, from),
+      accept: (got, from) => this.#tvAccept(got, from),
       changed: () => this.#changed(),
     }).then(
       (h) => ((this.#tvHandle = h), this.#changed(), h),
@@ -407,16 +416,28 @@ export class Controller extends EventEmitter {
     );
   }
 
-  /** What another device sent: checked with Mozilla (the sender's told if it doesn't work), then added and in use. */
-  async #tvAccept({ uid, email, refreshToken }, from) {
-    await new RefreshAuth(refreshToken).getAccessToken(AbortSignal.timeout(15_000));
+  /**
+   * What another device sent: a sign-in, checked with Mozilla first (the sender's told if it doesn't work), then added
+   * and in use; its relay, saved (in place of one here), and in use at once.
+   */
+  async #tvAccept({ account, relay }, from) {
+    if (account) await new RefreshAuth(account.refreshToken).getAccessToken(AbortSignal.timeout(15_000));
+    if (relay && (await this.#changeSetting({ relay })) !== true) throw new Error(this.#settingsNote?.text ?? "couldn't save the relay");
+    if (relay) this.#relayGot++;
+    if (!account) {
+      // a TV's sign-in screen goes on waiting, for the sign-in
+      if (this.#tvWant === "relay") setTimeout(() => void this.tvWait(false)); // once the sender has its answer
+      log(`relay: from ${from || "another device"}`);
+      return this.#alert(`Your VPN relay came from ${from || "another device"}: where Mozilla is blocked or refuses your country, Foxhole reaches it through the relay.`, "Relay added", "relay");
+    }
+    const { uid, email, refreshToken } = account;
     await this.disconnect(); // as a switch of accounts does
     const old = this.#accounts.own.find((x) => x.uid === uid);
     this.#saveAccounts(withOwn(this.#accounts, { uid, email, refreshToken }));
     if (old) void signOut(old); // the sign-in it replaces
     this.#others.delete(uid);
     setTimeout(() => void this.tvWait(false)); // once the sender has its answer
-    this.#alert(`You're signed in with ${email}${from ? `, sent from ${from}` : ""}, and it's the account in use now.`, "Signed in");
+    this.#alert(`You're signed in with ${email}${from ? `, sent from ${from}` : ""}${relay ? ", with its VPN relay" : ""}, and it's the account in use now.`, "Signed in");
     void this.#resignIn();
   }
 
@@ -505,12 +526,12 @@ export class Controller extends EventEmitter {
     return this.#android?.name || hostname().replace(/\.local$/, "");
   }
 
-  /** The TV's screen: its code and QR code (drawn once each), or why it can't wait. */
+  /** The TV's screen (or a phone's, waiting for a relay): its code and QR code (drawn once each), or why it can't wait. */
   #tvView() {
-    if (!this.#tvHandle) return this.#tvError ? { error: this.#tvError } : null;
+    if (!this.#tvHandle) return this.#tvError ? { error: this.#tvError, want: this.#tvWant } : null;
     const w = this.#tvHandle.waiting();
     if (w.link && this.#tvQr?.link !== w.link) this.#tvQr = { link: w.link, qr: qrSvgPath(w.link) };
-    return { code: w.code, host: w.host, qr: w.link ? this.#tvQr.qr : null };
+    return { code: w.code, host: w.host, qr: w.link ? this.#tvQr.qr : null, want: this.#tvWant };
   }
 
   /**
@@ -524,17 +545,19 @@ export class Controller extends EventEmitter {
     return how;
   }
 
-  /** "Sign in a TV": the TVs waiting on this device's network. */
+  /** "Sign in a TV": the TVs waiting on this device's network (and phones, for a relay), and what each waits for. */
   async tvFind() {
     this.#tvsFound = await findTvs();
-    return this.#tvsFound.map(({ host, name }) => ({ host, name }));
+    return this.#tvsFound.map(({ host, name, want }) => ({ host, name, want }));
   }
 
   /**
-   * Sends a TV a sign-in of the account `id` (a VPN-only one of its own: auth.ts refreshToken), to the TV in its QR
-   * code's `link`, or to the one found waiting with the `code` typed. Resolves with the TV's name.
+   * Sends a TV a sign-in of the account `id` (a VPN-only one of its own: auth.ts refreshToken), with this device's
+   * relay unless `withRelay` is false, to the TV in its QR code's `link`, or to the one found waiting with the `code`
+   * typed. A TV or phone waiting for a relay alone (or `relayOnly`: Settings → VPN relay's) gets just the relay.
+   * Resolves with the TV's name and what it got.
    */
-  async tvSend({ code, link } = {}, id = this.#accounts.current) {
+  async tvSend({ code, link } = {}, id = this.#accounts.current, { relayOnly = false, withRelay = true } = {}) {
     let tvs;
     if (link) {
       const tv = parseTvLink(link);
@@ -542,30 +565,45 @@ export class Controller extends EventEmitter {
       const there = await askTv(tv);
       if (!there) throw new Error(`Can't reach the TV at ${tv.host}: is this ${this.#android ? "phone" : "computer"} on the TV's Wi-Fi?`);
       if (there.pub !== tv.pub) throw new Error("That QR code is an old one: the TV shows a new one now.");
-      tvs = [{ ...tv, name: there.name }];
+      tvs = [{ ...tv, name: there.name, want: there.want }];
     } else {
       if (!this.#tvsFound.length) await this.tvFind();
       tvs = this.#tvsFound;
       if (!tvs.length) throw new Error("No TV is waiting on this network. Is the TV on the same Wi-Fi, showing its code?");
     }
-    const auth = authFor(this.#accounts, id);
-    if (typeof auth?.refreshToken !== "function") throw new Error("This account's sign-in came from another device: sign in to it here first, or send the TV another account.");
-    const a = this.#accounts;
-    const email = id === FIREFOX ? (findAccount()?.email ?? this.#firefoxEmail) : a.own.find((x) => x.uid === id)?.email;
-    const uid = id === FIREFOX ? findAccount()?.uid : id;
-    if (!uid || !email) throw new Error("Couldn't read this account's details: try another one.");
-    const refreshToken = await auth.refreshToken(AbortSignal.timeout(15_000));
+    // the settings' own relay (an iPhone can't use one, but can hand one on)
+    const relay = this.#settings.relay ?? null;
+    // the sign-in, made only when a TV takes one: a VPN-only refresh token of its own
+    let account = null;
+    const signIn = async () => {
+      if (account) return account;
+      if (!id) throw new Error("Sign in to a Mozilla account on this device first: Foxhole sends the TV a sign-in of it.");
+      const auth = authFor(this.#accounts, id);
+      if (typeof auth?.refreshToken !== "function") throw new Error("This account's sign-in came from another device: sign in to it here first, or send the TV another account.");
+      const a = this.#accounts;
+      const email = id === FIREFOX ? (findAccount()?.email ?? this.#firefoxEmail) : a.own.find((x) => x.uid === id)?.email;
+      const uid = id === FIREFOX ? findAccount()?.uid : id;
+      if (!uid || !email) throw new Error("Couldn't read this account's details: try another one.");
+      return (account = { uid, email, refreshToken: await auth.refreshToken(AbortSignal.timeout(15_000)) });
+    };
     const from = this.#deviceName();
     let lastErr;
     for (const tv of tvs)
       try {
-        await sendToTv(tv, { code }, { uid, email, refreshToken }, from);
-        this.#say("ok", `${tv.name} is signed in with ${email}`);
-        return tv.name;
+        const alone = relayOnly || tv.want === "relay";
+        if (alone && !relay)
+          throw new Error(this.#android
+            ? "This phone has no VPN relay to send. Make one on a computer (Foxhole there: Settings → VPN relay → Set up step by step), and send it from there."
+            : "This computer has no VPN relay to send: set one up first (Settings → VPN relay → Set up step by step).");
+        const what = alone ? { relay } : { account: await signIn(), ...(withRelay && relay && { relay }) };
+        const took = await sendToTv(tv, { code }, what, from);
+        if (what.account && !took.account) void destroyToken(what.account.refreshToken); // it came to wait for a relay alone meanwhile
+        this.#say("ok", took.account ? `${tv.name} is signed in with ${what.account.email}${took.relay ? ", with your VPN relay" : ""}` : `${tv.name} has your VPN relay now`);
+        return { name: tv.name, ...took };
       } catch (err) {
         lastErr = err;
       }
-    void destroyToken(refreshToken); // no TV took it
+    if (account) void destroyToken(account.refreshToken); // no TV took it
     throw lastErr;
   }
 
@@ -792,9 +830,10 @@ export class Controller extends EventEmitter {
     if (relay && JSON.stringify(this.#relay()) !== JSON.stringify(relay)) this.#followRelay();
   }
 
-  /** Counts err when it says vpn.mozilla.org is blocked here (with no relay set), for the window to say so; whether it did. */
+  /** Counts err when it says vpn.mozilla.org is blocked here, or refuses the country (with no relay set), for the window to say so; whether it did. */
   #saysBlocked(err) {
     if (!(err instanceof GuardianBlocked)) return false;
+    this.#blockedRegion = err.region;
     this.#blocked++;
     this.#blockedTold = true;
     return true;
@@ -1393,9 +1432,12 @@ export class Controller extends EventEmitter {
     return true;
   }
 
-  /** The Locations: the relay first when one is set up, then the countries. */
+  /**
+   * The Locations: the relay first when one is set up, then the countries. Not on a TV: its apps don't trust relay
+   * mode's certificate (Android's own store, which apps leave out), so there the relay only reaches Mozilla.
+   */
   #rows() {
-    return this.#relay() ? [RELAY_ROW, ...this.#countries] : this.#countries;
+    return this.#relay() && !this.#android?.tv ? [RELAY_ROW, ...this.#countries] : this.#countries;
   }
 
   /** Relay mode follows the relay's settings: through the new relay, or off without one. */
@@ -1403,7 +1445,7 @@ export class Controller extends EventEmitter {
     if (this.#active === RELAY_ROW) void (this.#relay() ? this.connect(RELAY_CODE) : this.disconnect());
   }
 
-  /** The relay as set up in Settings, or null: none, or on a phone. */
+  /** The relay as set up in Settings, or null: none, or on an iPhone. */
   #relay() {
     return NO_RELAY ? null : loadRelay(this.#settings);
   }
@@ -1500,8 +1542,9 @@ export class Controller extends EventEmitter {
     this.#changed();
   }
 
-  #alert(text, title = "Already signed in") {
-    this.#notice = { title, text, id: (this.#notice?.id ?? 0) + 1 };
+  /** A dialog with an OK; `kind` "relay": in the relay's colors (the window's renderNotice). */
+  #alert(text, title = "Already signed in", kind = "account") {
+    this.#notice = { title, text, kind, id: (this.#notice?.id ?? 0) + 1 };
     this.#changed();
   }
 
@@ -1592,6 +1635,8 @@ export class Controller extends EventEmitter {
       trustAsk: this.#trustAsk,
       restoring: this.#restoring,
       blocked: this.#blocked,
+      blockedRegion: this.#blockedRegion,
+      relayGot: this.#relayGot,
     };
   }
 }

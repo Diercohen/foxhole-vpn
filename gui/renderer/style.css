@@ -731,6 +731,9 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .modal .howto { width: min(240px, 70%); align-self: center; border-radius: 14px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
 #unentitled-modal p b { color: var(--ink); }
 .modal .actions .btn { flex: 1; }
+/* a phone's "Get it from your computer" is long: the buttons wrap where they don't fit side by side, the relay's on top */
+:is(#blocked-modal, #relay-modal) .actions { flex-wrap: wrap-reverse; }
+:is(#blocked-modal, #relay-modal) .actions .btn { flex: 1 1 auto; }
 /* The relay's setup: a wide modal over Settings, a step at a time */
 .wizard, .modal.backdrop { background: rgba(7, 6, 12, 0.55); opacity: 0; transition: opacity 0.35s; }
 .wizard.on, .modal.backdrop.on { opacity: 1; }
@@ -820,8 +823,13 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .sheet.on .relay-zone { animation: rise 0.8s var(--out) 180ms both; } /* rises as one */
 .sheet.on .relay-zone .group { animation: none; }
 /* the relay's own buttons, and the data ring counting its requests */
-#trust-modal .btn.primary, #relay-modal .btn.primary, #cert-group .btn.primary { background: linear-gradient(135deg, #b76bff, #ff6bd6); }
-#trust-modal .btn.primary:hover, #relay-modal .btn.primary:hover { box-shadow: 0 14px 38px -10px #b76bff, inset 0 1px 0 rgba(255, 255, 255, 0.35); }
+#trust-modal .btn.primary, #relay-modal .btn.primary, #cert-group .btn.primary, #relay-get, .relay-send .btn.primary, #blocked-modal .btn.primary, #notice-modal.relay .btn.primary { background: linear-gradient(135deg, #b76bff, #ff6bd6); }
+#trust-modal .btn.primary:hover, #relay-modal .btn.primary:hover, #relay-get:hover, #blocked-modal .btn.primary:hover, #notice-modal.relay .btn.primary:hover { box-shadow: 0 14px 38px -10px #b76bff, inset 0 1px 0 rgba(255, 255, 255, 0.35); }
+/* Mozilla blocked or refusing the country: the relay's way through, in its purple (an iPhone has no relay: its own colors); and a relay come from another device */
+body:not(.ios) #blocked-modal .lock-orb, #notice-modal.relay .lock-orb { background: linear-gradient(135deg, #e6b3ff, #b76bff 55%, #ff6bd6); box-shadow: 0 18px 44px -12px #b76bff, inset 0 1px 0 rgba(255, 255, 255, 0.45); }
+:is(#blocked-modal, #relaywait-modal) .steps li::before { background: linear-gradient(135deg, #b76bff, #ff6bd6); box-shadow: 0 6px 16px -6px #b76bff; }
+#blocked-steps { padding: 0; }
+#relay-more { margin-top: 2px; }
 body[data-relay] #g-ring stop:first-child { stop-color: #b76bff; }
 body[data-relay] #g-ring stop:last-child { stop-color: #ff6bd6; }
 .shake { animation: shake 0.45s; }
@@ -964,7 +972,7 @@ kbd { font-family: var(--mono); font-size: 12px; padding: 1px 6px; border-radius
 body:not(.android) .android-only { display: none !important; }
 .phone #c-net { display: none; } /* no Network card on a phone */
 .android #c-ip { display: none; } /* nor a Public IP card on Android */
-.phone :is(.relay-zone, .relay-only) { display: none; } /* no relay on a phone (controller.js NO_RELAY) */
+.ios :is(.relay-zone, .relay-only) { display: none; } /* no relay on an iPhone (controller.js NO_RELAY) */
 .phone #c-split { order: 1; } .phone #c-proxy { order: 2; } .phone #c-ip { order: 3; } /* a phone's order: Location, Split tunneling, Proxy */
 /* Android: no frosted glass, solid panels instead; animations stay */
 .android * { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
@@ -1023,7 +1031,24 @@ body.android::before { background: rgba(7, 6, 12, 0.96); }
 .tv-net > .i { flex: none; width: 18px; height: 18px; color: var(--fox); }
 .tv-net.warn { color: var(--amber); }
 .tv-nets { display: flex; flex-direction: column; gap: 8px; }
-#tvwait-modal .box { width: min(760px, calc(100% - 40px)); }
+#tvwait-modal .box, #relaywait-modal .box { width: min(760px, calc(100% - 40px)); }
+/* a relay brought from a computer or phone (app.js relayPanel), and sent from here: in the relay's purple */
+#relaywait-modal .box { background:
+    radial-gradient(120% 80% at 100% 0%, rgba(255, 107, 214, 0.16), transparent 58%),
+    radial-gradient(100% 70% at 0% 100%, rgba(124, 92, 255, 0.24), transparent 62%),
+    linear-gradient(160deg, rgba(43, 17, 88, 0.92), rgba(18, 7, 42, 0.94));
+  box-shadow: inset 0 0 0 1px rgba(201, 150, 255, 0.28), 0 30px 80px -30px rgba(155, 77, 255, 0.8); }
+#relaywait-body { display: flex; flex-direction: column; gap: 14px; } /* its how-to, then the code */
+#relaywait-modal .tv-qr { box-shadow: 0 14px 50px -10px rgba(183, 107, 255, 0.7); }
+#relaywait-modal .tv-code { text-shadow: 0 0 24px rgba(183, 107, 255, 0.8); }
+:is(#relaywait-modal, .relay-send) .tv-net > .i { color: #d9a0ff; }
+#relaywait-modal .tv-net { box-shadow: inset 0 0 0 1px rgba(201, 150, 255, 0.2); background: rgba(183, 107, 255, 0.06); }
+#relaywait-modal .tv-net.warn { color: var(--amber); }
+.relay-send .lock-orb { background: linear-gradient(135deg, #e6b3ff, #b76bff 55%, #ff6bd6); box-shadow: 0 18px 44px -12px #b76bff, inset 0 1px 0 rgba(255, 255, 255, 0.45); }
+#tvsend-relay.on { background: linear-gradient(135deg, #b76bff, #ff6bd6); }
+#tvsend-relay-wrap { text-align: start; }
+#tvsend-relay-wrap .label .i { color: #d9a0ff; }
+.relay-note { color: #e6c2ff; }
 .tv-acct { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--ink-3); text-align: start; }
 .tv-acct[hidden] { display: none; }
 .tv-acct select { height: 42px; padding: 0 12px; border: 0; border-radius: 14px; font: inherit; color: var(--ink); background: rgba(0, 0, 0, 0.25); box-shadow: inset 0 0 0 1px var(--line-2); }
@@ -1036,6 +1061,10 @@ body.android::before { background: rgba(7, 6, 12, 0.96); }
 .row-btns { display: flex; flex-wrap: wrap; gap: 10px; }
 .row-btns .btn { flex: 1; }
 body.tv .not-tv { display: none; }
+body:not(.tv) .tv-only { display: none !important; }
+/* a TV's page is 540px high: Mozilla blocked, wide, so its steps and both buttons fit; any box scrolls to what the remote focuses */
+body.tv #blocked-modal .box { width: min(760px, calc(100% - 40px)); }
+body.tv .modal .box { max-height: calc(100% - 24px); overflow-y: auto; }
 /* the remote's focus, plain to see from the sofa */
 body.tv :focus { outline: 3px solid #ffd2a8; outline-offset: 3px; box-shadow: 0 0 0 7px rgba(255, 122, 26, 0.35); }
 body.tv [data-use]:focus { border-radius: 14px; }

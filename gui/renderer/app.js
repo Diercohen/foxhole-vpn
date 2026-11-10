@@ -337,7 +337,8 @@ function renderList() {
   section("list", [S.countries, S.active, S.connecting, S.listError, q, S.auth.stage === "ready"], () => {
     const list = $("#list");
     // Relay first, set up or not (then dimmed: a click says what it is), a line between it and the countries; none on a phone
-    const relay = PHONE ? null : S.countries.find((c) => c.code === RELAY) ?? { code: RELAY, name: t`Relay`, locked: false, available: false, intro: true };
+    // not on a TV (its apps don't trust relay mode's certificate) nor an iPhone (controller.js #rows, NO_RELAY)
+    const relay = IOS || TV ? null : S.countries.find((c) => c.code === RELAY) ?? { code: RELAY, name: t`Relay`, locked: false, available: false, intro: true };
     const count = S.countries.length - (relay && !relay.intro ? 1 : 0);
     const shown = [relay, ...S.countries.filter((c) => c !== relay)].filter((c) => c && (!q || c.name.toLowerCase().includes(q) || c.en?.toLowerCase().includes(q) || c.code.toLowerCase() === q));
     $("#loc-count").textContent = count ? t`${count} countries` : "";
@@ -400,7 +401,9 @@ let toastTimer = 0;
 function renderNotice() {
   section("notice", [S.notice?.id], () => {
     if (!S.notice) return;
-    $("#notice-modal use").setAttribute("href", "#i-user");
+    const relay = S.notice.kind === "relay"; // a relay that came from another device (controller.js tvAccept)
+    $("#notice-modal").classList.toggle("relay", relay);
+    $("#notice-modal use").setAttribute("href", relay ? "#i-relay" : "#i-user");
     $("#notice-title").textContent = S.notice.title;
     $("#notice-text").textContent = S.notice.text;
     $("#notice-modal").classList.add("on");
@@ -414,6 +417,7 @@ let newsOpen = null;
 function renderNews() {
   section("news", [S.news], () => {
     if (!S.news || S.news === newsOpen) return;
+    $("#notice-modal").classList.remove("relay");
     $("#notice-modal use").setAttribute("href", "#i-spark");
     $("#notice-title").textContent = t`News from Foxhole`;
     $("#notice-text").textContent = newsOpen = S.news;
@@ -776,9 +780,20 @@ function renderSettings() {
     $("#relay-key").placeholder = r?.set ? t`•••••••• — type to replace` : t`Auth key`;
     $("#relay-badge").className = r ? "tier on" : "tier off";
     $("#relay-badge").textContent = r ? t`enabled` : t`disabled`;
-    $("#relay-state").innerHTML = r
-      ? t`<strong>On:</strong> Firefox VPN goes through it when <code>vpn.mozilla.org</code> can't be reached, and <b>Relay</b> is first in Locations.`
-      : t`<strong>Off:</strong> Foxhole talks to Mozilla directly.`;
+    // a computer makes the relay (step by step); a phone or TV gets one made there, from it or a phone (relayWait)
+    $("#relay-about").innerHTML = TV
+      ? t`Where Mozilla is blocked or refuses your country (e.g. Iran), your own free Google Apps Script reaches it for Foxhole, so Firefox VPN works on this TV. Make the relay on a computer, then get it here.`
+      : PHONE
+        ? t`Where Mozilla is blocked or refuses your country (e.g. Iran), your own free Google Apps Script reaches it for Foxhole. Once it's set up, <b>Relay</b>, first in Locations, can also carry your browsing when nothing else gets through. Make the relay on a computer, where Foxhole shows each click, then get it here.`
+        : t`Where Mozilla is blocked or refuses your country (e.g. Iran), your own free Google Apps Script reaches it for Foxhole. Once it's set up, <b>Relay</b>, first in Locations, can also carry your browsing when nothing else gets through.`;
+    $("#relay-state").innerHTML = !r
+      ? t`<strong>Off:</strong> Foxhole talks to Mozilla directly.`
+      : TV
+        ? t`<strong>On:</strong> Firefox VPN goes through it when Mozilla can't be reached or refuses your country.`
+        : t`<strong>On:</strong> Firefox VPN goes through it when Mozilla can't be reached or refuses your country, and <b>Relay</b> is first in Locations.`;
+    $("#relay-get span").textContent = TV ? t`Get it from your phone or computer` : t`Get it from your computer`;
+    $("#relay-check").hidden = TV && !r; // nothing to check: a TV has no fields to type one in
+    $("#relay-more").hidden = !r; // Send to a TV or phone (a TV's: Remove)
     $("#cert-group").hidden = !r && !S.caOk;
     $("#cert-state").className = S.caOk ? "ok" : "warn";
     $("#cert-state").textContent = S.caOk ? t`Trusted on this ${DEVICE}` : t`Not trusted yet: sites won't open through the relay`;
@@ -1073,14 +1088,17 @@ function tvPanel() {
     <div class="tv-code">${esc(w.code.slice(0, 3))} ${esc(w.code.slice(3))}</div>
     ${net}
     <p class="fine">Or <span class="link" data-act="addAccount" data-arg="mozilla">sign in on the TV, with the remote</span>.</p>
-  </div></div>`;
+  </div></div>` + t`<p class="fine relay-note">Where Mozilla is blocked or refuses your country, the VPN relay on your phone or computer comes along with the sign-in.</p>`;
 }
 
-let tvWanted = false; // the TV's waiting for a sign-in, as last asked
-/** The TV waits for a sign-in from another device while its panel's on screen. */
+let tvWanted = null; // what the TV (or phone) waits for, as last asked: "signin", "relay", or nothing (null)
+/** The TV waits for a sign-in from another device while its panel's on screen; a TV or phone, for a relay while relayPanel is. */
 function syncTv() {
-  const want = TV && !!S && ($("#tvwait-modal").classList.contains("on") || ($("#onboard").classList.contains("on") && TV_STAGES.has(S.auth.stage)));
-  if (want !== tvWanted) void act("tvWait", (tvWanted = want));
+  const want = !S ? null
+    : $("#relaywait-modal").classList.contains("on") ? "relay"
+    : TV && ($("#tvwait-modal").classList.contains("on") || ($("#onboard").classList.contains("on") && TV_STAGES.has(S.auth.stage))) ? "signin"
+    : null;
+  if (want !== tvWanted) void act("tvWait", !!want, (tvWanted = want) ?? "signin");
 }
 
 function tvModal(on) {
@@ -1091,9 +1109,45 @@ function tvModal(on) {
 
 function renderTv() {
   section("tvsendnet", [S.net, S.lanIp], () => $("#tvsend-modal").classList.contains("on") && drawSendNet());
-  if (!TV) return;
-  section("tvwait", [S.tvWait, S.net], () => $("#tvwait-modal").classList.contains("on") && ($("#tvwait-body").innerHTML = tvPanel()));
+  const relayOpen = $("#relaywait-modal").classList.contains("on");
+  if (relayOpen && S.relayGot > relayGotSeen) relayWait(false); // it came: the alert says from where
+  else section("relaywait", [S.tvWait, S.net], () => relayOpen && ($("#relaywait-body").innerHTML = relayPanel()));
+  relayGotSeen = S.relayGot;
+  if (TV) section("tvwait", [S.tvWait, S.net], () => $("#tvwait-modal").classList.contains("on") && ($("#tvwait-body").innerHTML = tvPanel()));
   syncTv();
+}
+
+// ── A relay made on a computer, brought to a TV or phone (controller.js tvWait "relay") ──────────────────────
+
+let relayGotSeen = 0; // the controller's count of relays that came from another device, as far as the dialog's seen
+
+/** "Get your VPN relay": while it's open, this TV or phone waits for one from a computer or phone on its network. */
+function relayWait(on) {
+  $("#relaywait-modal").classList.toggle("on", on);
+  if (on) (relayGotSeen = S.relayGot), ($("#relaywait-body").innerHTML = relayPanel());
+  syncTv();
+}
+
+/** The dialog's QR code and code, for the computer or phone with the relay to send it with, and this device's network. */
+function relayPanel() {
+  const w = S.tvWait?.want === "relay" ? S.tvWait : null;
+  const intro = t`<p>Make the relay on a computer, where Foxhole shows each click: <b>Settings</b> → <b>VPN relay</b> → <b>Set up step by step</b>. Then send it here from that computer, or from a phone that has it.</p>`;
+  if (w?.error) return `${intro}<div class="err-box">${esc(w.error)}</div>`;
+  if (!w) return intro + t`<div class="waiting"><span class="spin"></span>Getting a code…</div>`;
+  const net = w.host
+    ? t`<div class="tv-net">${icon("wifi")}<span>This ${DEVICE} is on <b>${esc(tr(S.net) ?? t`a network`)}</b> · ${esc(w.host)}${showName()}. The computer or phone must be on it too.</span></div>`
+    : t`<div class="tv-net warn">${icon("wifi")}<span>This ${DEVICE} isn't on a network: connect it to the Wi-Fi first.</span></div>`;
+  const qr = w.qr
+    ? `<svg class="tv-qr" viewBox="0 0 ${w.qr.size} ${w.qr.size}" role="img" aria-label="The QR code to send the relay with"><rect width="100%" height="100%" fill="#fff"/><path d="${w.qr.path}"/></svg>`
+    : "";
+  return intro + t`<div class="tvpair">${qr}<div class="tv-how">
+    <ol class="steps">
+      <li><span>On that computer or phone, open <b>Foxhole</b>, then <b>Settings</b> → <b>VPN relay</b> → <b>Send to a TV or phone</b>.</span></li>
+      <li><span>Scan this QR code, or type this code:</span></li>
+    </ol>
+    <div class="tv-code">${esc(w.code.slice(0, 3))} ${esc(w.code.slice(3))}</div>
+    ${net}
+  </div></div>`;
 }
 
 // ── Sharing Foxhole (controller.js shareOpen, share.ts) ────────────────────────────────────
@@ -1227,9 +1281,12 @@ function tvNote(tone, text) {
 }
 
 function drawFound(tvs) {
-  const names = tvs.map((tv) => `<b>${esc(tv.name)}</b>`).join(", ");
+  const relay = sendMode === "relay";
+  // a TV or phone waiting for a relay alone gets just that, from "Sign in a TV" too (controller.js tvSend)
+  const names = tvs.map((tv) => (tv.want === "relay" && !relay ? t`<b>${esc(tv.name)}</b>, for a VPN relay` : `<b>${esc(tv.name)}</b>`)).join(", ");
   $("#tvsend-found").innerHTML = tvs.length
-    ? t`${icon("tv")}<span>Waiting to sign in: ${names}</span>`
+    ? relay ? t`${icon("relay")}<span>Waiting for your VPN relay: ${names}</span>` : t`${icon("tv")}<span>Waiting to sign in: ${names}</span>`
+    : relay ? t`${icon("relay")}<span>Nothing's waiting here yet. Is the TV or phone showing its code, on the same network as this ${DEVICE}?</span>`
     : t`${icon("tv")}<span>No TV waiting here yet. Is it showing its code, on the same network as this ${DEVICE}?</span>`;
   $("#tvsend-found").classList.toggle("warn", !tvs.length);
   clearTimeout(tvLooking);
@@ -1237,16 +1294,40 @@ function drawFound(tvs) {
 }
 const findTvs = () => act("tvFind").then(drawFound, () => drawFound([]));
 
-/** The "Sign in a TV" dialog; with a TV's QR code's `link` (scanned with the phone's camera app: App.tsx), it sends at once. */
-function tvSendOpen(link) {
+let sendMode = "signin"; // the dialog's: "signin" (Sign in a TV), or "relay" (Settings → VPN relay → Send to a TV or phone)
+let sendRelay = true; // Sign in a TV's "My VPN relay too", as last switched: on each time it opens
+
+/** Sign in a TV's "My VPN relay too": shown when there's one here to send. */
+function drawRelayToo() {
+  $("#tvsend-relay-wrap").hidden = sendMode === "relay" || !S.settings.relay;
+  $("#tvsend-relay").classList.toggle("on", sendRelay);
+  $("#tvsend-relay").setAttribute("aria-checked", String(sendRelay));
+}
+
+/**
+ * The "Sign in a TV" dialog (`mode` "relay": sends this device's relay to a TV or phone instead); with a TV's QR
+ * code's `link` (scanned with the phone's camera app: App.tsx), it sends at once.
+ */
+function tvSendOpen(link, mode = "signin") {
+  sendMode = mode;
+  sendRelay = true;
+  const relay = mode === "relay";
+  $("#tvsend-modal .box").classList.toggle("relay-send", relay);
+  $("#tvsend-orb").innerHTML = icon(relay ? "relay" : "tv");
+  $("#tvsend-title").textContent = relay ? t`Send your VPN relay` : t`Sign in a TV`;
+  $("#tvsend-intro").textContent = relay
+    ? t`On the TV or phone, open Foxhole, then Settings → VPN relay → Get it: it shows a QR code and a 6-character code. Scan the QR code, or type the code.`
+    : t`Open Foxhole on the TV: it shows a QR code and a 6-character code. Scan the QR code, or type the code.`;
+  $("#tvsend-go").textContent = relay ? t`Send` : t`Sign in`;
   const accts = S.accounts.filter((a) => a.send);
   $("#tvsend-acct").innerHTML = accts.map((a) => `<option value="${esc(a.id)}"${a.current ? " selected" : ""}>${esc(a.email || t`Firefox's account`)}</option>`).join("");
-  $("#tvsend-acct-wrap").hidden = accts.length < 2;
+  $("#tvsend-acct-wrap").hidden = relay || accts.length < 2;
+  drawRelayToo();
   drawSendNet();
-  $("#tvsend-found").innerHTML = t`${icon("tv")}<span>Looking for TVs on this network…</span>`;
+  $("#tvsend-found").innerHTML = relay ? t`${icon("relay")}<span>Looking for TVs and phones on this network…</span>` : t`${icon("tv")}<span>Looking for TVs on this network…</span>`;
   $("#tvsend-found").classList.remove("warn");
   $("#tvsend-code").value = "";
-  tvNote("", accts.length ? "" : t`Sign in to a Mozilla account on this device first: Foxhole sends the TV a sign-in of it.`);
+  tvNote("", relay || accts.length ? "" : t`Sign in to a Mozilla account on this device first: Foxhole sends the TV a sign-in of it.`);
   $("#tvsend-modal").classList.add("on");
   void findTvs();
   void (canScan ??= scanWorks()).then((ok) => ($("#tvsend-scan").hidden = !ok || !!camera));
@@ -1263,14 +1344,20 @@ function tvSendClose() {
 }
 
 async function tvSend(to) {
-  const id = $("#tvsend-acct").value;
-  if (!id) return;
+  const id = $("#tvsend-acct").value; // none (no account here that can sign in a TV): a TV waiting for a relay alone still gets it
+  const relay = sendMode === "relay";
   const btn = $("#tvsend-form button");
   btn.disabled = true;
-  tvNote("", t`Signing in the TV…`);
+  tvNote("", relay ? t`Sending your VPN relay…` : t`Signing in the TV…`);
   try {
-    const name = await act("tvSend", to, id);
-    tvNote("ok", t`${name} is signed in.`);
+    const got = await act("tvSend", to, id || null, { relayOnly: relay, withRelay: sendRelay });
+    if (!got.account) {
+      // what a TV waiting for one alone got: the relay's dialog, in its purple
+      $("#tvsend-title").textContent = t`Send your VPN relay`;
+      $("#tvsend-modal .box").classList.add("relay-send");
+      $("#tvsend-orb").innerHTML = icon("relay");
+    }
+    tvNote("ok", !got.account ? t`${got.name} has your VPN relay now.` : got.relay ? t`${got.name} is signed in, with your VPN relay.` : t`${got.name} is signed in.`);
     setTimeout(tvSendClose, 2500);
   } catch (err) {
     tvNote("error", why(err));
@@ -1652,6 +1739,15 @@ document.addEventListener("click", async (e) => {
       return;
     }
     case "relay-wizard": return openWizard();
+    case "relay-get": return relayWait(true);
+    case "relaywait-close": return relayWait(false);
+    case "relay-send": return tvSendOpen(null, "relay");
+    case "relay-remove":
+      if (TV) $("#relay-get").focus(); // Remove goes with the relay: the remote carries on from Get it, not Connect behind the sheet
+      return act("setRelay", "", "");
+    case "tvsend-relay":
+      sendRelay = !sendRelay;
+      return drawRelayToo();
     case "relay-check": return checkRelay();
     case "wz-close": return closeWizard();
     case "wz-prev": return wizardPrev();
@@ -1719,14 +1815,15 @@ document.addEventListener("click", async (e) => {
     case "trust-later": return act("dismissTrust");
     case "trust-ok": return act("trustCa");
     case "cert-btn": return act(S.caOk ? "untrustCa" : "trustCa");
+    // a phone or TV gets a relay made on a computer (relayWait); a computer makes one, step by step
     case "blocked-setup":
       $("#blocked-modal").classList.remove("on");
-      return openWizard();
+      return PHONE ? relayWait(true) : openWizard();
     case "relay-intro": return $("#relay-modal").classList.add("on");
     case "relay-later": return $("#relay-modal").classList.remove("on");
     case "relay-setup":
       $("#relay-modal").classList.remove("on");
-      return openWizard();
+      return PHONE ? relayWait(true) : openWizard();
     case "up-restart":
       // a phone's installer asks first: the dialog goes, to come back if the user says no there
       if (PHONE) {
@@ -1852,6 +1949,7 @@ document.addEventListener("keydown", (e) => {
     if ($("#take-modal").classList.contains("on")) return takeClose();
     if ($("#give-modal").classList.contains("on")) return giveClose();
     if ($("#tvwait-modal").classList.contains("on")) return tvModal(false);
+    if ($("#relaywait-modal").classList.contains("on")) return relayWait(false);
     if ($("#unentitled-modal").classList.contains("on")) return $("#unentitled-modal").classList.remove("on");
     if ($("#logout-modal").classList.contains("on")) return $("#logout-modal").classList.remove("on");
     if ($("#add-modal").classList.contains("on")) return $("#add-modal").classList.remove("on");
@@ -1921,7 +2019,21 @@ window.addEventListener("focus", () => document.body.classList.remove("idle"));
   if (fh.platform === "darwin") document.body.classList.add("mac");
   if (PHONE) {
     document.body.classList.add("phone", fh.platform); // .ios: no whole-system mode (style.css)
-    $("#blocked-later").textContent = t`OK`; // the blocked dialog's only button there: no relay on a phone (controller.js NO_RELAY)
+    if (IOS) $("#blocked-later").textContent = t`OK`; // the blocked dialog's only button there: no relay on an iPhone (controller.js NO_RELAY)
+    else {
+      // a phone or TV can't make a relay (Apps Script wants a computer): one made on a computer comes here (relayWait)
+      const get = TV ? t`Get it from your phone or computer` : t`Get it from your computer`;
+      $("#blocked-how").textContent = t`A relay gets around it: a free script on your own Google account that asks Mozilla for Foxhole, from Google. It's made on a computer, then brought here:`;
+      $("#blocked-steps").innerHTML =
+        t`<li><span>On a computer with Foxhole (Windows, Mac or Linux): <b>Settings</b> → <b>VPN relay</b> → <b>Set up step by step</b>. It takes a few minutes, and Foxhole shows each click.</span></li>` +
+        (TV
+          ? t`<li><span>Pick <b>Get it from your phone or computer</b>: this TV shows a QR code and a 6-character code. On the computer, or a phone that has the relay, open <b>Settings</b> → <b>VPN relay</b> → <b>Send to a TV or phone</b>, then scan the QR code or type the code.</span></li>`
+          : t`<li><span>Tap <b>Get it from your computer</b>: this phone shows a 6-character code. On the computer, open <b>Settings</b> → <b>VPN relay</b> → <b>Send to a TV or phone</b>, and type it.</span></li>`);
+      $("#blocked-setup span").textContent = get;
+      $("#blocked-setup use").setAttribute("href", "#i-relay");
+      $("#relay-intro-how").textContent = t`It carries web pages only, and sites can still see your IP. Make it on a computer, where Foxhole shows each click, then send it to this phone.`;
+      $("#relay-setup span").textContent = get;
+    }
     // Android's installer replaces the app (updater.js): it closes, the VPN with it
     $("#update-modal h2").textContent = t`The update is downloaded`;
     $("#update-modal p").textContent = PHONE_UPDATE;
@@ -2026,7 +2138,14 @@ if (TV) {
 let blockedSeen = 0; // the controller's count of times vpn.mozilla.org was found blocked, as far as the window said so
 /** Says vpn.mozilla.org is blocked here, offering the relay's setup, each time the controller finds it anew. */
 function sayBlocked() {
-  if (S.blocked > blockedSeen && !S.settings.relay) $("#blocked-modal").classList.add("on");
+  if (S.blocked > blockedSeen && !S.settings.relay) {
+    const region = S.blockedRegion; // it answered 451 (guardian.ts GuardianBlocked)
+    $("#blocked-title").textContent = region ? t`Firefox VPN isn't offered in your country` : t`Mozilla's VPN service is blocked here`;
+    $("#blocked-why").textContent = region
+      ? t`Mozilla turns away the VPN's sign-ins from your country's addresses.`
+      : t`It seems your government or internet provider blocks Firefox's VPN service (vpn.mozilla.org) in your country.`;
+    $("#blocked-modal").classList.add("on");
+  }
   blockedSeen = S.blocked;
 }
 fh.onState((state) => {

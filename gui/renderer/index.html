@@ -264,17 +264,23 @@
     <div class="relay-zone">
       <form class="group" id="relay-form">
         <div class="label"><svg class="i"><use href="#i-shield"/></svg>VPN relay<span class="tier" id="relay-badge"></span></div>
-        <div class="hint" data-t>Where <code>vpn.mozilla.org</code> is blocked (e.g. Iran), your own free Google Apps Script reaches it for Foxhole. Once it's set up, <b>Relay</b>, first in Locations, can also carry your browsing when nothing else gets through.</div>
+        <div class="hint" id="relay-about"></div>
         <div class="hint" id="relay-state"></div>
-        <input id="relay-id" placeholder="Apps Script deployment ID" autocomplete="off" spellcheck="false">
-        <div class="pw-wrap"><input id="relay-key" type="password" placeholder="Auth key" autocomplete="off"><button class="mini" type="button" id="relay-reveal" title="Show"><svg class="i"><use href="#i-eye"/></svg></button></div>
+        <input class="not-tv" id="relay-id" placeholder="Apps Script deployment ID" autocomplete="off" spellcheck="false">
+        <div class="pw-wrap not-tv"><input id="relay-key" type="password" placeholder="Auth key" autocomplete="off"><button class="mini" type="button" id="relay-reveal" title="Show"><svg class="i"><use href="#i-eye"/></svg></button></div>
         <div class="cert-line">
-          <button class="btn primary wizard-btn" type="button" id="relay-wizard"><svg class="i"><use href="#i-spark"/></svg>Set up step by step</button>
+          <button class="btn primary wizard-btn desktop-only" type="button" id="relay-wizard"><svg class="i"><use href="#i-spark"/></svg>Set up step by step</button>
+          <!-- a phone or TV gets one made on a computer (app.js relayWait) -->
+          <button class="btn primary wizard-btn android-only" type="button" id="relay-get"><svg class="i"><use href="#i-relay"/></svg><span></span></button>
           <button class="btn" type="button" id="relay-check"><svg class="i"><use href="#i-plug"/></svg>Check</button>
+        </div>
+        <div class="row-btns" id="relay-more">
+          <button class="btn not-tv" type="button" id="relay-send"><svg class="i"><use href="#i-share"/></svg>Send to a TV or phone</button>
+          <button class="btn tv-only" type="button" id="relay-remove"><svg class="i"><use href="#i-logout"/></svg>Remove</button>
         </div>
         <div class="note" id="relay-check-state"></div>
       </form>
-      <div class="group" id="cert-group">
+      <div class="group not-tv" id="cert-group">
         <div class="label"><svg class="i"><use href="#i-lock"/></svg>Relay certificate</div>
         <div class="hint">The relay can only fetch web pages, so Foxhole opens each site's encryption on this computer, with certificates from its own authority: made here, and never sent anywhere. Browsers and apps trust it once.</div>
         <div class="cert-line"><span id="cert-state"></span><button class="btn" type="button" id="cert-btn"></button></div>
@@ -340,12 +346,14 @@
 <div class="modal backdrop" id="blocked-modal">
   <div class="box glass">
     <div class="lock-orb"><svg class="i"><use href="#i-shield"/></svg></div>
-    <h2>Mozilla's VPN service is blocked here</h2>
-    <p>It seems your government or internet provider blocks Firefox's VPN service (vpn.mozilla.org) in your country.</p>
-    <p class="relay-only">Set up a relay to get around it: a free script on your own Google account that reaches it for Foxhole. It takes a few minutes, and Foxhole shows you each click.</p>
+    <h2 id="blocked-title">Mozilla's VPN service is blocked here</h2>
+    <p id="blocked-why">It seems your government or internet provider blocks Firefox's VPN service (vpn.mozilla.org) in your country.</p>
+    <p class="relay-only" id="blocked-how">A relay gets around it: a free script on your own Google account that asks Mozilla for Foxhole, from Google. Setting it up takes a few minutes, and Foxhole shows you each click.</p>
+    <!-- a phone's or TV's: the relay's made on a computer, then brought here by its code (app.js relayWait) -->
+    <ol class="steps android-only" id="blocked-steps"></ol>
     <div class="actions">
       <button class="btn" type="button" id="blocked-later">Not now</button>
-      <button class="btn primary relay-only" type="button" id="blocked-setup"><svg class="i"><use href="#i-spark"/></svg>Set up a relay</button>
+      <button class="btn primary relay-only" type="button" id="blocked-setup"><svg class="i"><use href="#i-spark"/></svg><span>Set up a relay</span></button>
     </div>
   </div>
 </div>
@@ -356,10 +364,10 @@
     <div class="lock-orb relay"><svg class="i"><use href="#i-relay"/></svg></div>
     <h2>Relay: your own way through</h2>
     <p>A free script on your own Google account fetches the web for you. Your internet provider sees only a visit to Google, so Relay gets through where Firefox VPN is blocked (e.g. Iran), and lets Foxhole reach Firefox VPN there too.</p>
-    <p>It carries web pages only, and sites can still see your IP. Setting it up takes a few minutes, and Foxhole shows you each click.</p>
+    <p id="relay-intro-how">It carries web pages only, and sites can still see your IP. Setting it up takes a few minutes, and Foxhole shows you each click.</p>
     <div class="actions">
       <button class="btn" type="button" id="relay-later">Not now</button>
-      <button class="btn primary" type="button" id="relay-setup"><svg class="i"><use href="#i-spark"/></svg>Set up step by step</button>
+      <button class="btn primary" type="button" id="relay-setup"><svg class="i"><use href="#i-spark"/></svg><span>Set up step by step</span></button>
     </div>
   </div>
 </div>
@@ -472,21 +480,35 @@
   </div>
 </div>
 
-<!-- A phone or computer signs in a TV on its network: the TV's QR code scanned, or its code typed -->
+<!-- A TV or phone gets its VPN relay from a computer or phone that has one (a relay is made on a computer): its QR code and code (app.js relayPanel) -->
+<div class="modal backdrop" id="relaywait-modal">
+  <div class="box glass wide">
+    <div class="lock-orb relay"><svg class="i"><use href="#i-relay"/></svg></div>
+    <h2>Get your VPN relay</h2>
+    <div id="relaywait-body"></div>
+    <span class="link fine" id="relaywait-close">Cancel</span>
+  </div>
+</div>
+
+<!-- A phone or computer signs in a TV on its network (or sends a TV or phone its relay): the QR code scanned, or the code typed -->
 <div class="modal backdrop" id="tvsend-modal">
   <div class="box glass">
-    <div class="lock-orb"><svg class="i"><use href="#i-tv"/></svg></div>
-    <h2>Sign in a TV</h2>
-    <p>Open Foxhole on the TV: it shows a QR code and a 6-character code. Scan the QR code, or type the code.</p>
+    <div class="lock-orb" id="tvsend-orb"><svg class="i"><use href="#i-tv"/></svg></div>
+    <h2 id="tvsend-title">Sign in a TV</h2>
+    <p id="tvsend-intro">Open Foxhole on the TV: it shows a QR code and a 6-character code. Scan the QR code, or type the code.</p>
     <div class="tv-nets">
       <div class="tv-net"><svg class="i"><use href="#i-wifi"/></svg><span id="tvsend-net"></span></div>
       <div class="tv-net" id="tvsend-found"></div>
     </div>
     <label class="tv-acct" id="tvsend-acct-wrap">Account to sign in with <select id="tvsend-acct"></select></label>
+    <div class="row-line" id="tvsend-relay-wrap" hidden>
+      <div><div class="label"><svg class="i"><use href="#i-relay"/></svg>My VPN relay too</div><div class="hint">Where Mozilla is blocked or refuses your country, the TV needs it to connect.</div></div>
+      <button class="switch on" type="button" id="tvsend-relay" role="switch" aria-checked="true" aria-label="My VPN relay too"></button>
+    </div>
     <div class="tv-cam" id="tvsend-cam" hidden><video id="tvsend-video" muted playsinline></video><i></i></div>
     <form class="tv-code-form" id="tvsend-form">
       <input id="tvsend-code" placeholder="ABC 234" maxlength="7" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="The code on the TV">
-      <button class="btn primary" type="submit"><svg class="i"><use href="#i-check"/></svg>Sign in</button>
+      <button class="btn primary" type="submit"><svg class="i"><use href="#i-check"/></svg><span id="tvsend-go">Sign in</span></button>
     </form>
     <button class="btn" type="button" id="tvsend-scan" hidden><svg class="i"><use href="#i-camera"/></svg>Scan the QR code</button>
     <div class="note" id="tvsend-note"></div>

@@ -92,14 +92,18 @@ function bearer(accessToken: string): Record<string, string> {
  * before any login is looked at: the relay asks from Google's). Only this control call is relayed, never the VPN's data.
  */
 async function request(method: "GET" | "HEAD", path: string, accessToken: string, signal?: AbortSignal): Promise<Response> {
+  let why: string;
   try {
     const res = await directRequest(method, path, accessToken, signal);
-    if (res.status !== 451 || !relay) return res;
-    log(`guardian: ${GUARDIAN_HOST} refuses this region (451), relaying ${path} via Apps Script`);
+    if (res.status !== 451) return res;
+    why = "refuses this region (451)";
   } catch (err) {
     if (!relay) throw !signal?.aborted && (await reachable(RELAY_HOST)) ? new GuardianBlocked(err as Error) : err;
-    log(`guardian: ${GUARDIAN_HOST} unreachable, relaying ${path} via Apps Script`);
+    why = "unreachable";
   }
+  // a 451 with no relay set: one is what gets around it, as where it's blocked (its code is what a failed connect shows)
+  if (!relay) throw new GuardianBlocked(Object.assign(new Error(`${GUARDIAN_HOST} ${why}`), { code: "HTTP 451" }), true);
+  log(`guardian: ${GUARDIAN_HOST} ${why}, relaying ${path} via Apps Script`);
   // UrlFetchApp has no HEAD, and here we only read the response's headers, so a HEAD goes through as GET.
   return relayRequest(
     relay,
@@ -152,11 +156,12 @@ const RELAY_HOST = "script.google.com";
 
 /**
  * vpn.mozilla.org won't connect while Google answers: the network is fine and it's blocked on it (Iran), not
- * offline. With no relay set, that's what to set up; each UI offers its setup (relaysetup.ts).
+ * offline; or (`region`) it answers 451, refusing this network's country. With no relay set, that's what to set up;
+ * each UI offers its setup (relaysetup.ts).
  */
 export class GuardianBlocked extends Error {
-  constructor(cause: Error) {
-    super(`${GUARDIAN_HOST} seems blocked on this network: set up a relay (Settings → VPN relay)`, { cause });
+  constructor(cause: Error, readonly region = false) {
+    super(region ? "Mozilla doesn't offer Firefox VPN in this region: set up a relay (Settings → VPN relay)" : `${GUARDIAN_HOST} seems blocked on this network: set up a relay (Settings → VPN relay)`, { cause });
   }
 }
 

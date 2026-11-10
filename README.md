@@ -115,6 +115,13 @@ it shows each click with a screenshot. The relay:
   your traffic still goes through Firefox VPN; and
 - can carry your browsing itself: pick **Relay** at the top of Locations.
 
+**On an Android phone or TV**, make the relay on a computer (Apps Script's setup needs one), then bring it over on
+the same Wi-Fi: on the phone or TV, **Settings → VPN relay → Get it from your computer** shows a QR code and a
+6-character code; on the computer, or a phone that has the relay, **Settings → VPN relay → Send to a TV or phone**
+scans the QR code or takes the code. A TV signed in from a phone or computer (**Settings → Sign in a TV**) gets its
+relay with the sign-in. On a TV the relay only reaches Mozilla: a TV's apps don't trust relay mode's certificate, so it has
+no **Relay** location. iPhones don't have the relay yet.
+
 **Split tunneling → Iranian sites direct** sends Iran's sites around the VPN: by
 name (`.ir`, and 57,000 more from [iran-hosted-domains](https://github.com/bootmortis/iran-hosted-domains))
 and by address ([Iran's ranges](https://github.com/ipverse/country-ip-blocks)), refreshed weekly through the VPN.

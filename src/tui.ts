@@ -171,6 +171,7 @@ export class Tui {
   #dataNote = "";
   #wizard: RelayWizard | null = null; // the relay's setup, over Settings
   #blocked = false; // the popup saying vpn.mozilla.org is blocked here, with the relay's setup a key away
+  #blockedRegion = false; // ...or that Mozilla refuses this country (451)
   #blockedTold = false; // said once already: a background check doesn't say it again, a connect does
   #relayIntro = false; // the popup saying what Relay is (its row, before one is set up), with the setup a key away
   #setSel = 0;
@@ -2078,6 +2079,7 @@ export class Tui {
   #saysBlocked(err: unknown): boolean {
     if (!(err instanceof GuardianBlocked)) return false;
     this.#blocked = this.#blockedTold = true;
+    this.#blockedRegion = err.region;
     return true;
   }
 
@@ -2100,22 +2102,25 @@ export class Tui {
   }
 
   #blockedPopup(): string[] {
+    const region = this.#blockedRegion;
     return box(
       [
         "",
-        bold(yellow("Mozilla's VPN service is blocked here")),
+        bold(yellow(region ? "Firefox VPN isn't offered in your country" : "Mozilla's VPN service is blocked here")),
         "",
-        "It seems your government or internet provider blocks",
-        "Firefox's VPN service (vpn.mozilla.org) in your country.",
+        ...(region
+          ? ["Mozilla turns away the VPN's sign-ins from your", "country's addresses (vpn.mozilla.org answers 451)."]
+          : ["It seems your government or internet provider blocks", "Firefox's VPN service (vpn.mozilla.org) in your country."]),
         "",
-        "Set up a relay to get around it: a free script on your",
-        "own Google account that reaches it for foxhole. It takes",
-        "a few minutes, and foxhole shows you each click.",
+        "A relay gets around it: a free script on your own",
+        "Google account that asks Mozilla for foxhole, from",
+        "Google. Setting it up takes a few minutes, and foxhole",
+        "shows you each click.",
         "",
         `${bold(cyan("[⏎ Set up a relay]"))}   ${dim("[esc Not now]")}`,
         "",
       ],
-      { title: bold(yellow("vpn.mozilla.org blocked")) },
+      { title: bold(yellow(region ? "vpn.mozilla.org refuses this country" : "vpn.mozilla.org blocked")) },
     );
   }
 
