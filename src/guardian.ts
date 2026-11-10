@@ -88,21 +88,24 @@ function bearer(accessToken: string): Record<string, string> {
 
 /**
  * A Guardian request: direct, falling back to the relay (when one is set) if vpn.mozilla.org won't connect —
- * which is how it's blocked on Iranian IPs. Only this control call is relayed, never the VPN's data.
+ * which is how it's blocked on Iranian IPs — or refuses this network's region (451, by the caller's address,
+ * before any login is looked at: the relay asks from Google's). Only this control call is relayed, never the VPN's data.
  */
 async function request(method: "GET" | "HEAD", path: string, accessToken: string, signal?: AbortSignal): Promise<Response> {
   try {
-    return await directRequest(method, path, accessToken, signal);
+    const res = await directRequest(method, path, accessToken, signal);
+    if (res.status !== 451 || !relay) return res;
+    log(`guardian: ${GUARDIAN_HOST} refuses this region (451), relaying ${path} via Apps Script`);
   } catch (err) {
     if (!relay) throw !signal?.aborted && (await reachable(RELAY_HOST)) ? new GuardianBlocked(err as Error) : err;
-    // UrlFetchApp has no HEAD, and here we only read the response's headers, so a HEAD goes through as GET.
     log(`guardian: ${GUARDIAN_HOST} unreachable, relaying ${path} via Apps Script`);
-    return relayRequest(
-      relay,
-      { method: method === "HEAD" ? "GET" : method, url: `https://${GUARDIAN_HOST}${path}`, headers: bearer(accessToken) },
-      signal,
-    );
   }
+  // UrlFetchApp has no HEAD, and here we only read the response's headers, so a HEAD goes through as GET.
+  return relayRequest(
+    relay,
+    { method: method === "HEAD" ? "GET" : method, url: `https://${GUARDIAN_HOST}${path}`, headers: bearer(accessToken) },
+    signal,
+  );
 }
 
 /**

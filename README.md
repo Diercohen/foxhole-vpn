@@ -110,8 +110,9 @@ Set up a **relay**: a free Google Apps Script on your own account. Use
 **Settings → VPN relay → Set up step by step** (in the app, or `s` in the TUI);
 it shows each click with a screenshot. The relay:
 
-- reaches `vpn.mozilla.org` for foxhole when it's blocked (only small control
-  calls; your traffic still goes through Firefox VPN), and
+- reaches `vpn.mozilla.org` for foxhole when it's blocked, or refuses your
+  country ("VPN not available in this region"): only small control calls,
+  your traffic still goes through Firefox VPN; and
 - can carry your browsing itself: pick **Relay** at the top of Locations.
 
 **Split tunneling → Iranian sites direct** sends Iran's sites around the VPN: by

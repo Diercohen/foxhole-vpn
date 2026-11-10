@@ -3,13 +3,14 @@
 // them. A fake Guardian with a self-signed cert stands in; no network needed.
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"; // self-signed localhost cert
 
+import http from "node:http";
 import https from "node:https";
 import assert from "node:assert";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
-import { fetchPass, fetchUsage, pinGuardian, GuardianError } from "../dist/guardian.js";
+import { fetchPass, fetchUsage, pinGuardian, useRelay, GuardianError } from "../dist/guardian.js";
 
 setTimeout(() => {
   console.error("FAIL - test timed out");
@@ -28,6 +29,7 @@ const jwt = `x.${Buffer.from(JSON.stringify({ nbf: 1, exp: 2 })).toString("base6
 const seen = [];
 const guardian = https.createServer({ key: readFileSync(key), cert: readFileSync(cert) }, (req, res) => {
   seen.push({ sni: req.socket.servername, host: req.headers.host, auth: req.headers.authorization });
+  if (req.headers.authorization === "Bearer region") return res.writeHead(451).end(); // Mozilla refuses this network's country
   if (req.headers.authorization !== "Bearer good") return res.writeHead(401).end();
   res.writeHead(200, { "X-Quota-Limit": "100", "X-Quota-Remaining": "40", "X-Quota-Reset": "2026-11-01T00:00:00Z" });
   res.end(req.method === "HEAD" ? undefined : JSON.stringify({ token: jwt }));
@@ -54,10 +56,33 @@ assert.deepStrictEqual(dialed, ["vpn.mozilla.org", "203.0.113.7"], "dials the ho
 for (const s of seen) assert.deepStrictEqual(s, { sni: "vpn.mozilla.org", host: "vpn.mozilla.org", auth: "Bearer good" });
 
 await assert.rejects(fetchPass("bad"), (err) => err instanceof GuardianError && err.status === 401);
+
+// A 451 is Mozilla refusing this network's region by its address: with a relay set, the call goes again through it
+// (Google's address); with none, it stays the error. Other refusals (401) aren't the address's, so they aren't relayed.
+await assert.rejects(fetchPass("region"), (err) => err instanceof GuardianError && err.status === 451, "no relay: the 451 stands");
+const relayed = [];
+const relayServer = http.createServer((req, res) => {
+  let body = "";
+  req.on("data", (c) => (body += c)).on("end", () => {
+    relayed.push(JSON.parse(body));
+    const b = Buffer.from(JSON.stringify({ token: jwt })).toString("base64");
+    res.end(JSON.stringify({ s: 200, h: { "X-Quota-Limit": "100", "X-Quota-Remaining": "7", "X-Quota-Reset": "2026-11-01T00:00:00Z" }, b }));
+  });
+});
+await new Promise((r) => relayServer.listen(0, "127.0.0.1", r));
+useRelay({ url: `http://127.0.0.1:${relayServer.address().port}/exec`, key: "k" });
+const viaRelay = await fetchPass("region");
+assert.strictEqual(viaRelay.pass.token, jwt, "the pass comes through the relay");
+assert.strictEqual(viaRelay.usage.remaining, 7n, "with the relay's usage headers");
+assert.deepStrictEqual(relayed, [{ k: "k", u: "https://vpn.mozilla.org/api/v1/fpn/token", m: "GET", h: { Authorization: "Bearer region", "Content-Type": "application/json" } }]);
+await assert.rejects(fetchPass("bad"), (err) => err instanceof GuardianError && err.status === 401);
+assert.strictEqual(relayed.length, 1, "a 401 isn't relayed");
+useRelay(null);
+relayServer.close();
 guardian.close();
 port = 1; // nothing listens there
 await assert.rejects(
   fetchPass("good"),
   (err) => err.message === "can't reach vpn.mozilla.org" && err.cause?.code === "ECONNREFUSED",
 );
-console.log("ok - Guardian requests dial the pinned IP and keep the hostname for TLS and Host");
+console.log("ok - Guardian requests dial the pinned IP and keep the hostname for TLS and Host, and a 451 goes through the relay");

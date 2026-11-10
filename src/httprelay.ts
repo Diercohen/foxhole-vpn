@@ -2,7 +2,7 @@
 // Iranian IPs: relay just those requests through a Google Apps Script web app — MasterHttpRelayVPN's Code.gs
 // (https://github.com/masterking32/MasterHttpRelayVPN). script.google.com is reachable where vpn.mozilla.org
 // isn't; the script fetches Guardian from Google's servers and returns the response. guardian.ts uses this only
-// when the direct connection fails, and only for its own control calls (the proxy pass, usage, entitlement) —
+// when the direct connection fails or Guardian refuses this network's region (451), and only for its own control calls (the proxy pass, usage, entitlement) —
 // never the VPN's data, which flows straight through the tunnel to Fastly. The script sees the short-lived,
 // VPN-scoped access token while relaying, so point it at a deployment you own.
 //
