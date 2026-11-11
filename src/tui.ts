@@ -15,7 +15,7 @@ import { traffic, runsOut, sizeOf } from "./traffic.js";
 import { knownBlocked, sanctioned, verdictOf, verdictText, tryText, wantOf } from "./smart.js";
 import { forgetToken } from "./tokenserver.js";
 import { FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox, saveAccounts, signOut, withFirefox, withOwn, without, type Accounts } from "./accounts.js";
-import { confirmLogin, login, sendUnblock, type FxaLogin } from "./fxalogin.js";
+import { desktopApp, signInWindow, type FxaLogin } from "./fxalogin.js";
 import { fetchUsage, type Usage } from "./guardian.js";
 import { startProxy, onProxyWarning, checkSite, netState, onNetState, type ProxyHandle } from "./proxy.js";
 import { startSmartDns, smartDnsHost, smartDnsProblem, type SmartDns } from "./smartdns.js";
@@ -250,8 +250,7 @@ export class Tui {
   #acctSel = 0; // a row: the accounts, then "+ Add account"
   #acctNote = "";
   #removeAsk: string | null = null; // the account x was pressed on once: again signs it out
-  // Foxhole's own Mozilla sign-in (fxalogin.ts), typed in the Accounts popup: the step, what's typed, what's done
-  #fxa: { step: "email" | "password" | "unblock" | "code"; email: string; password: string; text: string; busy: boolean; note: string; bad: boolean; session: FxaLogin | null } | null = null; // bad: the note is an error
+  #signingIn: AbortController | null = null; // Foxhole's own sign-in (fxalogin.ts), its window open: esc stops waiting
   #others = new Map<string, { usage: Usage | null; error: string | null }>(); // data left of those not in use
   #lowOpen = false; // the popup saying the account in use is low on data
   #notesOpen = false; // the popup with what's new in the update ('u'), whose Enter updates
@@ -508,8 +507,8 @@ export class Tui {
   }
 
   /** Keystrokes while the Accounts popup is open. */
-  #acctKey(s: string, key: readline.Key): void {
-    if (this.#fxa) return this.#fxaKey(s, key);
+  #acctKey(key: readline.Key): void {
+    if (this.#signingIn) return void (key.name === "escape" && this.#signingIn.abort());
     const ids = this.#ids();
     if (key.name !== "x" && key.name !== "delete" && key.name !== "backspace") {
       this.#removeAsk = null; // a sign-out asked for goes with any other key
@@ -533,9 +532,8 @@ export class Tui {
         break;
       case "return":
         // after the accounts: Foxhole's own sign-in, then Firefox's (till it's on the list)
-        if (this.#acctSel === ids.length) {
-          this.#fxa = { step: "email", email: "", password: "", text: "", busy: false, note: "", bad: false, session: null };
-        } else if (this.#acctSel === ids.length + 1) {
+        if (this.#acctSel === ids.length) return void this.#windowSignIn();
+        else if (this.#acctSel === ids.length + 1) {
           if (!authFor(withFirefox(this.#accounts), FIREFOX)) return void ((this.#acctNote = red("Firefox isn't signed in (or can't be read): sign in to Firefox, then try again.")), this.#render());
           const ff = findAccount()?.email?.toLowerCase();
           const twin = this.#accounts.own.find((x) => !!ff && x.email.toLowerCase() === ff);
@@ -568,57 +566,27 @@ export class Tui {
     return this.#ids().length + 1 + (this.#accounts.firefox ? 0 : 1);
   }
 
-  /** Keystrokes in Foxhole's own sign-in: typing, enter the next step, esc cancels (a session begun is signed out). */
-  #fxaKey(s: string, key: readline.Key): void {
-    const f = this.#fxa!;
-    if (f.busy) return;
-    if (key.name === "escape") {
-      if (f.session) void signOut({ sessionToken: f.session.sessionToken });
-      this.#fxa = null;
-    } else if (key.name === "backspace") f.text = f.text.slice(0, -1);
-    else if (key.name === "return") return void this.#fxaNext();
-    else if (s && !key.ctrl && !key.meta && [...s].every((c) => c >= " ") && f.text.length + s.length <= 256) f.text += s; // pasted too
+  /** Foxhole's own sign-in: in a window of its own, the desktop app's or a Firefox of its own (fxalogin.ts), through the VPN while connected. */
+  async #windowSignIn(): Promise<void> {
+    const stop = (this.#signingIn = new AbortController());
+    this.#acctNote = dim(desktopApp() ? "Sign in on Mozilla's page, in the window that opened…" : "In the Firefox window that opened: Sign in (no Sync)…");
     this.#render();
-  }
-
-  /** Foxhole's own sign-in's next step, from what's typed: the password, then a code if Mozilla asks for one. */
-  async #fxaNext(): Promise<void> {
-    const f = this.#fxa!;
-    const text = f.text;
-    if (f.step === "email") {
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text.trim())) return void (Object.assign(f, { note: "That isn't an email address.", bad: true }), this.#render());
-      return void (Object.assign(f, { step: "password", email: text.trim(), text: "", note: "", bad: false }), this.#render());
-    }
-    if (!text.trim()) return;
-    Object.assign(f, { busy: true, bad: false, note: f.step === "code" ? "confirming…" : "signing in…" });
-    this.#render();
+    // Proxy mode: the page loads through the proxy. Global mode tunnels it already.
+    const proxy = this.#proxy && this.#active && !this.#global ? `http://${dialHost(this.#host)}:${this.#proxy.port}` : undefined;
     try {
-      if (f.step === "password" || f.step === "unblock") {
-        if (f.step === "password") f.password = text;
-        f.session = await login(f.email, f.password, f.step === "unblock" ? text.trim() : undefined, AbortSignal.timeout(30_000));
-        f.email = f.session.email;
-        if (f.session.confirm)
-          return void Object.assign(f, { step: "code", text: "", note: f.session.confirm === "totp" ? "Type the code your authenticator app shows for Mozilla." : `Mozilla emailed a code to ${f.email}: type it here.` });
-      } else await confirmLogin(f.session!, text, AbortSignal.timeout(30_000));
-      this.#fxaDone(f.session!);
+      const s = await signInWindow(stop.signal, proxy);
+      this.#acctNote = "";
+      if (s) this.#fxaDone(s);
     } catch (err) {
-      const errno = (err as { errno?: number }).errno;
-      if (errno === 125 && f.step === "password") {
-        // Mozilla wants to be sure first: a code by email lets the sign-in through
-        await sendUnblock(f.email, AbortSignal.timeout(30_000)).catch(() => {});
-        return void Object.assign(f, { step: "unblock", text: "", note: `Mozilla wants to be sure it's you: it emailed a code to ${f.email}.` });
-      }
-      Object.assign(f, { note: (err as Error).message, bad: true });
-      if (errno === 103) (f.step = "password"), (f.text = "");
+      this.#acctNote = wrap((err as Error).message, 58).map(red).join("\n");
     } finally {
-      f.busy = false;
+      this.#signingIn = null;
       this.#render();
     }
   }
 
   /** Signed in: added and in use, unless it's on the list already (as in the desktop app's signedIn). */
   #fxaDone({ uid, email, sessionToken }: FxaLogin): void {
-    this.#fxa = null;
     const same = (a?: string | null) => !!a && a.toLowerCase() === email.toLowerCase();
     const twin = this.#accounts.own.find((x) => x.uid === uid || same(x.email));
     if ((twin && this.#others.get(twin.uid)?.error !== "signed out") || (!twin && this.#accounts.firefox && same(this.#firefoxEmail))) {
@@ -630,24 +598,6 @@ export class Tui {
     this.#others.delete(uid);
     this.#acctSel = this.#ids().indexOf(uid);
     void this.#use(uid).then(() => ((this.#acctNote = wrap(`✓ Signed in with ${email}, and it's the account in use now.`, 58).map(green).join("\n")), this.#render()));
-  }
-
-  /** Foxhole's own sign-in, in place of the add rows. */
-  #fxaLines(): string[] {
-    const f = this.#fxa!;
-    const field = (step: string, value: string) => (f.step === step ? value + (f.busy ? "" : cyan("▏")) : value);
-    const code = f.step === "unblock" || f.step === "code";
-    return [
-      bold("Sign in to a Mozilla account"),
-      `  ${dim("Email   ")} ${field("email", f.step === "email" ? f.text : f.email)}`,
-      ...(f.step === "email" ? [] : [`  ${dim("Password")} ${field("password", "•".repeat(Math.min(24, f.step === "password" ? f.text.length : f.password.length)))}`]),
-      ...(code ? [`  ${dim("Code    ")} ${field(f.step, f.text)}`] : []),
-      "",
-      ...(f.note ? wrap(f.note, 58).map(f.bad ? red : f.busy ? dim : (l: string) => l) : []),
-      dim(f.step === "email" ? "Type your email · enter next · esc cancel" : "enter " + (code ? "confirm" : "sign in") + " · esc cancel"),
-      dim("As Firefox does, Mozilla gets a stretched form of your"),
-      dim("password, not the password itself. Foxhole keeps neither."),
-    ];
   }
 
   #accountsPopup(): string[] {
@@ -664,16 +614,14 @@ export class Tui {
     });
     const ff = this.#firefoxEmail;
     const pick = (i: number) => (this.#acctSel === i ? cyan("❯") : " ");
-    const add = this.#fxa
-      ? ["", ...this.#fxaLines()]
-      : [
-          `${pick(ids.length)} ${cyan("+")} Sign in to a Mozilla account`,
-          ...(this.#accounts.firefox ? [] : [`${pick(ids.length + 1)} ${cyan("+")} Use Firefox's sign-in${ff ? `, ${ff}` : ""}${process.platform === "darwin" ? dim(" (Full Disk Access)") : ""}`]),
-          "",
-          ...this.#acctNote.split("\n"),
-          "",
-          dim("↑↓ select · enter use / add · x sign out · esc close"),
-        ];
+    const add = [
+      `${pick(ids.length)} ${cyan("+")} Sign in to a Mozilla account`,
+      ...(this.#accounts.firefox ? [] : [`${pick(ids.length + 1)} ${cyan("+")} Use Firefox's sign-in${ff ? `, ${ff}` : ""}${process.platform === "darwin" ? dim(" (Full Disk Access)") : ""}`]),
+      "",
+      ...this.#acctNote.split("\n"),
+      "",
+      dim(this.#signingIn ? "esc stop waiting" : "↑↓ select · enter use / add · x sign out · esc close"),
+    ];
     return box(
       ["", dim("The VPN uses the one in use (●), from now on too."), "", ...rows, ...add],
       { title: bold(cyan("Accounts")), width: 62 },
@@ -781,7 +729,7 @@ export class Tui {
           else if (key.name === "down" || key.name === "j") this.#notesTop++; // #notesPopup keeps it in range
           return this.#render();
         }
-        if (this.#acctOpen) return this.#acctKey(s, key);
+        if (this.#acctOpen) return this.#acctKey(key);
         if (this.#settingsOpen) return this.#settingsKey(s, key);
         if (this.#splitOpen) return this.#splitKey(s, key);
         if (this.#dataOpen) return this.#dataKey(key);

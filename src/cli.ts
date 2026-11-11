@@ -5,8 +5,8 @@ import { existsSync } from "node:fs";
 import { fetchServerList } from "./serverlist.js";
 import { findAccount, openBrowser, FULL_DISK_ACCESS, type AccountState, type ProfileAccessError } from "./profile.js";
 import { FirefoxAuth, StaticAuth, type Authenticator, type FxaError } from "./auth.js";
-import { FIREFOX, authFor, loadAccounts, peekFirefox, saveAccounts, signOut, withFirefox, withOwn, without } from "./accounts.js";
-import { confirmLogin, login, sendUnblock, type FxaLogin } from "./fxalogin.js";
+import { FIREFOX, authFor, loadAccounts, peekFirefox, saveAccounts, withFirefox, withOwn, without } from "./accounts.js";
+import { desktopApp, signInWindow } from "./fxalogin.js";
 import { Connection, findCountry } from "./connection.js";
 import { fetchEntitlement, useRelay, GuardianBlocked } from "./guardian.js";
 import { loadRelay } from "./httprelay.js";
@@ -165,11 +165,11 @@ async function ensureAuth(): Promise<Authenticator> {
   if (account?.blocked) {
     if (!process.stdin.isTTY) blockedExit(account.blocked);
     sayBlocked(account.blocked);
-    console.log(dim(`\nOr press ${under("e")} to sign in here with your email, without Firefox: nothing to allow · ${under("q")} quits`));
+    console.log(dim(`\nOr press ${under("e")} to sign in in a window of its own: nothing to allow · ${under("q")} quits`));
     const keys = cancelKeys("e");
     const pressed = await keys.cancelled;
     keys.stop();
-    if (pressed && (await emailLogin())) return ensureAuth();
+    if (pressed && (await windowLogin())) return ensureAuth();
     process.exit(1);
   }
   const error = errors.join("\n");
@@ -411,7 +411,7 @@ async function cmdLogin(): Promise<boolean> {
           "",
           `${bold("Sync is optional")}: foxhole only needs the sign-in, so you can`,
           `turn off everything on the ${bold("Choose what to sync")} screen.`,
-          ...(process.stdin.isTTY ? ["", `Or press ${bold(cyan("e"))} to sign in here with your email, without Firefox.`] : []),
+          ...(process.stdin.isTTY ? ["", `Or press ${bold(cyan("e"))} to sign in in a window of its own instead (not this Firefox).`] : []),
         ],
         { title: cyan("🦊 foxhole login") },
       ).join("\n") +
@@ -436,7 +436,7 @@ async function cmdLogin(): Promise<boolean> {
   const result = await Promise.race([found, keys.cancelled]);
   clearInterval(timer);
   keys.stop();
-  if (result === "e") return emailLogin();
+  if (result === "e") return windowLogin();
   if (result === null) {
     console.log(yellow("Cancelled."));
     return false;
@@ -464,8 +464,8 @@ async function firstSignIn(): Promise<boolean> {
           "",
           "Foxhole uses Firefox's free VPN, which comes with a Mozilla account.",
           "",
-          `${bold(cyan("e"))}  Sign in with your email, here: no Firefox needed`,
-          dim("   with your password and the code Mozilla emails"),
+          `${bold(cyan("e"))}  Sign in in a window of its own: your Firefox stays as it is`,
+          dim(desktopApp() ? "   the desktop app's sign-in window" : "   a Firefox of its own, without Sync"),
           `${bold(cyan("f"))}  ${ff ? `Use Firefox's account, ${ff}` : "Use Firefox's sign-in"}`,
           dim(`   ${firefoxWhat}`),
         ],
@@ -482,87 +482,36 @@ async function firstSignIn(): Promise<boolean> {
       process.exit(130); // the app can't connect without a sign-in
     }
     if (key === "f") return false;
-    if (await emailLogin()) return true; // cancelled: asked again
+    if (await windowLogin()) return true; // cancelled, or no window here: asked again
   }
-}
-
-/** A line typed here, a password's shown as dots; null on esc or Ctrl+C. */
-function ask(prompt: string, hidden = false): Promise<string | null> {
-  process.stdout.write(prompt);
-  return new Promise((resolve) => {
-    let text = "";
-    const onData = (b: Buffer) => {
-      const s = b.toString("utf8");
-      if (/^\x1b./s.test(s)) return; // an arrow key or the like
-      for (const c of s) {
-        if ("\r\n\x03\x1b".includes(c)) {
-          process.stdin.removeListener("data", onData).setRawMode(false).pause();
-          process.stdout.write("\n");
-          return resolve("\r\n".includes(c) ? text : null);
-        }
-        if (c === "\x7f" || c === "\b") {
-          if (text) (text = [...text].slice(0, -1).join("")), process.stdout.write("\b \b");
-        } else if (c >= " ") (text += c), process.stdout.write(hidden ? "•" : c);
-      }
-    };
-    process.stdin.on("data", onData).setRawMode(true).resume();
-  });
 }
 
 /**
- * Foxhole's own sign-in (fxalogin.ts), typed here in place of Firefox's, as in the TUI's Accounts: the email, the
- * password, and a code when Mozilla asks for one. Signed in, it's the account in use, and Firefox's sign-in (signed
- * out, or unreadable) leaves the list: Accounts adds it back. False when cancelled.
+ * Foxhole's own sign-in (fxalogin.ts), in place of Firefox's, as in the TUI's Accounts: in a window of its own (the
+ * desktop app's, or a Firefox of its own). Signed in, it's the account in use, and Firefox's sign-in (signed out, or unreadable) leaves the list:
+ * Accounts adds it back. False when cancelled, or where the window can't open (said).
  */
-async function emailLogin(): Promise<boolean> {
-  console.log(`\n${bold("Sign in to a Mozilla account")}  ${dim("enter next · esc cancel")}`);
-  console.log(dim("  As Firefox does, Mozilla gets a stretched form of your\n  password, not the password itself. Foxhole keeps neither."));
-  const busy = <T>(p: Promise<T>, what = "signing in") => (process.stdout.write(dim(`  ${what}…`)), p.finally(() => process.stdout.write("\r\x1b[K")));
-  let step: "email" | "password" | "unblock" | "code" = "email";
-  let email = "", password = "", session: FxaLogin | null = null;
-  for (;;) {
-    const text = await ask(`  ${dim(step === "email" ? "Email   " : step === "password" ? "Password" : "Code    ")} `, step === "password");
-    if (text === null) {
-      if (session) void signOut({ sessionToken: session.sessionToken }); // a session begun isn't kept
+async function windowLogin(): Promise<boolean> {
+  const where = desktopApp() ? `${bold("Sign in on Mozilla's page")}, in the window that opens` : `${bold("Sign in in the Firefox window that opens")}: its ${bold("Sign in")} (no Sync)`;
+  console.log(`\n${where}  ${dim(`${under("q")} or ${under("Ctrl+C")} stops waiting`)}`);
+  const stop = new AbortController();
+  const keys = cancelKeys();
+  void keys.cancelled.then(() => stop.abort());
+  try {
+    const s = await signInWindow(stop.signal);
+    if (!s) {
       console.log(yellow("Cancelled."));
       return false;
     }
-    if (step === "email") {
-      if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text.trim())) (email = text.trim()), (step = "password");
-      else console.log(red("  That isn't an email address."));
-      continue;
-    }
-    if (!text.trim()) continue;
-    try {
-      if (step === "code") await busy(confirmLogin(session!, text, AbortSignal.timeout(30_000)), "confirming");
-      else {
-        if (step === "password") password = text;
-        session = await busy(login(email, password, step === "unblock" ? text.trim() : undefined, AbortSignal.timeout(30_000)));
-        email = session.email;
-        if (session.confirm) {
-          console.log(session.confirm === "totp" ? "  Type the code your authenticator app shows for Mozilla." : `  Mozilla emailed a code to ${email}: type it here.`);
-          step = "code";
-          continue;
-        }
-      }
-      break; // signed in
-    } catch (err) {
-      const errno = (err as FxaError).errno;
-      if (errno === 125 && step === "password") {
-        // Mozilla wants to be sure first: a code by email lets the sign-in through
-        await busy(sendUnblock(email, AbortSignal.timeout(30_000)), "asking for a code").catch(() => {});
-        console.log(`  Mozilla wants to be sure it's you: it emailed a code to ${email}.`);
-        step = "unblock";
-      } else {
-        console.log(red(`  ${(err as Error).message}`));
-        if (errno === 102) step = "email"; // no such account: the email again
-        else if (errno === 103) step = "password";
-      }
-    }
+    saveAccounts(withOwn(without(loadAccounts(), FIREFOX), { uid: s.uid, email: s.email, sessionToken: s.sessionToken }));
+    console.log(green(`✓ Signed in with ${s.email}.`));
+    return true;
+  } catch (err) {
+    console.log(red((err as Error).message));
+    return false;
+  } finally {
+    keys.stop();
   }
-  saveAccounts(withOwn(without(loadAccounts(), FIREFOX), { uid: session!.uid, email, sessionToken: session!.sessionToken }));
-  console.log(green(`✓ Signed in with ${email}.`));
-  return true;
 }
 
 async function cmdProxy() {

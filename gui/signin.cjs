@@ -1,7 +1,7 @@
-// The sign-in window's page (Mozilla's, gui/main.js openSignIn): Firefox's side of its WebChannel, as the phone app's
+// The sign-in window's page (Mozilla's, gui/signinwindow.js openSignIn): Firefox's side of its WebChannel, as the phone app's
 // (mobile/App.tsx FXA_CHANNEL). The page asks the browser what it can do and hands it the signed-in session, which
 // Firefox would keep in its profile and Foxhole keeps in its accounts (accounts.ts) to get the VPN's token with.
-// The answers run in the page's own world (its events carry plain objects); what comes out goes to main.js.
+// The answers run in the page's own world (its events carry plain objects); what comes out goes to signinwindow.js.
 const { contextBridge, ipcRenderer, webFrame } = require("electron");
 
 contextBridge.exposeInMainWorld("foxholeSignIn", (json) => ipcRenderer.send("signin", String(json)));

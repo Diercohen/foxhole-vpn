@@ -184,38 +184,31 @@ function readAccount(): AccountState | null {
   return dirs[0] ? { profileDir: dirs[0], signedIn: false, verified: false, email: null } : null;
 }
 
+/**
+ * Firefox's own command here, or null: its binary itself (macOS: as `open` would hand it the # of a URL escaped, as
+ * about:preferences%23sync), installed, on PATH (Ubuntu's snap too), or the Flatpak (Fedora Silverblue and Kinoite
+ * have no `firefox` command).
+ */
+export function firefoxCommand(): string[] | null {
+  const first = (paths: (string | undefined)[]) => {
+    const p = paths.find((p) => p && existsSync(p));
+    return p ? [p] : null;
+  };
+  if (process.platform === "darwin") return first(["/Applications", join(userHome(), "Applications")].map((dir) => join(dir, "Firefox.app/Contents/MacOS/firefox")));
+  if (process.platform === "win32") return first([process.env.ProgramFiles, process.env["ProgramFiles(x86)"]].map((dir) => dir && `${dir}\\Mozilla Firefox\\firefox.exe`));
+  const onPath = (cmd: string) => (process.env.PATH ?? "").split(":").some((dir) => dir && existsSync(join(dir, cmd)));
+  const flatpak = ["/var/lib/flatpak", join(userHome(), ".local/share/flatpak")].some((d) => existsSync(join(d, "app/org.mozilla.firefox")));
+  if (existsSync("/opt/firefox-official/firefox")) return ["/opt/firefox-official/firefox"];
+  return onPath("firefox") ? ["firefox"] : flatpak ? ["flatpak", "run", "org.mozilla.firefox"] : null;
+}
+
 /** Opens `url` in Firefox itself: only it opens about: pages, such as its sign-in (about:preferences#sync). */
 export function openBrowser(url: string) {
   // Under sudo it would start root's own Firefox, with root's profile, not the user's.
   if (process.getuid?.() === 0 && process.env.SUDO_USER) return;
-  if (process.platform === "darwin") {
-    // Firefox itself, as `open` hands it the # escaped (about:preferences%23sync); a running
-    // Firefox takes the URL from it. Elsewhere than an Applications folder: just bring it up.
-    const firefox = ["/Applications", join(userHome(), "Applications")]
-      .map((dir) => join(dir, "Firefox.app/Contents/MacOS/firefox"))
-      .find((p) => existsSync(p));
-    const [cmd, ...args] = firefox ? [firefox, url] : ["open", "-a", "Firefox"];
-    spawn(cmd, args, { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
-    return;
-  }
-  if (process.platform === "win32") {
-    const firefox = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]
-      .map((dir) => dir && `${dir}\\Mozilla Firefox\\firefox.exe`)
-      .find((p) => p && existsSync(p));
-    // no default-browser fallback: only Firefox opens about: pages
-    if (firefox) spawn(firefox, [url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
-    return;
-  }
-  // Firefox itself (only it opens about: pages): installed, on PATH (Ubuntu's snap too), or the
-  // Flatpak (Fedora Silverblue and Kinoite have no `firefox` command); xdg-open as a last try
-  const onPath = (cmd: string) => (process.env.PATH ?? "").split(":").some((dir) => dir && existsSync(join(dir, cmd)));
-  const flatpak = ["/var/lib/flatpak", join(userHome(), ".local/share/flatpak")].some((d) => existsSync(join(d, "app/org.mozilla.firefox")));
-  const [cmd, ...args] = existsSync("/opt/firefox-official/firefox")
-    ? ["/opt/firefox-official/firefox"]
-    : onPath("firefox")
-      ? ["firefox"]
-      : flatpak
-        ? ["flatpak", "run", "org.mozilla.firefox"]
-        : ["xdg-open"];
-  spawn(cmd, [...args, url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
+  // A running Firefox takes the URL from the one started. No Firefox found: macOS brings up whatever "Firefox" is,
+  // Linux tries xdg-open, Windows nothing (the default browser doesn't open about: pages).
+  const firefox = firefoxCommand();
+  const [cmd, ...args] = firefox ? [...firefox, url] : process.platform === "darwin" ? ["open", "-a", "Firefox"] : process.platform === "win32" ? [] : ["xdg-open", url];
+  if (cmd) spawn(cmd, args, { detached: true, stdio: "ignore" }).on("error", () => {}).unref();
 }

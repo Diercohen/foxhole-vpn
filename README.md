@@ -60,8 +60,12 @@ Ubuntu 22.04's Node is too old: `sudo snap install node --classic` first.
 **Before you start:** sign in to the **Firefox browser** with a Mozilla account
 (Sync can stay off). foxhole reads that login to get the VPN token; if you're
 signed out, it opens Firefox's sign-in for you. Or sign in in Foxhole itself, in **Accounts** (the desktop app's
-window, or `a` in the terminal UI → **Sign in to a Mozilla account**, with your email, password and the code Mozilla emails).
-On a first start the terminal asks which: `e` your email, or `f` Firefox's sign-in (whose screen offers `e` too).
+window, or `a` in the terminal UI → **Sign in to a Mozilla account**): Mozilla's own page, in a window, 2FA too.
+The terminal opens it in the desktop app's window where that has run on the computer, else in a Firefox of its own
+(Firefox's own sign-in on a fresh profile, deleted after: your Firefox stays as it is, and nothing syncs); where
+there's neither, or no screen (a container, SSH), it says so. Mozilla turns away sign-ins typed into apps themselves
+(HTTP 406), and its page a browser driven from outside.
+On a first start the terminal asks which: `e` that window, or `f` Firefox's sign-in (whose screen offers `e` too).
 
 ## Usage
 

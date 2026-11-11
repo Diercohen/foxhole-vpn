@@ -140,7 +140,7 @@ export class Controller extends EventEmitter {
   #tvsFound = []; // the TVs found waiting on this device's network (tvFind), for a code typed
   #firefoxEmail = null; // Firefox's sign-in's, once read (peekFirefox: where reading it asks nothing)
   #others = new Map(); // an account's id → { usage, error }: the data left of those not in use (refreshAccounts)
-  #openSignIn; // opens Foxhole's own Mozilla sign-in: the desktop's window (gui/main.js), the phone's page
+  #openSignIn; // opens Foxhole's own Mozilla sign-in: the desktop's window (gui/signinwindow.js), the phone's page
   #updates; // updater.js: a new version of the app
   /**
    * On a phone (mobile/node/main.mjs), what it does in place of the desktop's ways; null elsewhere: openSignIn() its
