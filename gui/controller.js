@@ -13,7 +13,7 @@ import { SHARE_PORT, serveShare, shareData, shareLink, parseShared, sharedWhat, 
 import { newNotice, noticeShown, onHot, refreshHot } from "./dist/hot.js";
 import { FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox, saveAccounts, signOut, withFirefox, withOwn, without } from "./dist/accounts.js";
 import { fetchEntitlement, fetchUsage } from "./dist/guardian.js";
-import { GuardianError, GuardianBlocked, useRelay } from "./dist/guardian.js";
+import { GuardianError, GuardianBlocked, GUARDIAN_HOST, useRelay } from "./dist/guardian.js";
 import { loadRelay, relayUrl } from "./dist/httprelay.js";
 import { STEPS, KEY_PLACEHOLDER, relayTemplate, highlightJs, deploymentId } from "./dist/relaysetup.js";
 import { network, publicIp, lanIp, firewallHint } from "./dist/netinfo.js";
@@ -74,6 +74,7 @@ export class Controller extends EventEmitter {
   #countries = [];
   #blocked = 0; // times vpn.mozilla.org was found blocked here: the window says so (with the relay's setup) as it goes up
   #blockedRegion = false; // the last time, it answered 451: Mozilla refuses this country
+  #blockedHost = GUARDIAN_HOST; // the last time's: vpn.mozilla.org, or another of Mozilla's (its account server, the server list)
   #blockedTold = false; // said once already: a background check doesn't say it again, a connect does
   #listError = null;
   #selected = loadLastCountry(); // where the power button connects
@@ -250,6 +251,7 @@ export class Controller extends EventEmitter {
         // signed out elsewhere, or expired: signing in again brings it back (or another account)
         this.#switchTo = null; // it didn't take: no "switched" when it's signed in to again
         if (err.errno === 110) this.#auth = { stage: "expired", email, id: a.current };
+        else if (err instanceof GuardianBlocked) this.#auth = { stage: "offline", email, blocked: err.host }; // the window offers a relay
         else this.#auth = { stage: "offline", email, error: `Couldn't get the VPN's token: ${err.message}` }; // tried again in a while
         this.#changed();
         const since = Date.now();
@@ -271,10 +273,13 @@ export class Controller extends EventEmitter {
           await auth.getAccessToken(AbortSignal.timeout(15_000));
           return auth;
         } catch (err) {
-          // no answer (offline, a timeout): the login is fine, so try again in a while rather than the Browser Console
-          if (["TypeError", "TimeoutError", "AbortError"].includes(err.name)) {
+          // no answer (offline, a timeout, or blocked here with no relay set: the window offers one): the login is
+          // fine, so try again in a while rather than the Browser Console (Firefox couldn't reach Mozilla either)
+          if (err instanceof GuardianBlocked || ["TypeError", "TimeoutError", "AbortError"].includes(err.name)) {
             const cause = err.cause?.code ?? err.cause?.message;
-            this.#auth = { stage: "offline", email: account.email, error: `Couldn't get the VPN's token: ${err.message}${cause ? ` (${cause})` : ""}` };
+            this.#auth = err instanceof GuardianBlocked
+              ? { stage: "offline", email: account.email, blocked: err.host }
+              : { stage: "offline", email: account.email, error: `Couldn't get the VPN's token: ${err.message}${cause ? ` (${cause})` : ""}` };
             this.#changed();
             const since = Date.now();
             await this.#until(() => Date.now() - since > 20_000, gen);
@@ -417,12 +422,12 @@ export class Controller extends EventEmitter {
   }
 
   /**
-   * What another device sent: a sign-in, checked with Mozilla first (the sender's told if it doesn't work), then added
-   * and in use; its relay, saved (in place of one here), and in use at once.
+   * What another device sent: its relay, saved (in place of one here), and in use at once; a sign-in, checked with
+   * Mozilla (through that relay where Mozilla's blocked; the sender's told if it doesn't work), then added and in use.
    */
   async #tvAccept({ account, relay }, from) {
-    if (account) await new RefreshAuth(account.refreshToken).getAccessToken(AbortSignal.timeout(15_000));
     if (relay && (await this.#changeSetting({ relay })) !== true) throw new Error(this.#settingsNote?.text ?? "couldn't save the relay");
+    if (account) await new RefreshAuth(account.refreshToken).getAccessToken(AbortSignal.timeout(15_000));
     if (relay) this.#relayGot++;
     if (!account) {
       // a TV's sign-in screen goes on waiting, for the sign-in
@@ -731,6 +736,7 @@ export class Controller extends EventEmitter {
       this.#countries = order(await fetchServerList());
       if (!this.#rows().some((c) => c.code === this.#selected)) this.#selected = this.#countries.find((c) => !c.locked && c.available)?.code ?? null;
     } catch (err) {
+      this.#saysBlocked(err); // with no relay set: the window offers one
       this.#listError = `server list failed: ${err.message}`;
     }
     this.#changed();
@@ -834,6 +840,7 @@ export class Controller extends EventEmitter {
   #saysBlocked(err) {
     if (!(err instanceof GuardianBlocked)) return false;
     this.#blockedRegion = err.region;
+    this.#blockedHost = err.host;
     this.#blocked++;
     this.#blockedTold = true;
     return true;
@@ -1210,6 +1217,11 @@ export class Controller extends EventEmitter {
     if ("relay" in patch) {
       useRelay(this.#relay()); // takes effect at once, no restart
       this.#followRelay();
+      // what a blocked Mozilla held up comes through it now: the sign-in's token, and the server list
+      if (this.#relay()) {
+        if (this.#auth.stage === "offline") void this.#resignIn();
+        if (this.#listError) void this.reloadList();
+      }
     }
     if ("share" in patch || "port" in patch) {
       this.#host = proxyHost(next);
@@ -1645,6 +1657,7 @@ export class Controller extends EventEmitter {
       restoring: this.#restoring,
       blocked: this.#blocked,
       blockedRegion: this.#blockedRegion,
+      blockedHost: this.#blockedHost,
       relayGot: this.#relayGot,
     };
   }

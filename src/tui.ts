@@ -6,7 +6,7 @@ import { hostname } from "node:os";
 import { userHome, findAccount } from "./profile.js";
 import { fetchServerList, type Country } from "./serverlist.js";
 import { Connection, RELAY_CODE } from "./connection.js";
-import { GuardianError, GuardianBlocked, useRelay } from "./guardian.js";
+import { GuardianError, GuardianBlocked, GUARDIAN_HOST, useRelay } from "./guardian.js";
 import { network, publicIp, lanIp, firewallHint, WIFI_HIDDEN } from "./netinfo.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor, telegramLink, onJoin, withHidden, type Settings } from "./settings.js";
 import { qrLines } from "./qr.js";
@@ -179,6 +179,7 @@ export class Tui {
   #dataShowHidden = false; // the Data popup's "show hidden sites" switch: off each time it opens
   #wizard: RelayWizard | null = null; // the relay's setup, over Settings
   #blocked = false; // the popup saying vpn.mozilla.org is blocked here, with the relay's setup a key away
+  #blockedHost = GUARDIAN_HOST; // ...or another of Mozilla's (guardian.ts mozillaFetch): its account server, the server list
   #blockedRegion = false; // ...or that Mozilla refuses this country (451)
   #blockedTold = false; // said once already: a background check doesn't say it again, a connect does
   #relayIntro = false; // the popup saying what Relay is (its row, before one is set up), with the setup a key away
@@ -260,10 +261,14 @@ export class Tui {
   #quit: (action?: "update" | "logout") => Promise<void> = async () => {};
   readonly #firefoxEmail = this.#accounts.firefox ? findAccount()?.email ?? null : peekFirefox(); // read at the start: cli.ts may just have
 
-  constructor(conn: Connection, host: string, port: number) {
+  readonly #startBlocked: GuardianBlocked | null;
+
+  /** `blocked`: cli.ts found Mozilla's account server blocked here, with no relay set: the popup says so at once. */
+  constructor(conn: Connection, host: string, port: number, blocked: GuardianBlocked | null = null) {
     this.#conn = conn;
     this.#host = host;
     this.#port = port;
+    this.#startBlocked = blocked;
   }
 
   /** Resolves "logout" when the user logged out, so the caller can forget the token. */
@@ -294,16 +299,8 @@ export class Tui {
     process.stdout.write(ALT_ON);
     this.#message = dim("loading…");
     this.#render();
-    try {
-      this.#setList(order(await fetchServerList()));
-      this.#message = "";
-    } catch (err) {
-      this.#setList([]);
-      this.#message = existsSync("/sys/class/net/foxhole0")
-        ? red("offline: a killed global session's routes are still on — quit and run  foxhole restore")
-        : red(`server list failed: ${(err as Error).message}`) + this.#relayHint();
-    }
-    this.#loading = false;
+    await this.#loadList();
+    if (this.#startBlocked && !this.#blockedTold) this.#saysBlocked(this.#startBlocked); // as keys work (the loop below)
     this.#refreshUsage();
     setInterval(() => this.#refreshUsage(), 3 * 60_000).unref(); // also after each connect and disconnect
     this.#refreshNet();
@@ -320,6 +317,21 @@ export class Tui {
     void checkUpdate().then(() => this.#render()); // show the update notice once npm answers
     this.#render();
     return (await this.#loop()) === "logout" ? "logout" : undefined;
+  }
+
+  /** The server list into Locations; failing, why: blocked here (no relay set), the popup with the relay's setup. */
+  async #loadList(): Promise<void> {
+    try {
+      this.#setList(order(await fetchServerList()));
+      if (this.#loading) this.#message = "";
+    } catch (err) {
+      this.#setList([]);
+      this.#saysBlocked(err);
+      this.#message = existsSync("/sys/class/net/foxhole0")
+        ? red("offline: a killed global session's routes are still on — quit and run  foxhole restore")
+        : red(`server list failed: ${(err as Error).message}`) + this.#relayHint();
+    }
+    this.#loading = false;
   }
 
   /** Re-reads the network and the public IP: the VPN exit's when connected, else the real one. */
@@ -1634,6 +1646,11 @@ export class Tui {
       this.#setList(this.#list);
       // relay mode follows: through the new relay, or off without one
       if (this.#active === RELAY_ROW) void (loadRelay(next) ? this.#connect(RELAY_ROW) : this.#disconnect());
+      // what a blocked Mozilla held up comes through it now: the server list, and the VPN's token (the data row fills in)
+      if (loadRelay(next)) {
+        if (!this.#list.length && !this.#loading) void this.#loadList().then(() => this.#render());
+        this.#refreshUsage();
+      }
     }
     if ("smartDns" in patch) this.#followSmartDns();
     if ("share" in patch || "port" in patch) {
@@ -2366,6 +2383,7 @@ export class Tui {
     if (!(err instanceof GuardianBlocked)) return false;
     this.#blocked = this.#blockedTold = true;
     this.#blockedRegion = err.region;
+    this.#blockedHost = err.host;
     return true;
   }
 
@@ -2389,6 +2407,7 @@ export class Tui {
 
   #blockedPopup(): string[] {
     const region = this.#blockedRegion;
+    const host = this.#blockedHost;
     return box(
       [
         "",
@@ -2396,7 +2415,9 @@ export class Tui {
         "",
         ...(region
           ? ["Mozilla turns away the VPN's sign-ins from your", "country's addresses (vpn.mozilla.org answers 451)."]
-          : ["It seems your government or internet provider blocks", "Firefox's VPN service (vpn.mozilla.org) in your country."]),
+          : host === GUARDIAN_HOST
+            ? ["It seems your government or internet provider blocks", "Firefox's VPN service (vpn.mozilla.org) in your country."]
+            : wrap(`It seems your government or internet provider blocks Mozilla's server for the VPN (${host}) in your country.`, 55)),
         "",
         "A relay gets around it: a free script on your own",
         "Google account that asks Mozilla for foxhole, from",
@@ -2406,7 +2427,7 @@ export class Tui {
         `${bold(cyan("[⏎ Set up a relay]"))}   ${dim("[esc Not now]")}`,
         "",
       ],
-      { title: bold(yellow(region ? "vpn.mozilla.org refuses this country" : "vpn.mozilla.org blocked")) },
+      { title: bold(yellow(region ? "vpn.mozilla.org refuses this country" : `${host} blocked`)) },
     );
   }
 

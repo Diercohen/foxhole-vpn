@@ -717,7 +717,7 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 /* ── Password popup ───────────────────────────────────────────────────────────────────────── */
 
 .modal { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; pointer-events: none; }
-#notice-modal, #wifi-modal, #take-modal { z-index: 80; } /* above the sign-in screens (.overlay): an account signed in to again from there, a relay imported before signing in */
+#notice-modal, #wifi-modal, #take-modal, #wizard, #relaywait-modal { z-index: 80; } /* above the sign-in screens (.overlay): an account signed in to again from there, a relay imported, set up or brought before signing in */
 .modal .box { width: min(420px, calc(100% - 40px)); padding: 30px 28px 24px; text-align: center; display: flex; flex-direction: column; gap: 14px;
   background: linear-gradient(160deg, rgba(38, 30, 56, 0.9), rgba(17, 14, 28, 0.94)); -webkit-backdrop-filter: blur(40px) saturate(160%); backdrop-filter: blur(40px) saturate(160%);
   opacity: 0; transform: translateY(24px) scale(0.92); transition: transform 0.6s var(--spring), opacity 0.35s; }

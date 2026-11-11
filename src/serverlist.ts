@@ -1,5 +1,7 @@
 // The VPN server list is published openly via Mozilla Remote Settings, so it
 // needs no authentication. Same collection Firefox reads (IPProtectionServerlist).
+import { mozillaFetch } from "./guardian.js";
+
 const SERVERLIST_URL =
   "https://firefox.settings.services.mozilla.com/v1/buckets/main/collections/vpn-serverlist/records";
 
@@ -61,7 +63,7 @@ function toCountry(raw: RawCountry): Country {
  * the anycast catch-all).
  */
 export async function fetchServerList(signal?: AbortSignal): Promise<Country[]> {
-  const res = await fetch(SERVERLIST_URL, { signal });
+  const res = await mozillaFetch(SERVERLIST_URL, {}, signal); // through the relay where it's blocked
   if (!res.ok) {
     throw new Error(`Server list fetch failed: HTTP ${res.status}`);
   }

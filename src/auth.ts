@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { createHash, createHmac, hkdfSync, randomBytes } from "node:crypto";
 import type { AccountState } from "./profile.js";
+import { mozillaFetch } from "./guardian.js";
 
 /**
  * Produces a fresh FxA access token with the VPN scope, which guardian.ts uses
@@ -71,7 +72,7 @@ export async function fxaPost(path: string, payload: object, sessionToken?: stri
   for (let attempt = 0; ; attempt++) {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (creds) headers.authorization = hawkHeader(url, body, creds, ts);
-    const res = await fetch(url, { method: "POST", headers, body, signal });
+    const res = await mozillaFetch(url.href, { method: "POST", headers, body }, signal); // through the relay where it's blocked
     const data = ((await res.json().catch(() => ({}))) ?? {}) as FxaAnswer["data"];
     if (creds && data.errno === 111 && typeof data.serverTime === "number" && attempt === 0) {
       ts = data.serverTime;

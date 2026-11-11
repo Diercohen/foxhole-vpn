@@ -1,12 +1,13 @@
 // FirefoxAuth: the onepw key derivation (the spec's test vector), the signed
-// fxa-credentials request, token reuse, and the clock-skew retry. fetch is
-// stubbed; no Firefox, no network.
+// fxa-credentials request, token reuse, the clock-skew retry, and the relay where
+// FxA is blocked. fetch is stubbed; no Firefox, no network.
 import assert from "node:assert";
 import { createHash, createHmac } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FirefoxAuth, sessionCredentials, VPN_SCOPES } from "../dist/auth.js";
+import { useRelay } from "../dist/guardian.js";
 
 // https://github.com/mozilla/fxa-auth-server/wiki/onepw-protocol#test-vectors
 const sessionToken = Buffer.from(Array.from({ length: 32 }, (_, i) => 0xa0 + i)).toString("hex");
@@ -19,7 +20,7 @@ writeFileSync(join(dir, "signedInUser.json"), JSON.stringify({ accountData: { se
 
 // A fake FxA that checks the HAWK header the way the server does, and wants ts=1000.
 const calls = [];
-globalThis.fetch = async (url, init) => {
+const fxa = async (url, init) => {
   const h = Object.fromEntries([...init.headers.authorization.matchAll(/(\w+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
   calls.push({ url: String(url), body: JSON.parse(init.body), ts: Number(h.ts) });
   const hash = createHash("sha256").update(`hawk.1.payload\napplication/json\n${init.body}\n`).digest("base64");
@@ -31,6 +32,7 @@ globalThis.fetch = async (url, init) => {
   if (h.ts !== "1000") return Response.json({ errno: 111, message: "Invalid timestamp", serverTime: 1000 }, { status: 401 });
   return Response.json({ access_token: `tok${calls.length}`, expires_in: 86400 });
 };
+globalThis.fetch = fxa;
 
 const auth = new FirefoxAuth({ profileDir: dir });
 assert.equal(await auth.getAccessToken(), "tok2", "a skewed clock is retried on the server's time");
@@ -49,4 +51,21 @@ assert.equal(calls.length, 2, "no second request");
 globalThis.fetch = async () => Response.json({ errno: 110, message: "Invalid authentication token" }, { status: 401 });
 await assert.rejects(new FirefoxAuth({ profileDir: dir }).getAccessToken(), /sign in to Firefox again/);
 
-console.log("ok - Firefox login: onepw keys, the signed token request, reuse, clock-skew retry");
+// api.accounts.firefox.com won't connect (blocked, as on Iranian networks): with a relay set, the request goes through
+// it (guardian.ts mozillaFetch) as signed, the HAWK header and body unchanged and the body's type as the script's ct,
+// so FxA checks it out from Google too
+useRelay({ url: "https://script.google.com/macros/s/x/exec", key: "k" });
+const relayed = [];
+globalThis.fetch = async (url, init) => {
+  if (new URL(url).hostname === "api.accounts.firefox.com") throw new TypeError("fetch failed");
+  const p = JSON.parse(init.body); // the script's request (httprelay.ts)
+  relayed.push(p);
+  assert.equal(p.ct, "application/json", "the type the payload hash has");
+  const res = await fxa(p.u, { headers: p.h, body: Buffer.from(p.b, "base64").toString() });
+  return Response.json({ s: res.status, h: {}, b: Buffer.from(await res.text()).toString("base64") });
+};
+assert.equal(await new FirefoxAuth({ profileDir: dir }).getAccessToken(), "tok4", "the token, through the relay (the clock's retry too)");
+assert.deepEqual(relayed.map((p) => [p.k, p.m, p.u, Object.keys(p.h)]), Array(2).fill(["k", "POST", "https://api.accounts.firefox.com/v1/oauth/token", ["authorization"]]));
+useRelay(null);
+
+console.log("ok - Firefox login: onepw keys, the signed token request, reuse, clock-skew retry, and through the relay");

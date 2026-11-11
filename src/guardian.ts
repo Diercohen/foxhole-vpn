@@ -180,17 +180,49 @@ function directRequest(method: "GET" | "HEAD", path: string, accessToken: string
   });
 }
 
+/**
+ * fetch() for Mozilla's other hosts, on the same Fastly addresses as Guardian: its account server (auth.ts fxaPost: the
+ * VPN's token, sign-ins) and the server list. Direct, else through the relay when one is set, as `request` does; with
+ * none, GuardianBlocked when Google answers, so each UI offers the relay's setup. Only a request that gets no answer
+ * is relayed: any answer, an error status too, is Mozilla's.
+ */
+export async function mozillaFetch(url: string, init: { method?: "GET" | "POST"; headers?: Record<string, string>; body?: string } = {}, signal?: AbortSignal): Promise<Response> {
+  const via = relay;
+  // with a relay to fall back to, a silently dropped (blocked) connection gives up sooner, as directRequest's does:
+  // the relay's answer still comes within the callers' 15 s
+  const ctrl = new AbortController();
+  const stop = () => ctrl.abort(signal?.reason);
+  if (signal?.aborted) stop();
+  else signal?.addEventListener("abort", stop, { once: true });
+  const cap = via ? setTimeout(() => ctrl.abort(new Error("timed out")), 6_000) : undefined;
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } catch (err) {
+    const { hostname, pathname } = new URL(url);
+    if (signal?.aborted) throw err;
+    if (!via) throw (await reachable(RELAY_HOST)) ? new GuardianBlocked(err as Error, false, hostname) : err;
+    const cause = (err as Error).cause as { code?: string } | undefined;
+    log(`${hostname} unreachable (${cause?.code ?? (err as Error).message}), relaying ${pathname} via Apps Script`);
+    // the script sets the body's type from ct
+    const { "content-type": contentType, ...headers } = init.headers ?? {};
+    return relayRequest(via, { method: init.method ?? "GET", url, headers, body: init.body, contentType }, signal);
+  } finally {
+    clearTimeout(cap);
+    signal?.removeEventListener("abort", stop);
+  }
+}
+
 /** Where a relay runs (httprelay.ts): Google's Apps Script. */
 const RELAY_HOST = "script.google.com";
 
 /**
- * vpn.mozilla.org won't connect while Google answers: the network is fine and it's blocked on it (Iran), not
- * offline; or (`region`) it answers 451, refusing this network's country. With no relay set, that's what to set up;
- * each UI offers its setup (relaysetup.ts).
+ * A Mozilla host (`host`: Guardian's, or mozillaFetch's) won't connect while Google answers: the network is fine and
+ * it's blocked on it (Iran), not offline; or (`region`) vpn.mozilla.org answers 451, refusing this network's country.
+ * With no relay set, that's what to set up; each UI offers its setup (relaysetup.ts).
  */
 export class GuardianBlocked extends Error {
-  constructor(cause: Error, readonly region = false) {
-    super(region ? "Mozilla doesn't offer Firefox VPN in this region: set up a relay (Settings → VPN relay)" : `${GUARDIAN_HOST} seems blocked on this network: set up a relay (Settings → VPN relay)`, { cause });
+  constructor(cause: Error, readonly region = false, readonly host = GUARDIAN_HOST) {
+    super(region ? "Mozilla doesn't offer Firefox VPN in this region: set up a relay (Settings → VPN relay)" : `${host} seems blocked on this network: set up a relay (Settings → VPN relay)`, { cause });
   }
 }
 

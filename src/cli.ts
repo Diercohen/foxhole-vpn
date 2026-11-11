@@ -8,7 +8,7 @@ import { FirefoxAuth, StaticAuth, type Authenticator, type FxaError } from "./au
 import { FIREFOX, authFor, loadAccounts, peekFirefox, saveAccounts, signOut, withFirefox, withOwn, without } from "./accounts.js";
 import { confirmLogin, login, sendUnblock, type FxaLogin } from "./fxalogin.js";
 import { Connection, findCountry } from "./connection.js";
-import { fetchEntitlement, useRelay } from "./guardian.js";
+import { fetchEntitlement, useRelay, GuardianBlocked } from "./guardian.js";
 import { loadRelay } from "./httprelay.js";
 import { startProxy } from "./proxy.js";
 import { firewallHint, lanIp } from "./netinfo.js";
@@ -38,6 +38,9 @@ function arg(name: string): string | undefined {
 }
 
 const ENV_TOKEN = "FOXHOLE_ACCESS_TOKEN";
+
+/** ensureAuth found Mozilla's account server blocked here (no relay set): the TUI says so as it opens. */
+let blockedAtStart: GuardianBlocked | null = null;
 
 /** The access token to use: the env var if set, else the one saved from Firefox. */
 function tokenEnv(): { name: string; value: string } | null {
@@ -125,6 +128,7 @@ async function ensureAuth(): Promise<Authenticator> {
     try {
       await auth.getAccessToken(AbortSignal.timeout(15_000));
     } catch (err) {
+      if (err instanceof GuardianBlocked) blockedAtStart = err; // the TUI offers the relay at once
       if ((err as FxaError).errno !== 110) return auth; // Mozilla out of reach for now: the connect says so, and tries again
       console.log(red(`The sign-in to ${email} has ended (signed out elsewhere, or expired): sign in again in Foxhole's desktop app.`));
       console.log(dim("Using Firefox's sign-in meanwhile."));
@@ -135,13 +139,15 @@ async function ensureAuth(): Promise<Authenticator> {
   }
   // Signed in to Firefox: tokens come from its session and are renewed as they expire.
   const account = findAccount();
+  let blocked: GuardianBlocked | null = null;
   if (account?.signedIn) {
     const auth = new FirefoxAuth(account);
     try {
       await auth.getAccessToken(AbortSignal.timeout(15_000)); // fail here, not on the first connect
       return auth;
     } catch (err) {
-      errors.push("Couldn't get a token from your Firefox login:", (err as Error).message);
+      if (err instanceof GuardianBlocked) blocked = err;
+      else errors.push("Couldn't get a token from your Firefox login:", (err as Error).message);
     }
   }
   // A token saved from the window below, e.g. when the Firefox account server can't be reached.
@@ -151,6 +157,9 @@ async function ensureAuth(): Promise<Authenticator> {
     forgetToken();
     errors.push(`Your saved token ${problem}.`, "Get a new one below.");
   }
+  // Mozilla's account server is blocked here, and no relay is set: not the window below (Firefox can't reach it
+  // either), the TUI's popup, with the relay's setup a key away; once it's set, the login's tokens come through it
+  if (blocked) return (blockedAtStart = blocked), new FirefoxAuth(account!);
   // Firefox's profile can't be read (macOS privacy protection): signing in again wouldn't help, allowing it does, or
   // in a terminal Foxhole's own sign-in (e), which needs nothing allowed
   if (account?.blocked) {
@@ -612,7 +621,7 @@ async function cmdTui() {
   const port = Number(arg("port") ?? loadSettings().port);
   // ponytail: a Firefox login first, even for relay mode; a relay-only start (no Guardian auth) if users without one need it
   // "logout": the last account signed out in the TUI's Accounts popup (the next start uses Firefox's sign-in again)
-  if ((await new Tui(new Connection(await ensureAuth()), host, port).run()) === "logout") console.log(green("\n✓ Signed out."));
+  if ((await new Tui(new Connection(await ensureAuth()), host, port, blockedAtStart).run()) === "logout") console.log(green("\n✓ Signed out."));
 }
 
 async function cmdGlobal() {

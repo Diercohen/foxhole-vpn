@@ -1027,7 +1027,15 @@ function renderOnboard() {
         <p>The sign-in to <b>${esc(a.email || t`your account`)}</b> has ended: signed out elsewhere, or expired.</p>
         <div class="buttons"><button class="btn primary" data-act="addAccount" data-arg="mozilla">${icon("user")}Sign in again</button>
         <button class="btn" data-act="removeAccount" data-arg="${esc(a.id)}">${icon("logout")}Remove it</button></div>${rest}`,
-      offline: () => t`${fox}<h2>Can't reach Mozilla</h2>
+      // blocked here with no relay set (guardian.ts mozillaFetch): a relay gets the token through, and set, it's tried at once
+      offline: () => a.blocked
+        ? t`${fox}<h2>Mozilla's VPN service is blocked here</h2>
+          <p>It seems your government or internet provider blocks Mozilla's server for the VPN (<b>${esc(a.blocked)}</b>), so Foxhole can't get the VPN's token for <b>${esc(a.email || t`your account`)}</b>.</p>` +
+          (IOS ? "" : `<p>${PHONE ? t`A relay gets around it: a free script on your own Google account that asks Mozilla for Foxhole, from Google. It's made on a computer, then brought here:` : t`A relay gets around it: a free script on your own Google account that asks Mozilla for Foxhole, from Google. Setting it up takes a few minutes, and Foxhole shows you each click.`}</p>`) +
+          `<div class="buttons">${IOS ? "" : `<button class="btn primary" id="onboard-relay">${PHONE ? icon("relay") + (TV ? t`Get it from your phone or computer` : t`Get it from your computer`) : icon("spark") + t`Set up a relay`}</button>`}
+          <button class="btn${IOS ? " primary" : ""}" data-act="retrySignIn">${icon("refresh")}${t`Try again`}</button></div>
+          ${wait(t`Trying again in a moment…`)}${take}${rest}`
+        : t`${fox}<h2>Can't reach Mozilla</h2>
         <p>Foxhole couldn't get the VPN's token for <b>${esc(a.email || t`your account`)}</b>.</p>${err}
         <div class="buttons"><button class="btn primary" data-act="retrySignIn">${icon("refresh")}Try again</button></div>
         ${wait(t`Trying again in a moment…`)}${take}${rest}`,
@@ -1777,6 +1785,7 @@ document.addEventListener("click", async (e) => {
       giveRelay = !giveRelay;
       return act("shareOpen", true, giveRelay);
     case "take-open": case "onboard-take": return takeOpen();
+    case "onboard-relay": return PHONE ? relayWait(true) : openWizard(); // the sign-in screen's, as Mozilla's blocked
     case "take-close": return takeClose();
     case "tvsend-close": return tvSendClose();
     case "tvsend-scan": return startScan();
@@ -2151,9 +2160,12 @@ function sayBlocked() {
     $("#blocked-title").textContent = region ? t`Firefox VPN isn't offered in your country` : t`Mozilla's VPN service is blocked here`;
     $("#blocked-why").textContent = region
       ? t`Mozilla turns away the VPN's sign-ins from your country's addresses.`
-      : t`It seems your government or internet provider blocks Firefox's VPN service (vpn.mozilla.org) in your country.`;
+      : S.blockedHost === "vpn.mozilla.org"
+        ? t`It seems your government or internet provider blocks Firefox's VPN service (vpn.mozilla.org) in your country.`
+        : t`It seems your government or internet provider blocks Mozilla's server for the VPN (${S.blockedHost}) in your country.`;
     $("#blocked-modal").classList.add("on");
   }
+  if (S.settings.relay) $("#blocked-modal").classList.remove("on"); // set up meanwhile (from the sign-in screen, behind it)
   blockedSeen = S.blocked;
 }
 fh.onState((state) => {

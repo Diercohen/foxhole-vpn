@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
-import { fetchPass, fetchUsage, pinGuardian, useRelay, useTunnel, GuardianBlocked, GuardianError } from "../dist/guardian.js";
+import { fetchPass, fetchUsage, mozillaFetch, pinGuardian, useRelay, useTunnel, GuardianBlocked, GuardianError } from "../dist/guardian.js";
 
 setTimeout(() => {
   console.error("FAIL - test timed out");
@@ -101,7 +101,27 @@ useTunnel(async () => Promise.reject(new Error("the VPN's server refused the pas
 await fetchUsage("good");
 assert.strictEqual(dialed.length, ++n, "a tunnel that fails: directly");
 useTunnel(null);
+
+// Mozilla's other hosts (mozillaFetch: its account server, the server list): a connection that fails goes through the
+// relay, the body's type as the script's ct; an answer, an error too, is Mozilla's; with no relay set, GuardianBlocked
+// names the host (Google answers: here the fake Guardian, through the agent above)
+const plainFetch = globalThis.fetch;
+globalThis.fetch = (url, init) => !/(firefox|mozilla)\.com$/.test(new URL(url).hostname) ? plainFetch(url, init)
+  : url.endsWith("/answers") ? Promise.resolve(new Response("{}", { status: 400 })) : Promise.reject(new TypeError("fetch failed"));
+const fxaUrl = "https://api.accounts.firefox.com/v1/oauth/token";
+const res = await mozillaFetch(fxaUrl, { method: "POST", headers: { "content-type": "application/json", authorization: "Hawk x" }, body: "{}" });
+assert.strictEqual(res.status, 200, "the relay's answer");
+assert.deepStrictEqual(relayed.at(-1), { k: "k", u: fxaUrl, m: "POST", h: { authorization: "Hawk x" }, b: Buffer.from("{}").toString("base64"), ct: "application/json" });
+const before2 = relayed.length;
+assert.strictEqual((await mozillaFetch("https://api.accounts.firefox.com/answers")).status, 400, "Mozilla's answer");
+assert.strictEqual(relayed.length, before2, "not relayed");
 useRelay(null);
+await assert.rejects(
+  mozillaFetch("https://firefox.settings.services.mozilla.com/v1/records"),
+  (err) => err instanceof GuardianBlocked && err.host === "firefox.settings.services.mozilla.com" && !err.region && err.message.startsWith("firefox.settings.services.mozilla.com seems blocked"),
+);
+globalThis.fetch = plainFetch;
+
 relayServer.close();
 guardian.close();
 port = 1; // nothing listens there

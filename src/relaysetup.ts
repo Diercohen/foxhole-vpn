@@ -83,7 +83,7 @@ export const STEPS = [
     short: "Finish",
     lines: [
       "Google now shows a **Deployment ID** and a web app URL. Click **Copy** under either one.",
-      "Paste it below. foxhole keeps it and your key, and uses the relay only when vpn.mozilla.org can't be reached directly.",
+      "Paste it below. foxhole keeps it and your key, and uses the relay only when Mozilla can't be reached directly.",
     ],
     shots: ["step-5.png"],
   },

@@ -3,9 +3,10 @@
 // (https://github.com/masterking32/MasterHttpRelayVPN). script.google.com is reachable where vpn.mozilla.org
 // isn't; the script fetches Guardian from Google's servers and returns the response. guardian.ts uses this only
 // when neither the VPN's own tunnel (connected, with a pass in hand) nor the direct connection gets an answer, or
-// Guardian refuses this network's region (451), and only for its own control calls (the proxy pass, usage, entitlement) —
-// never the VPN's data, which flows straight through the tunnel to Fastly. The script sees the short-lived,
-// VPN-scoped access token while relaying, so point it at a deployment you own.
+// Guardian refuses this network's region (451), and only for its own control calls (the proxy pass, usage, entitlement),
+// and (mozillaFetch) for Mozilla's account server and the server list when they don't connect — never the VPN's data,
+// which flows straight through the tunnel to Fastly. The script sees the short-lived, VPN-scoped access token while
+// relaying, and where the account server is blocked the sign-in's requests too, so point it at a deployment you own.
 //
 // Protocol (Code.gs): POST JSON { k: authKey, u: url, m: method, h: headers, b: base64(body), ct } to the /exec
 // endpoint; reply JSON { s: status, h: headers, b: base64(body), gz? } — or { e: error }. Apps Script's

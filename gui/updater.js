@@ -1,4 +1,4 @@
-// New versions from GitHub's releases: looked for a minute after launch, then every 6 hours; the window's Update button
+// New versions from GitHub's releases: looked for at launch (again a minute in if nothing turned up), then every 6 hours; the window's Update button
 // downloads the one for this system (through the VPN when connected), with its progress, and gets it ready to go in:
 // - macOS: the .dmg for this architecture, unpacked and checked, then swapped in for the app on the restart or quit;
 // - Windows: the installer, run silently once the app has quit (and put its routes back) on "Restart now";
@@ -161,7 +161,7 @@ export class Updater {
     this.#changed = changed;
   }
 
-  /** Looks a minute in (after the connect at launch, so through the VPN), then every 6 hours. */
+  /** Clears what earlier updates left, then looks for a newer release (#schedule). */
   start() {
     mkdirSync(this.#dir, { recursive: true });
     // an update's leftovers: the app it replaced, and what's of versions no newer than this one (it's in: no longer needed)
@@ -186,9 +186,11 @@ export class Updater {
     this.#schedule();
   }
 
+  // At once (directly, or through the VPN if it's up already); if that found nothing (GitHub blocked, or no answer yet),
+  // again a minute in, after the connect at launch, so through the VPN; then every 6 hours.
   #schedule() {
     const next = (ms) => setTimeout(() => void this.check().then(() => next(6 * 3600_000)), ms).unref();
-    next(60_000);
+    void this.check().then(() => next(this.#version ? 6 * 3600_000 : 60_000));
   }
 
   /** The downloaded release file of version v; the new app unpacked from it on a Mac. */
