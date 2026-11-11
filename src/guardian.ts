@@ -2,6 +2,8 @@
 // VPN. Every call authenticates with an FxA access token (VPN scope) that the
 // auth module provides; see auth.ts.
 import https from "node:https";
+import tls from "node:tls";
+import type { Duplex } from "node:stream";
 import { log } from "./log.js";
 import { relayRequest, type RelayConfig } from "./httprelay.js";
 
@@ -26,6 +28,19 @@ export function useRelay(r: RelayConfig | null): void {
 
 /** The relay set with useRelay(), if any (hot.ts gets its file through it when nothing else does). */
 export const relayInUse = (): RelayConfig | null => relay;
+
+// Once connected, the calls go through the VPN itself (proxy.ts ownTunnel): Mozilla neither blocks its exit nor refuses
+// it (451), so the relay is only needed for the first pass, and isn't asked every few minutes for the data left.
+type Tunnel = (host: string, port: number) => Promise<Duplex | null>;
+let tunnel: Tunnel | null = null;
+
+/** Sets (or clears, with null) the way through the VPN that Guardian's calls take first, while connected. */
+export function useTunnel(t: Tunnel | null): void {
+  tunnel = t;
+}
+
+/** The way set with useTunnel(), if any. */
+export const tunnelInUse = (): Tunnel | null => tunnel;
 
 /** A proxy pass: the short-lived JWT the proxy servers accept. */
 export interface ProxyPass {
@@ -92,6 +107,18 @@ function bearer(accessToken: string): Record<string, string> {
  * before any login is looked at: the relay asks from Google's). Only this control call is relayed, never the VPN's data.
  */
 async function request(method: "GET" | "HEAD", path: string, accessToken: string, signal?: AbortSignal): Promise<Response> {
+  // a VPN server that doesn't answer would hold the call as long as the proxy waits for one (15 s)
+  const opening = tunnel?.(GUARDIAN_HOST, 443).catch(() => null);
+  const through = opening && (await Promise.race([opening, new Promise<null>((r) => setTimeout(r, 6_000, null).unref())]));
+  if (opening && !through) void opening.then((late) => late?.destroy());
+  if (through)
+    try {
+      const res = await directRequest(method, path, accessToken, signal, through);
+      if (res.status !== 451) return res;
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      log(`guardian: through the VPN failed (${(err as Error).message}), trying without it`);
+    }
   let why: string;
   try {
     const res = await directRequest(method, path, accessToken, signal);
@@ -115,8 +142,9 @@ async function request(method: "GET" | "HEAD", path: string, accessToken: string
 /**
  * fetch() for Guardian, able to dial the pinned IP while TLS and the Host header keep
  * the hostname (as proxy.ts does for the VPN server). fetch() has no option for that.
+ * `through`: a stream already open to vpn.mozilla.org:443 (the VPN's tunnel), its TLS and certificate checked on it.
  */
-function directRequest(method: "GET" | "HEAD", path: string, accessToken: string, signal?: AbortSignal): Promise<Response> {
+function directRequest(method: "GET" | "HEAD", path: string, accessToken: string, signal?: AbortSignal, through?: Duplex): Promise<Response> {
   return new Promise((resolve, reject) => {
     const fail = (err: Error) => reject(new Error(`can't reach ${GUARDIAN_HOST}`, { cause: err }));
     const req = https.request(
@@ -127,6 +155,7 @@ function directRequest(method: "GET" | "HEAD", path: string, accessToken: string
         method,
         headers: { Host: GUARDIAN_HOST, ...bearer(accessToken) },
         signal,
+        ...(through && { createConnection: () => tls.connect({ socket: through, servername: GUARDIAN_HOST }) }),
         // like fetch's connect timeout; a dead pinned IP would hang for minutes. Shorter with a relay to fall
         // back to, so a silently-dropped (blocked) connection gives up sooner.
         timeout: relay ? 6_000 : 10_000,

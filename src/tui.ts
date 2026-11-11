@@ -7,14 +7,15 @@ import { userHome, findAccount } from "./profile.js";
 import { fetchServerList, type Country } from "./serverlist.js";
 import { Connection, RELAY_CODE } from "./connection.js";
 import { GuardianError, GuardianBlocked, useRelay } from "./guardian.js";
-import { network, publicIp, lanIp, firewallHint } from "./netinfo.js";
-import { loadSettings, saveSettings, proxyHost, validPort, loginFor, telegramLink, onJoin, type Settings } from "./settings.js";
+import { network, publicIp, lanIp, firewallHint, WIFI_HIDDEN } from "./netinfo.js";
+import { loadSettings, saveSettings, proxyHost, validPort, loginFor, telegramLink, onJoin, withHidden, type Settings } from "./settings.js";
 import { qrLines } from "./qr.js";
 import { SHARE_PORT, serveShare, shareData, shareLink, parseShared, sharedWhat, importPlan, type ShareServer } from "./share.js";
 import { traffic, runsOut, sizeOf } from "./traffic.js";
 import { knownBlocked, sanctioned, verdictOf, verdictText, tryText, wantOf } from "./smart.js";
 import { forgetToken } from "./tokenserver.js";
-import { FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox, saveAccounts, signOut, withFirefox, without, type Accounts } from "./accounts.js";
+import { FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox, saveAccounts, signOut, withFirefox, withOwn, without, type Accounts } from "./accounts.js";
+import { confirmLogin, login, sendUnblock, type FxaLogin } from "./fxalogin.js";
 import { fetchUsage, type Usage } from "./guardian.js";
 import { startProxy, onProxyWarning, checkSite, netState, onNetState, type ProxyHandle } from "./proxy.js";
 import { startSmartDns, smartDnsHost, smartDnsProblem, type SmartDns } from "./smartdns.js";
@@ -32,6 +33,9 @@ import { newAuthKey } from "./relaysetup.js";
 import { RelayWizard, GRAPHICS, CELL_QUERY, cellSize, pictureAt, wrap } from "./relaywizard.js";
 import { relayCheck, relayVerdict, relayStats, onRelayNotice, onRelaySplit } from "./relaymode.js";
 import { caTrusted, setCaTrust } from "./catrust.js";
+import { startGateway } from "./gateway.js";
+import { findTvs, normalizeCode, sendToTv, type TvAccount, type TvRelay } from "./tvpair.js";
+import { SessionAuth, destroyToken } from "./auth.js";
 
 const ESC = "\x1b[";
 // alternate screen + hidden cursor + mouse reports (SGR): clicks and the wheel, see #mouse()
@@ -65,6 +69,7 @@ const SETTINGS = [
   { key: "password", label: "Password" },
   { key: "telegram", label: "Use in Telegram" },
   { key: "smartDns", label: "Smart DNS for a TV or console" },
+  { key: "tv", label: "Sign in a TV" },
   { key: "give", label: "Share settings" },
   { key: "take", label: "Import settings" },
   { key: "relaySetup", label: "Set up" }, // these last ones in the VPN relay box
@@ -74,6 +79,8 @@ const SETTINGS = [
   { key: "relayCert", label: "Certificate" },
 ] as const;
 /** Where the relay's rows start: the last ones, in a purple box of their own. */
+/** A Smart DNS device's Telegram, with this computer as its router (gateway.ts): macOS's for now. */
+const GATEWAY = process.platform === "darwin";
 const RELAY_AT = SETTINGS.findIndex((it) => it.key.startsWith("relay"));
 
 /** The Relay "location", first in the list once a relay is set up: the web through the user's own Apps Script (relaymode.ts). */
@@ -169,13 +176,16 @@ export class Tui {
   #dataOpen = false; // the Data popup: this month's data by site (traffic.ts), to send the big ones direct
   #dataSel = 0;
   #dataNote = "";
+  #dataShowHidden = false; // the Data popup's "show hidden sites" switch: off each time it opens
   #wizard: RelayWizard | null = null; // the relay's setup, over Settings
   #blocked = false; // the popup saying vpn.mozilla.org is blocked here, with the relay's setup a key away
   #blockedRegion = false; // ...or that Mozilla refuses this country (451)
   #blockedTold = false; // said once already: a background check doesn't say it again, a connect does
   #relayIntro = false; // the popup saying what Relay is (its row, before one is set up), with the setup a key away
   #setSel = 0;
-  #edit: { key: "port" | "username" | "password" | "relayId" | "relayKey" | "take"; text: string } | null = null; // the setting being typed
+  #edit: { key: "port" | "username" | "password" | "relayId" | "relayKey" | "take" | "tv"; text: string } | null = null; // the setting being typed
+  #tvRelay = true; // Sign in a TV sends the relay too (tab while typing its code): on each time it's typed
+  #tvNote: { tone: "ok" | "error" | "busy"; text: string } | null = null; // how the last Sign in a TV went
   readonly #login = (address: string | undefined) => loginFor(this.#settings, address); // live: a change applies to the next client
   #settingsNote = "";
   #fwHint: string[] | null = null; // commands that open the proxy's port in an active firewall (Linux)
@@ -196,7 +206,7 @@ export class Tui {
   #pw = "";
   #pwError = "";
   #pwChecking = false;
-  #pwFor: "global" | "trust" | "untrust" = "global"; // what the password is for
+  #pwFor: "global" | "router" | "trust" | "untrust" = "global"; // what the password is for
   #trustAsk = false; // the popup asking to trust foxhole's certificate (relay mode)
   #caOk: boolean | undefined; // whether this computer trusts it; undefined: not checked yet
   #relayCheck: { tone: "ok" | "warn" | "error" | "busy"; text: string } | null = null; // Settings' last check of the relay
@@ -211,6 +221,10 @@ export class Tui {
   #smartDnsError = "";
   #smartDnsYields = false; // a Mac's whole-system mode has port 53 for its own DNS relay
   #smartDnsTurn = Promise.resolve(); // one start or stop at a time
+  #gateway: (() => Promise<void>) | null = null; // what stops the router for a Smart DNS device's Telegram (gateway.ts), while it runs
+  #gatewayPort = 0; // the proxy port it was started with
+  #gatewayError = "";
+  #routerNeedsHelper = false; // Smart DNS is on, but the network helper the router needs isn't set up yet: a asks
   #checkLines: string[] | null = null; // the typed site's check (? while typing), shown for the help
   #checked: { site: string; via: Via } | null = null; // its offer: enter adds the site that way
   #splitNote = "";
@@ -235,6 +249,8 @@ export class Tui {
   #acctSel = 0; // a row: the accounts, then "+ Add account"
   #acctNote = "";
   #removeAsk: string | null = null; // the account x was pressed on once: again signs it out
+  // Foxhole's own Mozilla sign-in (fxalogin.ts), typed in the Accounts popup: the step, what's typed, what's done
+  #fxa: { step: "email" | "password" | "unblock" | "code"; email: string; password: string; text: string; busy: boolean; note: string; bad: boolean; session: FxaLogin | null } | null = null; // bad: the note is an error
   #others = new Map<string, { usage: Usage | null; error: string | null }>(); // data left of those not in use
   #lowOpen = false; // the popup saying the account in use is low on data
   #notesOpen = false; // the popup with what's new in the update ('u'), whose Enter updates
@@ -387,7 +403,7 @@ export class Tui {
     const was = this.#accounts.current;
     this.#saveAccounts(without(this.#accounts, id));
     this.#others.delete(id);
-    this.#acctSel = Math.min(this.#acctSel, this.#ids().length);
+    this.#acctSel = Math.min(this.#acctSel, this.#acctRows() - 1);
     if (id !== was) return;
     const next = this.#accounts.current;
     if (!next || !authFor(this.#accounts, next)) return void this.#quit("logout");
@@ -480,7 +496,8 @@ export class Tui {
   }
 
   /** Keystrokes while the Accounts popup is open. */
-  #acctKey(_s: string, key: readline.Key): void {
+  #acctKey(s: string, key: readline.Key): void {
+    if (this.#fxa) return this.#fxaKey(s, key);
     const ids = this.#ids();
     if (key.name !== "x" && key.name !== "delete" && key.name !== "backspace") {
       this.#removeAsk = null; // a sign-out asked for goes with any other key
@@ -494,17 +511,19 @@ export class Tui {
         break;
       case "up":
       case "k":
-        this.#acctSel = (this.#acctSel - 1 + ids.length + 1) % (ids.length + 1);
+        this.#acctSel = (this.#acctSel - 1 + this.#acctRows()) % this.#acctRows();
         this.#removeAsk = null;
         break;
       case "down":
       case "j":
-        this.#acctSel = (this.#acctSel + 1) % (ids.length + 1);
+        this.#acctSel = (this.#acctSel + 1) % this.#acctRows();
         this.#removeAsk = null;
         break;
       case "return":
-        // the last row: Firefox's sign-in, the terminal's own way in; others are added in the desktop app
-        if (this.#acctSel === ids.length && !this.#accounts.firefox) {
+        // after the accounts: Foxhole's own sign-in, then Firefox's (till it's on the list)
+        if (this.#acctSel === ids.length) {
+          this.#fxa = { step: "email", email: "", password: "", text: "", busy: false, note: "", bad: false, session: null };
+        } else if (this.#acctSel === ids.length + 1) {
           if (!authFor(withFirefox(this.#accounts), FIREFOX)) return void ((this.#acctNote = red("Firefox isn't signed in (or can't be read): sign in to Firefox, then try again.")), this.#render());
           const ff = findAccount()?.email?.toLowerCase();
           const twin = this.#accounts.own.find((x) => !!ff && x.email.toLowerCase() === ff);
@@ -512,15 +531,7 @@ export class Tui {
           this.#saveAccounts(withFirefox(this.#accounts));
           void this.#use(FIREFOX);
           this.#acctSel = 0;
-        } else if (this.#acctSel === ids.length) {
-          const url = `${REPO_URL}/releases/latest`;
-          this.#acctNote = [
-            ...wrap("Another account can't be added in the terminal: add it in Foxhole's desktop app, and it shows up here.", 60).map(yellow),
-            `\x1b]8;;${url}\x1b\\${cyan(url)}\x1b]8;;\x1b\\`,
-          ].join("\n");
-          return this.#render();
-        }
-        else if (ids[this.#acctSel] !== this.#accounts.current) void this.#use(ids[this.#acctSel]);
+        } else if (ids[this.#acctSel] !== this.#accounts.current) void this.#use(ids[this.#acctSel]);
         break;
       case "x":
       case "delete":
@@ -540,6 +551,93 @@ export class Tui {
     this.#render();
   }
 
+  /** The Accounts popup's rows: the accounts, "Sign in to a Mozilla account", and Firefox's sign-in till it's on the list. */
+  #acctRows(): number {
+    return this.#ids().length + 1 + (this.#accounts.firefox ? 0 : 1);
+  }
+
+  /** Keystrokes in Foxhole's own sign-in: typing, enter the next step, esc cancels (a session begun is signed out). */
+  #fxaKey(s: string, key: readline.Key): void {
+    const f = this.#fxa!;
+    if (f.busy) return;
+    if (key.name === "escape") {
+      if (f.session) void signOut({ sessionToken: f.session.sessionToken });
+      this.#fxa = null;
+    } else if (key.name === "backspace") f.text = f.text.slice(0, -1);
+    else if (key.name === "return") return void this.#fxaNext();
+    else if (s && !key.ctrl && !key.meta && [...s].every((c) => c >= " ") && f.text.length + s.length <= 256) f.text += s; // pasted too
+    this.#render();
+  }
+
+  /** Foxhole's own sign-in's next step, from what's typed: the password, then a code if Mozilla asks for one. */
+  async #fxaNext(): Promise<void> {
+    const f = this.#fxa!;
+    const text = f.text;
+    if (f.step === "email") {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text.trim())) return void (Object.assign(f, { note: "That isn't an email address.", bad: true }), this.#render());
+      return void (Object.assign(f, { step: "password", email: text.trim(), text: "", note: "", bad: false }), this.#render());
+    }
+    if (!text.trim()) return;
+    Object.assign(f, { busy: true, bad: false, note: f.step === "code" ? "confirming…" : "signing in…" });
+    this.#render();
+    try {
+      if (f.step === "password" || f.step === "unblock") {
+        if (f.step === "password") f.password = text;
+        f.session = await login(f.email, f.password, f.step === "unblock" ? text.trim() : undefined, AbortSignal.timeout(30_000));
+        f.email = f.session.email;
+        if (f.session.confirm)
+          return void Object.assign(f, { step: "code", text: "", note: f.session.confirm === "totp" ? "Type the code your authenticator app shows for Mozilla." : `Mozilla emailed a code to ${f.email}: type it here.` });
+      } else await confirmLogin(f.session!, text, AbortSignal.timeout(30_000));
+      this.#fxaDone(f.session!);
+    } catch (err) {
+      const errno = (err as { errno?: number }).errno;
+      if (errno === 125 && f.step === "password") {
+        // Mozilla wants to be sure first: a code by email lets the sign-in through
+        await sendUnblock(f.email, AbortSignal.timeout(30_000)).catch(() => {});
+        return void Object.assign(f, { step: "unblock", text: "", note: `Mozilla wants to be sure it's you: it emailed a code to ${f.email}.` });
+      }
+      Object.assign(f, { note: (err as Error).message, bad: true });
+      if (errno === 103) (f.step = "password"), (f.text = "");
+    } finally {
+      f.busy = false;
+      this.#render();
+    }
+  }
+
+  /** Signed in: added and in use, unless it's on the list already (as in the desktop app's signedIn). */
+  #fxaDone({ uid, email, sessionToken }: FxaLogin): void {
+    this.#fxa = null;
+    const same = (a?: string | null) => !!a && a.toLowerCase() === email.toLowerCase();
+    const twin = this.#accounts.own.find((x) => x.uid === uid || same(x.email));
+    if ((twin && this.#others.get(twin.uid)?.error !== "signed out") || (!twin && this.#accounts.firefox && same(this.#firefoxEmail))) {
+      void signOut({ sessionToken }); // the new session isn't kept
+      this.#acctNote = wrap(`You're already signed in with ${email}${twin ? "" : " (Firefox's sign-in)"}, so it isn't added again.`, 58).map(yellow).join("\n");
+      return;
+    }
+    this.#saveAccounts(withOwn(this.#accounts, { uid, email, sessionToken }));
+    this.#others.delete(uid);
+    this.#acctSel = this.#ids().indexOf(uid);
+    void this.#use(uid).then(() => ((this.#acctNote = wrap(`✓ Signed in with ${email}, and it's the account in use now.`, 58).map(green).join("\n")), this.#render()));
+  }
+
+  /** Foxhole's own sign-in, in place of the add rows. */
+  #fxaLines(): string[] {
+    const f = this.#fxa!;
+    const field = (step: string, value: string) => (f.step === step ? value + (f.busy ? "" : cyan("▏")) : value);
+    const code = f.step === "unblock" || f.step === "code";
+    return [
+      bold("Sign in to a Mozilla account"),
+      `  ${dim("Email   ")} ${field("email", f.step === "email" ? f.text : f.email)}`,
+      ...(f.step === "email" ? [] : [`  ${dim("Password")} ${field("password", "•".repeat(Math.min(24, f.step === "password" ? f.text.length : f.password.length)))}`]),
+      ...(code ? [`  ${dim("Code    ")} ${field(f.step, f.text)}`] : []),
+      "",
+      ...(f.note ? wrap(f.note, 58).map(f.bad ? red : f.busy ? dim : (l: string) => l) : []),
+      dim(f.step === "email" ? "Type your email · enter next · esc cancel" : "enter " + (code ? "confirm" : "sign in") + " · esc cancel"),
+      dim("As Firefox does, Mozilla gets a stretched form of your"),
+      dim("password, not the password itself. Foxhole keeps neither."),
+    ];
+  }
+
   #accountsPopup(): string[] {
     const ids = this.#ids();
     const rows = ids.map((id, i) => {
@@ -553,9 +651,19 @@ export class Tui {
       return `${here ? cyan("❯") : " "} ${current ? green("●") : dim("○")} ${here ? bold(name.padEnd(30)) : name.padEnd(30)} ${dim([left, id === FIREFOX ? "Firefox" : ""].filter(Boolean).join(" · "))}`;
     });
     const ff = this.#firefoxEmail;
-    const add = `${this.#acctSel === ids.length ? cyan("❯") : " "} ${cyan("+")} ${this.#accounts.firefox ? "Add account" : `Use Firefox's sign-in${ff ? `, ${ff}` : ""}${process.platform === "darwin" ? dim(" (Full Disk Access)") : ""}`}`;
+    const pick = (i: number) => (this.#acctSel === i ? cyan("❯") : " ");
+    const add = this.#fxa
+      ? ["", ...this.#fxaLines()]
+      : [
+          `${pick(ids.length)} ${cyan("+")} Sign in to a Mozilla account`,
+          ...(this.#accounts.firefox ? [] : [`${pick(ids.length + 1)} ${cyan("+")} Use Firefox's sign-in${ff ? `, ${ff}` : ""}${process.platform === "darwin" ? dim(" (Full Disk Access)") : ""}`]),
+          "",
+          ...this.#acctNote.split("\n"),
+          "",
+          dim("↑↓ select · enter use / add · x sign out · esc close"),
+        ];
     return box(
-      ["", dim("The VPN uses the one in use (●), from now on too."), "", ...rows, add, "", ...this.#acctNote.split("\n"), "", dim("↑↓ select · enter use / add · x sign out · esc close")],
+      ["", dim("The VPN uses the one in use (●), from now on too."), "", ...rows, ...add],
       { title: bold(cyan("Accounts")), width: 62 },
     );
   }
@@ -611,6 +719,7 @@ export class Tui {
           this.#render();
           await this.#global.stop().catch(() => {});
         }
+        await this.#gateway?.().catch(() => {});
         await this.#proxy?.close();
         this.#smartDns?.close();
         void this.#give?.server.then((server) => server?.close());
@@ -674,7 +783,7 @@ export class Tui {
           void caTrusted().then((ok) => ((this.#caOk = ok), this.#render()));
           return this.#render();
         }
-        if (key.name === "m") return void ((this.#dataOpen = true), (this.#dataSel = 0), (this.#dataNote = ""), this.#render());
+        if (key.name === "m") return void ((this.#dataOpen = true), (this.#dataSel = 0), (this.#dataNote = ""), (this.#dataShowHidden = false), this.#render());
         if (key.name === "t") {
           this.#splitOpen = true;
           this.#splitNote = "";
@@ -714,6 +823,10 @@ export class Tui {
           case "a":
           case "o": // where logging out was
             return this.#openAccounts();
+          case "w":
+            // Windows hides the Wi-Fi's name from desktop apps till Location is on: its Settings page, as the desktop app opens
+            if (this.#wifiHidden()) openUrl("ms-settings:privacy-location");
+            break;
         }
         this.#render();
       };
@@ -888,7 +1001,7 @@ export class Tui {
   }
 
   /** Opens the password popup, for `what`. */
-  #askPassword(what: "global" | "trust" | "untrust", note = ""): void {
+  #askPassword(what: "global" | "router" | "trust" | "untrust", note = ""): void {
     this.#pwFor = what;
     this.#pwMode = true;
     this.#pw = "";
@@ -930,6 +1043,7 @@ export class Tui {
     }
     this.#pwMode = false;
     if (this.#pwFor === "global") void this.#enableGlobal(pw);
+    else if (this.#pwFor === "router") void this.#allowRouter(pw);
     else void this.#trust(this.#pwFor === "trust", sudoPriv(pw));
   }
 
@@ -943,8 +1057,7 @@ export class Tui {
     let session: GlobalSession | null = null;
     try {
       // a download goes through the VPN (GitHub can be slow or blocked), its progress in the status line
-      const via = { host: dialHost(this.#host), port: this.#proxy.port };
-      const tun2socks = async () => (this.#tun2socksPath ??= await ensureTun2socks({ proxy: via, say: (msg) => ((this.#message = dim(msg)), this.#render()) }));
+      const tun2socks = () => this.#tun2socks();
       if (process.platform === "win32") {
         this.#message = dim(helperInstalled() ? "going global… if Windows asks, allow PowerShell" : "Allow PowerShell once: sets up a helper"); // what fits the status line
         this.#render();
@@ -1004,6 +1117,40 @@ export class Tui {
     }
   }
 
+  /** tun2socks, downloaded once: through the VPN while connected (GitHub can be slow or blocked), its progress in the status line. */
+  async #tun2socks(): Promise<string> {
+    const via = this.#proxy && this.#active ? { host: dialHost(this.#host), port: this.#proxy.port } : undefined;
+    return (this.#tun2socksPath ??= await ensureTun2socks({ proxy: via, say: (msg) => ((this.#message = dim(msg)), this.#render()) }));
+  }
+
+  /** Windows hides the Wi-Fi's name (netinfo.ts WIFI_HIDDEN): Location shows it. macOS's comes with the network helper. */
+  #wifiHidden(): boolean {
+    return process.platform === "win32" && !!this.#net?.endsWith(WIFI_HIDDEN);
+  }
+
+  /** Smart DNS's router for Telegram: the network helper does it, set up once with the password (or Touch ID). */
+  async #askRouter(): Promise<void> {
+    if (!GATEWAY || this.#busy || !this.#routerNeedsHelper) return;
+    if (await isPrivileged()) return this.#allowRouter(null);
+    if (sudoUsesTouchId()) {
+      this.#message = yellow("Touch ID once: sets up the network helper");
+      this.#render();
+      if (await touchIdSudo()) return this.#allowRouter("");
+      return this.#askPassword("router", "No Touch ID: type your password instead.");
+    }
+    this.#askPassword("router");
+  }
+
+  async #allowRouter(password: string | null): Promise<void> {
+    this.#busy = true;
+    this.#message = dim("setting up the network helper…");
+    this.#render();
+    const helper = await helperFor(password, () => this.#tun2socks()).catch(() => null);
+    this.#busy = false;
+    this.#message = helper ? "" : red("Couldn't set up the network helper: connect first, then try again.");
+    await this.#followSmartDns();
+  }
+
   async #disableGlobal(): Promise<void> {
     if (!this.#global) return;
     this.#busy = true;
@@ -1050,7 +1197,11 @@ export class Tui {
       else if (key.name === "backspace") e.text = e.text.slice(0, -1);
       else if (key.name === "return") {
         if (e.key === "port" && !validPort(Number(e.text))) this.#settingsNote = red("A port is a number from 1 to 65535.");
-        else if (e.key === "take") {
+        else if (e.key === "tv") {
+          const code = normalizeCode(e.text);
+          if (!code) this.#tvNote = { tone: "error", text: "The code is 6 letters and digits, as on the TV." };
+          else return void ((this.#edit = null), this.#tvSend(code));
+        } else if (e.key === "take") {
           const shared = parseShared(e.text);
           if (!shared) this.#settingsNote = red("That isn't a Foxhole settings link: copy all of it again.");
           else (this.#take = { text: e.text, what: importPlan(this.#settings, shared).what }), (this.#edit = null);
@@ -1071,6 +1222,9 @@ export class Tui {
         e.text = newAuthKey(); // a strong key, to paste into Code.gs's AUTH_KEY
       } else if (e.key === "port") {
         if (/^\d$/.test(s) && e.text.length < 5) e.text += s;
+      } else if (e.key === "tv") {
+        if (key.name === "tab") this.#tvRelay = !this.#tvRelay;
+        else if (s && /^[\w-]+$/.test(s) && e.text.length + s.length <= 8) e.text += s.toUpperCase();
       } else if (e.key === "take") {
         if (s && /^[\x21-\x7e]+$/.test(s) && e.text.length + s.length <= 8192) e.text += s; // a link: no spaces, nothing else
       } else if (s && s.length === 1 && s >= " " && !key.ctrl && !key.meta && Buffer.byteLength(e.text + s) <= 255) {
@@ -1080,6 +1234,7 @@ export class Tui {
       }
       return this.#render();
     }
+    if (s === "a" && SETTINGS[this.#setSel].key === "smartDns") return void this.#askRouter();
     switch (key.name) {
       case "escape":
       case "s":
@@ -1097,7 +1252,8 @@ export class Tui {
       case "space": {
         const item = SETTINGS[this.#setSel].key;
         if (item === "share") return void this.#changeSetting({ share: !this.#settings.share });
-        if (item === "smartDns") return void this.#changeSetting({ smartDns: !this.#settings.smartDns || undefined });
+        if (item === "smartDns")
+          return void this.#changeSetting({ smartDns: !this.#settings.smartDns || undefined }).then(() => this.#smartDnsTurn).then(() => this.#askRouter());
         if (item === "relaySetup") return void ((this.#wizard = new RelayWizard(() => this.#render())), this.#render());
         if (item === "relayCert") return void this.#trust(!this.#caOk);
         if (item === "relayCheck") return void this.#checkRelay();
@@ -1106,9 +1262,64 @@ export class Tui {
         // typed in place: the username and relay id start from the current value, the rest from scratch
         this.#edit = { key: item, text: item === "username" ? this.#settings.username : item === "relayId" ? (this.#settings.relay?.deploymentId ?? "") : "" };
         this.#settingsNote = "";
+        if (item === "tv") (this.#tvRelay = true), (this.#tvNote = null);
       }
     }
     this.#render();
+  }
+
+  /** The relay to hand on: both its parts set, or none. */
+  #fullRelay() {
+    const r = this.#settings.relay;
+    return r?.deploymentId && r.authKey ? r : null;
+  }
+
+  /**
+   * Sign in a TV: the account in use (a VPN-only sign-in of its own: auth.ts refreshToken), with the relay as ticked,
+   * to the TV waiting on this network with that `code`; a TV or phone waiting for a relay alone gets just the relay.
+   * As the desktop app's tvSend (gui/controller.js).
+   */
+  async #tvSend(code: string): Promise<void> {
+    this.#tvNote = { tone: "busy", text: "looking for the TV on this network…" };
+    this.#render();
+    const relay = this.#fullRelay();
+    let account: TvAccount | null = null;
+    const signIn = async () => {
+      if (account) return account;
+      const id = this.#accounts.current;
+      const auth = id ? authFor(this.#accounts, id) : null;
+      if (!(auth instanceof SessionAuth)) throw new Error("This account's sign-in came from another device: sign in to it here first.");
+      const ff = id === FIREFOX ? findAccount() : null;
+      const email = ff ? (ff.email ?? this.#firefoxEmail) : this.#accounts.own.find((x) => x.uid === id)?.email;
+      const uid = ff ? ff.uid : id;
+      if (!uid || !email) throw new Error("Couldn't read this account's details.");
+      return (account = { uid, email, refreshToken: await auth.refreshToken(AbortSignal.timeout(15_000)) });
+    };
+    try {
+      const tvs = await findTvs();
+      if (!tvs.length) throw new Error("No TV is waiting on this network. Is the TV on the same Wi-Fi, showing its code?");
+      this.#tvNote = { tone: "busy", text: "sending…" };
+      this.#render();
+      let lastErr: unknown;
+      for (const tv of tvs)
+        try {
+          const alone = tv.want === "relay";
+          if (alone && !relay) throw new Error("It's waiting for a VPN relay, and this computer has none: set one up first (VPN relay → Set up).");
+          const what: { account?: TvAccount; relay?: TvRelay } = alone ? { relay: relay! } : { account: await signIn(), ...(this.#tvRelay && relay && { relay }) };
+          const took = await sendToTv(tv, { code }, what, hostname().replace(/\.local$/, ""));
+          if (what.account && !took.account) void destroyToken(what.account.refreshToken); // it came to wait for a relay alone meanwhile
+          this.#tvNote = { tone: "ok", text: took.account ? `✓ ${tv.name} is signed in with ${what.account!.email}${took.relay ? ", with your VPN relay" : ""}` : `✓ ${tv.name} has your VPN relay now` };
+          return;
+        } catch (err) {
+          lastErr = err;
+        }
+      throw lastErr;
+    } catch (err) {
+      if (account) void destroyToken((account as TvAccount).refreshToken); // no TV took it
+      this.#tvNote = { tone: "error", text: (err as Error).message };
+    } finally {
+      this.#render();
+    }
   }
 
   /** Share settings opened: its page on the local network, for a phone's camera (share.ts), till it's closed. */
@@ -1454,17 +1665,51 @@ export class Tui {
         this.#smartDns = null;
       }
       if (!want) this.#smartDnsError = "";
-      if (!want || this.#smartDns) return this.#render();
-      try {
-        if (!host) throw new Error("This computer isn't on a local network.");
-        this.#smartDns = await startSmartDns(this.#conn, { host, self: () => lanIp(), vpn: () => !!this.#active && this.#active !== RELAY_ROW });
-        this.#smartDnsAt = host;
-        this.#smartDnsError = "";
-      } catch (err) {
-        this.#smartDnsError = smartDnsProblem(err as NodeJS.ErrnoException);
+      if (want && !this.#smartDns) {
+        try {
+          if (!host) throw new Error("This computer isn't on a local network.");
+          this.#smartDns = await startSmartDns(this.#conn, { host, self: () => lanIp(), vpn: () => !!this.#active && this.#active !== RELAY_ROW });
+          this.#smartDnsAt = host;
+          this.#smartDnsError = "";
+        } catch (err) {
+          this.#smartDnsError = smartDnsProblem(err as NodeJS.ErrnoException);
+        }
       }
+      // only with port 53 held: then no whole-system session, here or in another Foxhole, has the tun
+      await this.#followGateway(GATEWAY && want && !!this.#smartDns);
       this.#render();
     }));
+  }
+
+  /** The router runs even with the VPN off: the device gets all its Internet through it. As the desktop app's. */
+  async #followGateway(want: boolean): Promise<void> {
+    if (this.#gateway && (!want || this.#gatewayPort !== this.#port)) {
+      await this.#gateway().catch(() => {});
+      this.#gateway = null;
+    }
+    if (!want) (this.#gatewayError = ""), (this.#routerNeedsHelper = false);
+    if (!want || this.#gateway) return;
+    const proxyPort = this.#port;
+    try {
+      this.#routerNeedsHelper = !(await helperReady());
+      if (this.#routerNeedsHelper) return; // Settings asks
+      const helper = await helperFor("", () => this.#tun2socks());
+      if (!helper) throw new Error("The network helper isn't ready.");
+      this.#gateway = await startGateway({
+        ...helper,
+        proxyPort,
+        onExit: (code) => {
+          const stop = this.#gateway;
+          this.#gateway = null;
+          this.#gatewayError = `tun2socks stopped (${code})`;
+          void stop?.().catch(() => {}).finally(() => this.#render());
+        },
+      });
+      this.#gatewayPort = proxyPort;
+      this.#gatewayError = "";
+    } catch (err) {
+      this.#gatewayError = (err as Error).message;
+    }
   }
 
   /** Moves a running proxy to the current address and port. Not in global mode: tun2socks is tied to the old one. */
@@ -1520,7 +1765,8 @@ export class Tui {
       e?.key === "username" ? e.text + cursor : s.username || dim("optional"),
       e?.key === "password" ? "•".repeat(e.text.length) + cursor : s.password ? "••••••••" : dim("optional"),
       dim("⏎ QR code for your phone"),
-      onOff(!!s.smartDns) + (s.smartDns && this.#smartDnsYields ? yellow("  paused") : s.smartDns && this.#smartDnsError ? red("  ✗ can't start") : ""),
+      onOff(!!s.smartDns) + (s.smartDns && this.#smartDnsYields ? yellow("  paused") : s.smartDns && this.#smartDnsError ? red("  ✗ can't start") : s.smartDns && this.#routerNeedsHelper ? yellow("  a allow Telegram") : ""),
+      e?.key === "tv" ? e.text + cursor : dim("⏎ type the TV's code"),
       dim("⏎ QR code and link"),
       e?.key === "take" ? (e.text.length > 23 ? "…" + e.text.slice(-22) : e.text) + cursor : this.#take ? yellow("⏎ import") : dim("⏎ paste a link"),
       (s.relay ? green("on") : dim("off")) + dim("  ⏎ step by step"),
@@ -1570,8 +1816,26 @@ export class Tui {
               `Set the TV's or console's DNS to ${bold(cyan(lanIp() ?? "this computer's IP"))}.`,
               this.#active ? dim("Only the web and WhatsApp's messages: not games or calls.") : yellow("Connect first: till then it gets the network's own answers."),
               dim("An iPhone's apps need Local Network on, in Privacy & Security."),
-              dim("Telegram doesn't use DNS: its QR code is in the row above."),
+              ...(!GATEWAY
+                ? [dim("Telegram doesn't use DNS: its QR code is in the row above.")]
+                : this.#routerNeedsHelper
+                  ? [yellow("Telegram doesn't use DNS: this computer has to be the device's"), yellow(`router, which needs your permission once: press ${bold("a")}.`)]
+                  : this.#gatewayError
+                    ? [yellow("Telegram: this computer couldn't become the device's router:"), ...wrap(this.#gatewayError, 62).map(red)]
+                    : [
+                        dim("Telegram doesn't use DNS: in the device's Wi-Fi details, set"),
+                        `${dim("Configure IP to Manual, keep its address and mask, and set")}`,
+                        `${dim("Router to")} ${bold(cyan(lanIp() ?? "this computer's IP"))}${dim(".")}`,
+                        yellow("All its Internet then goes through this computer: set it back"),
+                        yellow("to Automatic while this computer is off or asleep."),
+                      ]),
             ],
+      tv: [
+        ...(e?.key === "tv"
+          ? [dim("Type the 6-character code on the TV · enter send · esc cancel"), ...(this.#fullRelay() ? [`${this.#tvRelay ? green("✓") : dim("✗")} ${this.#tvRelay ? "My VPN relay too" : dim("My VPN relay too")}${dim("  tab change")}`] : [])]
+          : [dim("An Android TV on this Wi-Fi, showing Foxhole's code: send it"), dim(`a sign-in of the account in use${this.#fullRelay() ? ", with your VPN relay" : ""}.`)]),
+        ...(this.#tvNote ? wrap(this.#tvNote.text, 62).map({ ok: green, error: red, busy: dim }[this.#tvNote.tone]) : []),
+      ],
       give: [dim("Your relay and split tunneling, for the family's other devices:"), dim("a QR code for a phone to scan, or a link to send.")],
       take: e?.key === "take"
         ? [dim("Paste a Foxhole settings link · enter check · esc cancel")]
@@ -1621,16 +1885,32 @@ export class Tui {
     return box([...phone, "", dim("enter Telegram on this computer · esc back")], { title: bold(cyan("✈ Telegram")), width: 66 });
   }
 
-  /** The sites the Data popup lists: those that used the VPN this month, the biggest first. */
+  /** The sites the Data popup lists: those that used the VPN this month, the biggest first; hidden ones only while shown. */
   #dataRows() {
-    return traffic().sites.filter((x) => x.vpn > 0).slice(0, 12);
+    const hidden = new Set(this.#settings.hiddenSites ?? []);
+    const used = traffic().sites.filter((x) => x.vpn > 0);
+    const rows = (this.#dataShowHidden ? used : used.filter((x) => !hidden.has(x.site))).slice(0, 12);
+    return { rows, hidden, hiddenCount: used.filter((x) => hidden.has(x.site)).length };
   }
 
-  /** Keystrokes in the Data popup: ↑↓ pick a site, enter sends it direct (a rule), esc or m closes. */
+  /** Keystrokes in the Data popup: ↑↓ pick a site, enter sends it direct (a rule), h hides it, a shows the hidden, esc or m closes. */
   #dataKey(key: readline.Key): void {
-    const rows = this.#dataRows();
+    const { rows, hidden } = this.#dataRows();
     const sp = this.#settings.split;
     if (key.name === "escape" || key.name === "m") this.#dataOpen = false;
+    else if (key.name === "a") (this.#dataShowHidden = !this.#dataShowHidden), (this.#dataSel = 0);
+    else if (key.name === "h" && rows[this.#dataSel]) {
+      const site = rows[this.#dataSel].site;
+      const next = { ...this.#settings, hiddenSites: withHidden(this.#settings.hiddenSites, site, !hidden.has(site)) };
+      try {
+        saveSettings(next);
+        this.#settings = next;
+        this.#dataNote = "";
+        this.#dataSel = Math.max(0, Math.min(this.#dataSel, this.#dataRows().rows.length - 1));
+      } catch (err) {
+        this.#dataNote = red(`Couldn't save: ${(err as Error).message}`);
+      }
+    }
     else if (key.name === "up" || key.name === "k") this.#dataSel = Math.max(0, this.#dataSel - 1);
     else if (key.name === "down" || key.name === "j") this.#dataSel = Math.min(rows.length - 1, this.#dataSel + 1);
     else if (key.name === "return" && rows[this.#dataSel]) {
@@ -1651,7 +1931,7 @@ export class Tui {
   #dataPopup(frameHeight: number): string[] {
     const u = this.#conn.usage;
     const { since, sites } = traffic();
-    const rows = this.#dataRows();
+    const { rows, hidden, hiddenCount } = this.#dataRows();
     const top = rows[0]?.vpn || 1;
     const direct = sites.reduce((n, x) => n + x.direct, 0);
     const out = u && !u.unlimited ? runsOut(u.max, u.remaining, u.reset) : null;
@@ -1662,7 +1942,8 @@ export class Tui {
     const lines = rows.slice(0, room).map((x, i) => {
       const here = i === this.#dataSel;
       const bar = "█".repeat(Math.max(1, Math.round((x.vpn / top) * 16)));
-      return `${here ? cyan("❯") : " "} ${(here ? bold : (t: string) => t)(fit(x.site, 28).padEnd(28))} ${cyan(bar.padEnd(16))} ${sizeOf(x.vpn).padStart(7)}${listed.has(x.site) ? green("  direct now") : ""}`;
+      const off = hidden.has(x.site); // shown by "show hidden sites": grayed
+      return `${here ? cyan("❯") : " "} ${(here ? bold : off ? dim : (t: string) => t)(fit(x.site, 28).padEnd(28))} ${(off ? dim : cyan)(bar.padEnd(16))} ${(off ? dim : (t: string) => t)(sizeOf(x.vpn).padStart(7))}${listed.has(x.site) ? (off ? dim : green)("  direct now") : ""}${off ? dim("  hidden") : ""}`;
     });
     return box(
       [
@@ -1674,9 +1955,10 @@ export class Tui {
         ...lines,
         "",
         direct ? dim(`Direct: ${sizeOf(direct)}, none of it the VPN's data.`) : "",
+        hiddenCount || this.#dataShowHidden ? `${this.#dataShowHidden ? lit("[x]") : dim("[ ]")} Show hidden sites ${dim(`(${hiddenCount}) · a`)}` : "",
         this.#dataNote,
         "",
-        dim("↑↓ select · enter send it direct · esc close"),
+        dim(`↑↓ select · enter send it direct · h ${rows[this.#dataSel] && hidden.has(rows[this.#dataSel].site) ? "unhide" : "hide"} · esc close`),
       ],
       { title: bold(cyan("◔ Data this month")), width: 66 },
     );
@@ -1736,7 +2018,7 @@ export class Tui {
         ? `${cyan(this.#proxyAddr())}  ${dim([split ? "" : "SOCKS5 or HTTP", this.#host === "0.0.0.0" ? "shared on this network" : "", split ?? ""].filter(Boolean).join(" · "))}`
         : dim("—");
     const status = this.#message;
-    const net = this.#net === undefined ? dim("checking…") : this.#net ?? yellow("offline");
+    const net = this.#net === undefined ? dim("checking…") : this.#net ? this.#net + (this.#wifiHidden() ? dim("  W show it (Location)") : "") : yellow("offline");
     const ip = this.#ip === undefined ? dim("checking…") : this.#ip === null ? yellow("unreachable") : `${bold(this.#ip)}  ${dim(this.#ipNote)}`;
     const account = `${this.#email ?? dim("unknown")}  ${dim("A accounts")}`;
     const cols = process.stdout.columns || 80, rows = process.stdout.rows || 24;
@@ -1796,15 +2078,19 @@ export class Tui {
     const key = (k: string, rest: string) => `[${under(k)}${rest}]`;
     // Lit while on, each part on its own: the underline's reset would end an outer style
     // The checkbox: what's on while connected, what connecting will do while off
-    const globalBtn = (this.#active ? this.#global : !this.#settings.proxyOnly) ? ["[x] ", under("G"), "lobal TUN"].map(on).join("") : dim(`[ ] ${under("G")}lobal TUN`);
+    const globalOn = this.#active ? this.#global : !this.#settings.proxyOnly;
+    const globalBtn = (tun: string) => (globalOn ? ["[x] ", under("G"), "lobal" + tun].map(on).join("") : dim(`[ ] ${under("G")}lobal${tun}`));
     // On the connected country, D disconnects (lit like a switch that's on); elsewhere Enter connects
     const sel = this.#countries[this.#sel];
     const connectBtn = this.#active && sel?.code === this.#active.code
       ? ["[", under("D"), "isconnect]"].map(on).join("")
       : sel === RELAY_SETUP ? bold(purple("[⏎ What's Relay?]")) : bold((sel === RELAY_ROW ? purple : cyan)("[⏎ Connect]"));
     // Lit while any site is split off, like a switch that's on
-    const splitBtn = splitOn(sp) ? ["[Split ", under("T"), "unnel]"].map(lit).join("") : dim(`[Split ${under("T")}unnel]`);
-    const buttons = [connectBtn, globalBtn, splitBtn, dim(key("S", "ettings")), dim("[Data]"), dim(key("L", "ogs")), dim(key("Q", "uit"))].join("  ");
+    const splitBtn = (unnel: string) => (splitOn(sp) ? ["[Split ", under("T"), unnel + "]"].map(lit).join("") : dim(`[Split ${under("T")}${unnel}]`));
+    const rest = [dim(key("S", "ettings")), dim(`[Data ${under("M")}]`), dim(key("A", "ccounts")), dim(key("L", "ogs")), dim(key("Q", "uit"))];
+    const full = [connectBtn, globalBtn(" TUN"), splitBtn("unnel"), ...rest].join("  ");
+    // An 80-column terminal: shorter labels, single spaces
+    const buttons = wide || vw(full) <= 78 ? full : [connectBtn, globalBtn(""), splitBtn(""), ...rest].join(" ");
     const table = (minWidth: number) => grid(["", "Code", "Tier", "Country"], body, { caption: bold("Locations"), captionRight: dim(range), minWidth });
     // Under a popup, its shape alone: the backdrop's colors go, which would leave half of each two-color cell
     const covered = this.#restoring || this.#pwMode || this.#settingsOpen || this.#splitOpen || this.#logsOpen || this.#dataOpen;
@@ -1895,7 +2181,7 @@ export class Tui {
       rowsTop: tableY, rowsLeft: tableX, width: tableW,
       start, sep,
       rows: slice.length + (sep > 0 ? 1 : 0),
-      buttons: frame[buttonsY].replace(/\x1b\[[0-9;]*m/g, "").replace(/\[[x ]\] Global TUN/, "[Global TUN  ]"), // one button for #mouse, box and label
+      buttons: frame[buttonsY].replace(/\x1b\[[0-9;]*m/g, "").replace(/\[[x ]\] Global( TUN)?/, (m) => `[Global${m.slice(10)}  ]`), // one button for #mouse, box and label
       setTop: Math.floor((frame.length - (popup?.length ?? 0) - 2) / 2) + 3,
       setX: Math.floor((width - setW - 2) / 2) + 1,
     };
@@ -2150,8 +2436,11 @@ export class Tui {
     return box(
       [
         "",
-        ...(this.#pwFor === "global"
-          ? ["Global mode routes all of this computer's", "traffic through the VPN, which needs", "administrator rights.", "", "Once: foxhole sets up a small network", "helper with it, so it won't ask again."]
+        ...(this.#pwFor === "global" || this.#pwFor === "router"
+          ? [
+              ...(this.#pwFor === "global" ? ["Global mode routes all of this computer's", "traffic through the VPN, which needs"] : ["Making this computer a device's router", "(Telegram on Smart DNS) needs"]),
+              "administrator rights.", "", "Once: foxhole sets up a small network", "helper with it, so it won't ask again.",
+            ]
           : [`${this.#pwFor === "trust" ? "Trusting" : "Removing"} foxhole's certificate for`, "the system and its browsers needs", "administrator rights."]),
         "",
         `Enter your ${bold("login password")} (used by sudo):`,

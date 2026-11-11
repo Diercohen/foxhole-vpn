@@ -1,6 +1,6 @@
 // Settings file parsing and the LAN address shown for sharing. No network.
 import assert from "node:assert";
-import { parseSettings, proxyHost, validPort, loginFor, telegramLink, DEFAULTS, onJoin, withNetRule } from "../dist/settings.js";
+import { parseSettings, proxyHost, validPort, loginFor, telegramLink, DEFAULTS, onJoin, withNetRule, withHidden } from "../dist/settings.js";
 import { qrModules, qrLines } from "../dist/qr.js";
 import { lanIp } from "../dist/netinfo.js";
 
@@ -72,3 +72,10 @@ assert.equal(join("Wi-Fi · Cafe", false), null, "no rule");
 assert.equal(onJoin({ ...rules, "Wi-Fi · Office": "pause" }, "Wi-Fi · Office", { active: false, paused: true }), null, "paused, and another network pausing it: still paused");
 for (const n of [null, "Wi-Fi", "Wi-Fi · name hidden"]) assert.equal(join(n, false, true), null, `nothing to go by: ${n}`);
 console.log("ok - settings parsing and LAN address, Telegram's links, network rules");
+
+// Hidden sites in the Data list
+assert.deepEqual(parseSettings(JSON.stringify({ hiddenSites: ["a.com", "a.com", 5, "", "b.com"] })).hiddenSites, ["a.com", "b.com"]);
+assert.equal(parseSettings("{}").hiddenSites, undefined, "none: no key");
+assert.deepEqual(withHidden(["a.com"], "b.com", true), ["a.com", "b.com"]);
+assert.deepEqual(withHidden(["a.com"], "a.com", true), ["a.com"], "hiding twice: once");
+assert.equal(withHidden(["a.com"], "a.com", false), undefined, "the last one shown: none");

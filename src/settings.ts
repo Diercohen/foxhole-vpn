@@ -19,6 +19,7 @@ export interface Settings {
   smartDns?: boolean; // this computer is the DNS server of the home's TV, console, iPhone: blocked sites through the VPN (smartdns.ts)
   networks?: Record<string, NetRule>; // what joining a network does, by its name as netinfo.ts network() gives it
   lang?: "en" | "fa" | "ru"; // the desktop and phone apps' language (Settings → Language): their window, tray and notification
+  hiddenSites?: string[]; // sites left out of the Data list (TUI and app), till its "show hidden" switch is on
 }
 
 /** A network's rule: connect on joining it; or pause there (disconnect, and connect again as before on leaving it). */
@@ -44,6 +45,13 @@ export function onJoin(rules: Settings["networks"], n: string | null, s: { activ
   if (rule === "pause") return s.active ? "pause" : null;
   if (s.active) return null;
   return s.paused ? "resume" : rule === "connect" ? "connect" : null;
+}
+
+/** `list` with `site` hidden or shown again, or undefined when none are left (the file stays clean). Pure. */
+export function withHidden(list: string[] | undefined, site: string, hide: boolean): string[] | undefined {
+  const next = (list ?? []).filter((x) => x !== site);
+  if (hide) next.push(site);
+  return next.length ? next : undefined;
 }
 
 export const DEFAULTS: Settings = { share: false, port: 1080, username: "", password: "", split: NO_SPLIT };
@@ -95,7 +103,14 @@ export function parseSettings(json: string): Settings {
     ...(o.smartDns === true ? { smartDns: true } : {}),
     ...(parseNetworks(o.networks) && { networks: parseNetworks(o.networks) }),
     ...(o.lang === "en" || o.lang === "fa" || o.lang === "ru" ? { lang: o.lang } : {}),
+    ...(parseHidden(o.hiddenSites) && { hiddenSites: parseHidden(o.hiddenSites) }),
   };
+}
+
+/** The hidden sites a file holds, or undefined for none. Pure. */
+function parseHidden(v: unknown): string[] | undefined {
+  const ok = [...new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x && x.length <= 253) : [])];
+  return ok.length ? ok : undefined;
 }
 
 /** The network rules a file holds, or undefined for none. Pure. */

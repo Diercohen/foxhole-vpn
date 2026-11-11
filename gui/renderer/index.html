@@ -61,6 +61,7 @@
   <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.5 13.7 9 19 10.5 13.7 12.3 12 17.5 10.3 12.3 5 10.5 10.3 9z"/><path d="M18.5 16.5 19 18l1.5.5-1.5.5-.5 1.5-.5-1.5-1.5-.5 1.5-.5z"/></symbol>
   <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5.5M6 11.5l6-6 6 6"/></symbol>
   <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><path d="M4 4l16 16"/></symbol>
   <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path d="M14 4h3.5A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5H14"/><path d="m9.5 8-4 4 4 4M5.5 12H15"/></symbol>
   <symbol id="i-share" viewBox="0 0 24 24"><circle cx="17.5" cy="5.5" r="2.8"/><circle cx="6.5" cy="12" r="2.8"/><circle cx="17.5" cy="18.5" r="2.8"/><path d="m9 10.6 6-3.6M9 13.4l6 3.6"/></symbol>
@@ -317,6 +318,12 @@
       <div class="label">Through the VPN <span class="count" id="data-since"></span></div>
       <div class="rules" id="data-sites"></div>
       <div class="hint" id="data-direct"></div>
+    </div>
+    <div class="group" id="data-hidden-group" hidden>
+      <div class="row-line">
+        <div><div class="label"><svg class="i"><use href="#i-eye"/></svg>Show hidden sites</div><div class="hint" id="data-hidden-hint"></div></div>
+        <button class="switch" id="data-show-hidden" role="switch" aria-checked="false" aria-label="Show hidden sites"></button>
+      </div>
     </div>
     <p class="fine" id="data-fine">Counted by Foxhole on this computer, the sites' own data only. Your other devices on this account spend the same month's data.</p>
   </div>

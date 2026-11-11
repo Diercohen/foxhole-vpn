@@ -83,6 +83,11 @@ export class Connection {
     return server;
   }
 
+  /** The pass in hand while it's still good, without renewing it: what Guardian's own calls through the VPN use (proxy.ts ownTunnel). */
+  get passInHand(): ProxyPass | null {
+    return this.#pass && Date.now() / 1000 < this.#pass.expires - 15 ? this.#pass : null;
+  }
+
   /** Returns a currently-valid pass, refreshing it if missing or near expiry. */
   async currentPass(signal?: AbortSignal): Promise<ProxyPass> {
     if (this.#pass && !shouldRotate(this.#pass)) return this.#pass;

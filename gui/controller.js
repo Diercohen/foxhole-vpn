@@ -18,7 +18,7 @@ import { loadRelay, relayUrl } from "./dist/httprelay.js";
 import { STEPS, KEY_PLACEHOLDER, relayTemplate, highlightJs, deploymentId } from "./dist/relaysetup.js";
 import { network, publicIp, lanIp, firewallHint } from "./dist/netinfo.js";
 import { helperFor, helperInstalled, helperReady } from "./dist/helper.js";
-import { loadSettings, saveSettings, proxyHost, validPort, loginFor, telegramLink, onJoin, ruleable, withNetRule } from "./dist/settings.js";
+import { loadSettings, saveSettings, proxyHost, validPort, loginFor, telegramLink, onJoin, ruleable, withNetRule, withHidden } from "./dist/settings.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenProblem } from "./dist/tokenserver.js";
 import { startProxy, onProxyWarning, checkSite, netState, onNetState } from "./dist/proxy.js";
 import { startSmartDns, smartDnsHost, smartDnsProblem } from "./dist/smartdns.js";
@@ -1322,18 +1322,27 @@ export class Controller extends EventEmitter {
     }
   }
 
-  /** This month's data by site through the VPN (traffic.ts), the biggest first: the Data sheet, which asks while open. */
-  traffic() {
-    const { since, sites } = traffic();
+  /** This month's data by site through the VPN (traffic.ts), the biggest first: the Data sheet, which asks while open. Hidden sites only with `showHidden`. */
+  traffic(showHidden = false) {
+    const { since, sites: all } = traffic();
     const sp = this.#settings.split;
     const rules = new Map(sp.rules.map((r) => [r.match, r.via]));
+    const hidden = new Set(this.#settings.hiddenSites ?? []);
+    const used = all.filter((x) => x.vpn > 0);
+    const sites = showHidden === true ? used : used.filter((x) => !hidden.has(x.site));
     return {
       since: shortDate(new Date(since)),
-      direct: sites.some((x) => x.direct) ? sizeOf(sites.reduce((n, x) => n + x.direct, 0)) : "",
+      direct: all.some((x) => x.direct) ? sizeOf(all.reduce((n, x) => n + x.direct, 0)) : "",
       canSend: sp.default === "vpn", // "send direct" adds a rule, the other way from everything else
+      hidden: used.filter((x) => hidden.has(x.site)).length, // this month's hidden ones: the sheet's "show hidden" switch
       // stuck: blocked here (save data found it so) or refusing Iran, so it'd stop working direct
-      sites: sites.filter((x) => x.vpn > 0).slice(0, 15).map((x) => ({ site: x.site, vpn: x.vpn, size: sizeOf(x.vpn), rule: rules.get(x.site) ?? null, stuck: knownBlocked(x.site) || sanctioned(x.site) })),
+      sites: sites.slice(0, 15).map((x) => ({ site: x.site, vpn: x.vpn, size: sizeOf(x.vpn), rule: rules.get(x.site) ?? null, stuck: knownBlocked(x.site) || sanctioned(x.site), hidden: hidden.has(x.site) })),
     };
+  }
+
+  /** Hides a site from the Data list, or shows it there again. */
+  hideSite(site, hide) {
+    if (typeof site === "string" && site) return this.#changeSetting({ hiddenSites: withHidden(this.#settings.hiddenSites, site, hide === true) });
   }
 
   setSplitDefault(via) {

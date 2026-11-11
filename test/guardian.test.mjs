@@ -4,13 +4,14 @@
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"; // self-signed localhost cert
 
 import http from "node:http";
+import net from "node:net";
 import https from "node:https";
 import assert from "node:assert";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
-import { fetchPass, fetchUsage, pinGuardian, useRelay, GuardianBlocked, GuardianError } from "../dist/guardian.js";
+import { fetchPass, fetchUsage, pinGuardian, useRelay, useTunnel, GuardianBlocked, GuardianError } from "../dist/guardian.js";
 
 setTimeout(() => {
   console.error("FAIL - test timed out");
@@ -79,6 +80,27 @@ assert.strictEqual(viaRelay.usage.remaining, 7n, "with the relay's usage headers
 assert.deepStrictEqual(relayed, [{ k: "k", u: "https://vpn.mozilla.org/api/v1/fpn/token", m: "GET", h: { Authorization: "Bearer region", "Content-Type": "application/json" } }]);
 await assert.rejects(fetchPass("bad"), (err) => err instanceof GuardianError && err.status === 401);
 assert.strictEqual(relayed.length, 1, "a 401 isn't relayed");
+
+// Connected, the calls go through the VPN's tunnel first (proxy.ts ownTunnel), TLS to vpn.mozilla.org on it: neither
+// dialed directly nor relayed. A tunnel that can't open, or meets a 451 all the same, leaves the usual way.
+const tunneled = [];
+useTunnel(async (host, p) => (tunneled.push(`${host}:${p}`), net.connect(port, "127.0.0.1")));
+const before = { dialed: dialed.length, seen: seen.length };
+assert.strictEqual((await fetchUsage("good")).remaining, 40n, "the usage, through the tunnel");
+assert.deepStrictEqual(tunneled, ["vpn.mozilla.org:443"]);
+assert.strictEqual(dialed.length, before.dialed, "not dialed directly");
+assert.deepStrictEqual(seen.at(-1), { sni: "vpn.mozilla.org", host: "vpn.mozilla.org", auth: "Bearer good" }, "the hostname's TLS, on the tunnel");
+assert.strictEqual(seen.length, before.seen + 1);
+await fetchPass("region");
+assert.strictEqual(relayed.length, 2, "a 451 through the tunnel goes on the usual way, to the relay");
+let n = dialed.length;
+useTunnel(async () => null); // no pass in hand yet, or relay mode
+await fetchUsage("good");
+assert.strictEqual(dialed.length, ++n, "no tunnel: directly");
+useTunnel(async () => Promise.reject(new Error("the VPN's server refused the pass")));
+await fetchUsage("good");
+assert.strictEqual(dialed.length, ++n, "a tunnel that fails: directly");
+useTunnel(null);
 useRelay(null);
 relayServer.close();
 guardian.close();

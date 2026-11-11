@@ -24,7 +24,7 @@ routing**, on Linux, macOS and Windows. A desktop app or a terminal app.
 - ✂️ **Split tunneling**: pick the sites and apps that skip the VPN, or the only ones that use it (apps: on computers, and on Android in whole-system mode; iOS can only split sites)
 - 🇮🇷 **Iranian sites direct** in one switch, and **Save data**: other sites go direct too where they open, blocked ones through the VPN
 - 🔎 **Blocked or sanctioned?** Split tunneling's **Check** tries a site directly and through the VPN: Iran's filter, sanctions, or open (then it can skip the VPN). And when Iran cuts the international internet off, Foxhole says so
-- 📊 **Data by site**: which sites spend the VPN's monthly data, when it runs out at this rate, and one click to send a big one direct
+- 📊 **Data by site**: which sites spend the VPN's monthly data, when it runs out at this rate, and one click to send a big one direct; hide the sites you'd rather not list
 - ✈️ **Telegram in one tap**: the proxy card's button sets Telegram on this device; with sharing on, a QR code sets your phone's
 - 📱 **Share with your phone** on the same Wi-Fi
 - 📺 **Smart DNS for a TV or console**: set its DNS to your computer, and YouTube and blocked or sanctioned sites open on it, with no app
@@ -59,7 +59,9 @@ Ubuntu 22.04's Node is too old: `sudo snap install node --classic` first.
 
 **Before you start:** sign in to the **Firefox browser** with a Mozilla account
 (Sync can stay off). foxhole reads that login to get the VPN token; if you're
-signed out, it opens Firefox's sign-in for you.
+signed out, it opens Firefox's sign-in for you. Or sign in in Foxhole itself, in **Accounts** (the desktop app's
+window, or `a` in the terminal UI → **Sign in to a Mozilla account**, with your email, password and the code Mozilla emails).
+On a first start the terminal asks which: `e` your email, or `f` Firefox's sign-in (whose screen offers `e` too).
 
 ## Usage
 
@@ -76,7 +78,7 @@ foxhole restore             # undo whole-system routing if foxhole was killed
 In the TUI: pick a country and press **Enter** to connect (it starts disconnected).
 **`g`** ticks or unticks **Global TUN**: ticked, the default, connecting goes on to
 whole-system mode (asks for your password in-app), and your choice is kept for next
-time. **`t`** split tunneling (**`i`** Iranian sites direct, **`s`** save data, **`?`** checks a site as you type it), **`m`** data by site, **`l`** logs, **`s`** settings
+time. **`t`** split tunneling (**`i`** Iranian sites direct, **`s`** save data, **`?`** checks a site as you type it), **`m`** data by site (**`h`** hides a site from it, **`a`** shows the hidden), **`a`** accounts, **`l`** logs, **`s`** settings
 (**Use in Telegram** shows its QR code, **Share settings** yours).
 On Windows, whole-system mode asks for administrator rights in Windows' own
 prompt, once: allow **Windows PowerShell**. With it Foxhole sets up its network helper,
@@ -112,14 +114,16 @@ it shows each click with a screenshot. The relay:
 
 - reaches `vpn.mozilla.org` for foxhole when it's blocked, or refuses your
   country ("VPN not available in this region"): only small control calls,
-  your traffic still goes through Firefox VPN; and
+  your traffic still goes through Firefox VPN. Once connected, even those go
+  through the VPN, so the relay only gets the first pass of each connect; and
 - can carry your browsing itself: pick **Relay** at the top of Locations.
 
 **On an Android phone or TV**, make the relay on a computer (Apps Script's setup needs one), then bring it over on
 the same Wi-Fi: on the phone or TV, **Settings → VPN relay → Get it from your computer** shows a QR code and a
 6-character code; on the computer, or a phone that has the relay, **Settings → VPN relay → Send to a TV or phone**
 scans the QR code or takes the code. A TV signed in from a phone or computer (**Settings → Sign in a TV**) gets its
-relay with the sign-in. On a TV the relay only reaches Mozilla: a TV's apps don't trust relay mode's certificate, so it has
+relay with the sign-in; in the terminal UI, **Settings → Sign in a TV** takes the TV's code and sends both (tab leaves
+the relay out), and a TV or phone waiting for a relay alone gets just the relay. On a TV the relay only reaches Mozilla: a TV's apps don't trust relay mode's certificate, so it has
 no **Relay** location. iPhones don't have the relay yet.
 
 **Split tunneling → Iranian sites direct** sends Iran's sites around the VPN: by
@@ -139,7 +143,9 @@ address, or stops a test handshake with it) or one that refuses Iran ([sanctione
 with your computer's address: the device's connection comes to Foxhole on port 443 or 80, and goes on through
 the VPN to the site its TLS SNI or HTTP Host names. Every other site gets the network's own answer and goes direct.
 Only the web and WhatsApp's messages go through: games' and calls' traffic doesn't. An iPhone's iCloud Private Relay and a browser's
-secure DNS skip it. On an iPhone, every app except Safari needs its permission on, in **Settings → Privacy & Security → Local Network**, to reach your computer. When the computer is off, set the device's DNS back to automatic. Linux keeps ports 53, 80
+secure DNS skip it. On an iPhone, every app except Safari needs its permission on, in **Settings → Privacy & Security → Local Network**, to reach your computer. When the computer is off, set the device's DNS back to automatic. On a Mac, the device's Telegram, which
+doesn't use DNS, goes through too once the device has your computer as its router: Settings says how (and asks your
+password once, for the network helper). Linux keeps ports 53, 80
 and 443 for root: `sudo sysctl -w net.ipv4.ip_unprivileged_port_start=53` lets Foxhole have them (add it to
 `/etc/sysctl.d/` to keep it).
 

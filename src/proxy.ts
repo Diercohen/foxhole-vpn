@@ -14,6 +14,7 @@ import { nameOf, DOH_HOST } from "./dns.js";
 import { IP_HOST, TRACE_HOST } from "./netinfo.js";
 import { relayServe, fakeName, realIp, setDirectTo, setDirectDial } from "./relaymode.js";
 import { udpAssociate, closeUdp } from "./udp.js";
+import { useTunnel, tunnelInUse } from "./guardian.js";
 
 // Throttled stderr: a browser opens many connections, so don't repeat the same
 // failure more than once every few seconds.
@@ -344,6 +345,15 @@ async function dial(conn: Connection, target: Target): Promise<tls.TLSSocket | n
     if (!(err instanceof UpstreamStatusError)) dialed(false); // its server answered: the network's fine
     return null;
   }
+}
+
+/**
+ * A tunnel for foxhole's own calls to Mozilla (guardian.ts useTunnel), on the pass in hand: renewing the pass goes
+ * through here, so it can't wait for the new one. Null in relay mode, or with no pass that's still good.
+ */
+function ownTunnel(conn: Connection, target: Target): Promise<tls.TLSSocket | null> {
+  const server = conn.server, pass = conn.passInHand;
+  return !server || conn.relay || !pass ? Promise.resolve(null) : openUpstream(server, pass.token, target);
 }
 
 // ── Split tunneling: each connection goes through the VPN or direct, as the rules say (split.ts).
@@ -956,6 +966,8 @@ export async function startProxy(
     server.listen(port, host, () => {
       const addr = server.address() as net.AddressInfo;
       listsVia({ host: host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host, port: addr.port }); // smart's new lists come through the VPN
+      const tunnel = (h: string, p: number) => ownTunnel(conn, { host: h, port: p });
+      useTunnel(tunnel); // Mozilla's calls too, while it runs
       resolve({
         port: addr.port,
         // server.close() alone waits for every client to hang up, and browsers keep
@@ -963,6 +975,7 @@ export async function startProxy(
         close: () =>
           new Promise<void>((res) => {
             server.close(() => res());
+            if (tunnelInUse() === tunnel) useTunnel(null); // not a newer proxy's
             for (const s of sockets) s.destroy();
             closeWarm();
             closeUdp();

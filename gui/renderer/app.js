@@ -489,12 +489,13 @@ function drawCheck(c) {
 // ── Data: the month's data left, and the sites that spent the VPN's (controller.js traffic) ───────────
 
 let dataTimer = null;
+let showHidden = false; // the Data sheet's "show hidden sites" switch: off each time it opens
 
 /** Draws the Data sheet, and again every 2 s while it's open: the counts climb as sites load. */
 async function drawData() {
   clearTimeout(dataTimer);
   if (openSheet !== "data") return;
-  const tf = await act("traffic");
+  const tf = await act("traffic", showHidden);
   const u = S.usage;
   $("#data-left").innerHTML = !u ? t`Not known yet <small>till connected</small>` : u.unlimited ? t`Unlimited` : t`${esc(u.left)} left <small>of ${esc(u.max)}${u.reset ? t` · resets ${esc(u.reset)}` : ""}</small>`;
   $("#data-pace").dataset.tone = u?.runsOut ? "warn" : "";
@@ -502,13 +503,18 @@ async function drawData() {
   $("#data-since").textContent = t`since ${tr(tf.since)}`;
   const top = tf.sites[0]?.vpn || 1;
   $("#data-sites").innerHTML = tf.sites.length
-    ? tf.sites.map((x) => `<div class="site-row"><span class="m" title="${esc(x.site)}">${esc(x.site)}</span>
+    ? tf.sites.map((x) => `<div class="site-row${x.hidden ? " is-hidden" : ""}"><span class="m" title="${esc(x.site)}">${esc(x.site)}</span>
         <span class="bar"><i style="width:${Math.max(3, Math.round((x.vpn / top) * 100))}%"></i></span><span class="n">${esc(x.size)}</span>
         ${x.rule === "direct" ? t`<span class="tag-direct">Direct now</span>`
           : tf.canSend && !x.rule && !x.stuck ? t`<button class="btn" data-direct="${esc(x.site)}" title="New connections to it skip the VPN">Send direct</button>`
-          : `<span class="tag-direct" title="${x.stuck ? t`It doesn't open direct here` : t`It has a rule in Split tunneling`}">${x.stuck ? t`Blocked here` : ""}</span>`}</div>`).join("")
+          : `<span class="tag-direct" title="${x.stuck ? t`It doesn't open direct here` : t`It has a rule in Split tunneling`}">${x.stuck ? t`Blocked here` : ""}</span>`}
+        <button class="icon-btn" type="button" data-hide="${esc(x.site)}" data-on="${x.hidden ? 1 : 0}" title="${x.hidden ? t`Show it in this list again` : t`Hide it from this list`}"><svg class="i"><use href="#i-${x.hidden ? "eye" : "eye-off"}"/></svg></button></div>`).join("")
     : t`<div class="empty"><b>Nothing through the VPN yet</b>Sites show here as they load.</div>`;
   $("#data-direct").textContent = tf.direct ? t`Direct this month: ${tf.direct}, none of it the VPN's data.` : "";
+  $("#data-hidden-group").hidden = !tf.hidden && !showHidden;
+  $("#data-hidden-hint").textContent = t`Hidden: ${tf.hidden}`;
+  $("#data-show-hidden").classList.toggle("on", showHidden);
+  $("#data-show-hidden").setAttribute("aria-checked", String(showHidden));
   dataTimer = setTimeout(drawData, 2000);
 }
 
@@ -1466,7 +1472,7 @@ function showSheet(name) {
   if (name === "settings" && !PHONE) void act("autostart").then(drawAutostart);
   if (name === "split") act("openSplit");
   if (name === "logs") void act("logs").then((lines) => ((logBuf = lines.slice(-1000)), drawLogs(true)));
-  if (name === "data") void drawData();
+  if (name === "data") void ((showHidden = false), drawData());
 }
 
 function closeSheet() {
@@ -1691,6 +1697,7 @@ document.addEventListener("click", async (e) => {
   if (btn.dataset.via) return act("setSplitDefault", btn.dataset.via);
   if (btn.dataset.site) return act("addRule", btn.dataset.site);
   if (btn.dataset.direct) return act("addRule", btn.dataset.direct).then(drawData); // the Data sheet's "Send direct"
+  if (btn.dataset.hide) return act("hideSite", btn.dataset.hide, btn.dataset.on !== "1").then(drawData);
   if (btn.dataset.checkVia && checked) return act("addRule", checked.site, btn.dataset.checkVia).then((ok) => ok && drawCheck({ ...checked, now: btn.dataset.checkVia, offer: null }));
   if (btn.hasAttribute("data-pick-open")) return openPicker($("#split-input").value.trim());
   if (btn.hasAttribute("data-close")) return closeSheet();
@@ -1718,6 +1725,7 @@ document.addEventListener("click", async (e) => {
     case "c-split": return showSheet("split");
     case "split-check-btn": return checkTyped();
     case "data-chip": return showSheet("data");
+    case "data-show-hidden": return void ((showHidden = !showHidden), drawData());
     case "c-loc": return showSheet("locations");
     case "open-settings": case "account": return showSheet("settings");
     case "open-logs": return showSheet("logs");
