@@ -555,7 +555,7 @@ input:focus { background: rgba(0, 0, 0, 0.34); box-shadow: inset 0 0 0 1px color
 .sheet.on .group:nth-child(6) { animation-delay: 300ms; }
 .group { padding: 18px 0; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
 .group:last-child { border-bottom: 0; }
-#port-form { border-bottom: 0; padding-bottom: 0; } /* the proxy's port and its login are one section */
+#share-group, #port-form:has(+ #login-form:not([hidden])) { border-bottom: 0; padding-bottom: 0; } /* sharing, the proxy's port and (sharing on) its login are one section */
 .label { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 680; }
 .label .i { color: var(--ink-3); }
 .label .count { margin-inline-start: 2px; font-size: 12px; font-weight: 600; color: var(--ink-3); }
@@ -717,7 +717,7 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 /* ── Password popup ───────────────────────────────────────────────────────────────────────── */
 
 .modal { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; pointer-events: none; }
-#notice-modal, #wifi-modal, #take-modal, #wizard, #relaywait-modal { z-index: 80; } /* above the sign-in screens (.overlay): an account signed in to again from there, a relay imported, set up or brought before signing in */
+#notice-modal, #wifi-modal, #take-modal, #wizard, #relaywait-modal, #tvwait-modal { z-index: 80; } /* above the sign-in screens (.overlay): an account signed in to again from there, a relay imported, set up or brought before signing in */
 .modal .box { width: min(420px, calc(100% - 40px)); padding: 30px 28px 24px; text-align: center; display: flex; flex-direction: column; gap: 14px;
   background: linear-gradient(160deg, rgba(38, 30, 56, 0.9), rgba(17, 14, 28, 0.94)); -webkit-backdrop-filter: blur(40px) saturate(160%); backdrop-filter: blur(40px) saturate(160%);
   opacity: 0; transform: translateY(24px) scale(0.92); transition: transform 0.6s var(--spring), opacity 0.35s; }
@@ -999,7 +999,7 @@ body.android::before { background: rgba(7, 6, 12, 0.96); }
   *, ::before, ::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
 }
 
-/* ── A TV's sign-in from a phone or computer (app.js tvPanel), and signing one in from here ─────────────────────── */
+/* ── A sign-in from another device: a TV's, a phone's or computer's too (app.js tvPanel), and signing one in from here ─────────────────────── */
 
 .tvpair { width: 100%; display: flex; align-items: center; gap: 30px; text-align: start; }
 /* Data: the month's VPN data by site */

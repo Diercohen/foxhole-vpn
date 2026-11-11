@@ -28,7 +28,8 @@ routing**, on Linux, macOS and Windows. A desktop app or a terminal app.
 - ✈️ **Telegram in one tap**: the proxy card's button sets Telegram on this device; with sharing on, a QR code sets your phone's
 - 📱 **Share with your phone** on the same Wi-Fi
 - 📺 **Smart DNS for a TV or console**: set its DNS to your computer, and YouTube and blocked or sanctioned sites open on it, with no app
-- 📲 **Share Foxhole** with the family, no internet needed: your relay and split tunneling by QR code or link, and from an Android phone the app itself to a phone nearby
+<!-- Share Foxhole: hidden for now
+- 📲 **Share Foxhole** with the family, no internet needed: your relay and split tunneling by QR code or link, and from an Android phone the app itself to a phone nearby -->
 - 🧮 **Look like a calculator** (Android): for a phone that may be searched, Foxhole's icon and name become a calculator's that works as one, and your code, then =, opens Foxhole. Android's own Settings still list Foxhole, and while it's connected Android shows its VPN
 - 🔘 **Quick Settings tile and a widget** on Android: on or off without opening the app, and the month's data left on the home screen
 - 🗣️ **In Persian too** (فارسی), right to left: the desktop and phone apps, with the tray, the notification, the tile and the widget, by Settings → Language. **In Russian too** (Русский), by the same setting. The terminal UI and the CLI stay in English
@@ -83,7 +84,7 @@ In the TUI: pick a country and press **Enter** to connect (it starts disconnecte
 **`g`** ticks or unticks **Global TUN**: ticked, the default, connecting goes on to
 whole-system mode (asks for your password in-app), and your choice is kept for next
 time. **`t`** split tunneling (**`i`** Iranian sites direct, **`s`** save data, **`?`** checks a site as you type it), **`m`** data by site (**`h`** hides a site from it, **`a`** shows the hidden), **`a`** accounts, **`l`** logs, **`s`** settings
-(**Use in Telegram** shows its QR code, **Share settings** yours).
+(**Use in Telegram** shows its QR code).
 On Windows, whole-system mode asks for administrator rights in Windows' own
 prompt, once: allow **Windows PowerShell**. With it Foxhole sets up its network helper,
 a scheduled task running a PowerShell script in `C:\Program Files\Foxhole Helper`, and
@@ -128,8 +129,9 @@ it shows each click with a screenshot. The relay:
 **On an Android phone or TV**, make the relay on a computer (Apps Script's setup needs one), then bring it over on
 the same Wi-Fi: on the phone or TV, **Settings → VPN relay → Get it from your computer** shows a QR code and a
 6-character code; on the computer, or a phone that has the relay, **Settings → VPN relay → Send to a TV or phone**
-scans the QR code or takes the code. A TV signed in from a phone or computer (**Settings → Sign in a TV**) gets its
-relay with the sign-in; in the terminal UI, **Settings → Sign in a TV** takes the TV's code and sends both (tab leaves
+scans the QR code or takes the code. A TV signed in from a phone or computer (**Settings → Sign in a TV or phone**) gets its
+relay with the sign-in, and so does a phone or computer that picks **Sign in from another device** where it asks to sign in;
+in the terminal UI, **Settings → Sign in a TV or phone** takes the code and sends both (tab leaves
 the relay out), and a TV or phone waiting for a relay alone gets just the relay. On a TV the relay only reaches Mozilla: a TV's apps don't trust relay mode's certificate, so it has
 no **Relay** location. iPhones don't have the relay yet.
 
@@ -156,12 +158,14 @@ password once, for the network helper). Linux keeps ports 53, 80
 and 443 for root: `sudo sysctl -w net.ipv4.ip_unprivileged_port_start=53` lets Foxhole have them (add it to
 `/etc/sysctl.d/` to keep it).
 
+<!-- Share Foxhole: hidden for now
 **Settings → Share Foxhole** gives the family's other devices your split tunneling's sites and, if you tick it, your
 relay, so nobody else has to set one up. A phone on the same Wi-Fi scans its QR code with the camera and opens them in
 Foxhole; or send the link (`foxhole://settings?d=…`), and they paste it into **Settings → Import settings**, which
 shows what it changes first. From an Android phone the same QR code also gives a phone without Foxhole the app itself,
 over the Wi-Fi or the phone's hotspot, with no internet (Android asks to let the browser install apps). Anyone with
 the code or link can use your relay. Rules for apps stay each device's own.
+-->
 
 **Fixes without an update:** when the filtering changes, foxhole picks up the workaround (other addresses for
 Mozilla's servers, more Google sites for relay mode to reach directly) and a short notice from [`hot.json`](hot.json),

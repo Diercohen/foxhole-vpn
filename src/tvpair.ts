@@ -1,4 +1,5 @@
-// Signing a TV in from a computer or phone that has Foxhole (Android TV, mobile/). The TV waits on the local network,
+// Signing a TV in from a computer or phone that has Foxhole (Android TV, mobile/); a phone or a computer too, where
+// that's picked over Mozilla's own sign-in ("the TV" below is whichever waits). The TV waits on the local network,
 // its screen showing a QR code (its address, its key and a secret) and a 6-character code. The other device, signed
 // in, finds it (from the QR code, or by looking for it on its own network with the code) and sends it a sign-in of
 // its own: a VPN-only refresh token (auth.ts), encrypted to the TV's key (X25519, AES-GCM) with the secret, or with
@@ -17,6 +18,10 @@ const INFO = "foxhole tv sign-in v1";
 const ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 /** Wrong codes a TV takes before it shows a new one. */
 const TRIES = 5;
+// what a waiting device answers a sender it turns away; the sender says them itself, by the status (an older one's "the TV" may be a phone)
+const BUSY = "the other device is taking a sign-in already";
+const OLD_QR = "that QR code isn't the one on the other screen anymore";
+const WRONG_CODE = "that isn't the code on the other screen";
 
 export interface TvAccount {
   uid: string;
@@ -112,7 +117,7 @@ export async function waitForSignIn(opts: {
     req.setEncoding("utf8");
     req.on("data", (c: string) => ((body += c), body.length > 16_384 && req.destroy()));
     req.on("end", async () => {
-      if (busy) return answer(res, 409, { error: "the TV is signing in already" });
+      if (busy) return answer(res, 409, { error: BUSY });
       busy = true;
       try {
         const m = JSON.parse(body) as { pub?: string; via?: string; iv?: string; ct?: string };
@@ -129,7 +134,7 @@ export async function waitForSignIn(opts: {
         } catch {
           // a wrong code (or a damaged message): after a few, a new code, so they can't be tried one by one
           if (++keys.failures >= TRIES) (keys = await fresh()), opts.changed();
-          return answer(res, 403, { error: m.via === "qr" ? "that QR code isn't this TV's anymore" : "that isn't the code on the TV" });
+          return answer(res, 403, { error: m.via === "qr" ? OLD_QR : WRONG_CODE });
         }
         const { uid, email, refreshToken, from } = message;
         // a relay alone is waited for: a sign-in sent along isn't taken
@@ -162,12 +167,13 @@ function page(name: string, want: TvWant): string {
   const tv = name.replace(/[<>&"']/g, "");
   const relay = want === "relay";
   const title = relay ? `Send your relay to ${tv}` : `Sign in ${tv}`;
+  const it = /\btv\b/i.test(tv) ? "the TV" : "it";
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title}</title><style>body{font:17px/1.5 system-ui,sans-serif;background:#07060c;color:#f6f3fb;margin:0;padding:32px 24px;text-align:center}
 a{display:inline-block;margin:18px 0;padding:14px 26px;border-radius:14px;background:${relay ? "#9b4dff" : "#ff7a1a"};color:#fff;font-weight:700;text-decoration:none}p{color:#cfc8dc}</style></head>
-<body><h2>${title}</h2><p>${relay ? "Open this in <b>Foxhole</b>, with your VPN relay set up, to send it." : "Open this in <b>Foxhole</b>, signed in, to send the TV a sign-in."}</p>
+<body><h2>${title}</h2><p>${relay ? "Open this in <b>Foxhole</b>, with your VPN relay set up, to send it." : `Open this in <b>Foxhole</b>, signed in, to send ${it} a sign-in.`}</p>
 <a id="open" href="#">Open in Foxhole</a>
-<p>No button? Open Foxhole on this phone or a computer on the same Wi-Fi: <b>${relay ? "Settings → VPN relay → Send to a TV or phone" : "Settings → Sign in a TV"}</b>, and scan the code there or type the code shown on ${relay ? "the screen" : "the TV"}.</p>
+<p>No button? Open Foxhole on this phone or a computer on the same Wi-Fi: <b>${relay ? "Settings → VPN relay → Send to a TV or phone" : "Settings → Sign in a TV or phone"}</b>, and scan the code there or type the code shown on the other screen.</p>
 <script>document.getElementById("open").href="intent://tv?l="+encodeURIComponent(location.href)+"#Intent;scheme=foxhole;package=io.github.diercohen.foxhole;end";</script>
 </body></html>`;
 }
@@ -246,7 +252,7 @@ export async function sendToTv(tv: Tv, proofOf: { code?: string }, what: { accou
   const { privateKey, publicKey } = generateKeyPairSync("x25519");
   const pub = rawPub(publicKey);
   const code = proofOf.code ? normalizeCode(proofOf.code) : null;
-  if (!tv.secret && !code) throw new Error("the code is 6 letters and digits, as on the TV");
+  if (!tv.secret && !code) throw new Error("the code is 6 letters and digits, as on the other screen");
   const proof = tv.secret ? unb64(tv.secret) : await stretch(code as string, tvPub);
   const key = messageKey(diffieHellman({ privateKey, publicKey: importPub(tvPub) }), proof, tvPub, pub);
   const iv = randomBytes(12);
@@ -261,7 +267,9 @@ export async function sendToTv(tv: Tv, proofOf: { code?: string }, what: { accou
     signal: AbortSignal.timeout(30_000), // the TV checks the sign-in with Mozilla first
   });
   const d = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; account?: boolean; relay?: boolean };
-  if (!res.ok || !d.ok) throw new Error(d.error ?? `the TV answered ${res.status}`);
+  if (res.status === 403) throw new Error(tv.secret ? OLD_QR : WRONG_CODE);
+  if (res.status === 409) throw new Error(BUSY);
+  if (!res.ok || !d.ok) throw new Error(d.error ?? `the other device answered ${res.status}`);
   // a TV of Foxhole 1.1 says nothing of it: it takes the sign-in, and leaves the relay
   return { account: d.account ?? !!what.account, relay: d.relay ?? false };
 }

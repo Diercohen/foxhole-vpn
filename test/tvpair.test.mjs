@@ -46,7 +46,7 @@ await sendToTv(fromLink, {}, { account, relay: { deploymentId: "short", authKey:
 assert.equal(got.pop().relay, null, "a Deployment ID the setup wouldn't take isn't one");
 await assert.rejects(sendToTv(fromLink, {}, {}, "x"), /no account in it/);
 
-await assert.rejects(sendToTv(byCode, { code: "222222" }, { account }, "x"), /isn't the code on the TV/);
+await assert.rejects(sendToTv(byCode, { code: "222222" }, { account }, "x"), /isn't the code on the other screen/);
 await assert.rejects(sendToTv(byCode, { code: "0" }, { account }, "x"), /6 letters and digits/);
 refuse = "Mozilla refused it";
 await assert.rejects(sendToTv(fromLink, {}, { account }, "x"), /Mozilla refused it/, "the TV's reason, to the sender");
@@ -54,7 +54,7 @@ refuse = null;
 for (let i = 0; i < 4; i++) await sendToTv(byCode, { code: "222222" }, { account }, "x").catch(() => {});
 assert.equal(changes, 1, "a new code after five wrong ones");
 assert.notEqual(tv.waiting().code, code);
-await assert.rejects(sendToTv(fromLink, {}, { account }, "x"), /isn't this TV's anymore/, "the old QR code with it");
+await assert.rejects(sendToTv(fromLink, {}, { account }, "x"), /isn't the one on the other screen anymore/, "the old QR code with it");
 tv.stop();
 
 // a phone (or a TV, later) waiting for a relay alone: a sign-in sent along isn't taken, and one without a relay is refused

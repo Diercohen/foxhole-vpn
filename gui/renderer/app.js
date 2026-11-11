@@ -142,6 +142,11 @@ const STILL = IOS && !(+/OS (\d+)_/.exec(navigator.userAgent)?.[1] > 16);
 const TV = !!fh.tv; // Android TV (phone.js): signs in from a phone or computer on its network, driven by a remote
 let remoteUsed = false; // a TV: until its first key or click, the power button keeps the focus
 const DEVICE = TV ? t`TV` : PHONE ? t`phone` : t`computer`;
+/**
+ * Share Foxhole (Settings' Share and Import settings, the sign-in screens' "Import them", a shared link opening the
+ * app): hidden for now, on every platform. true shows it all again (the terminal UI's: tui.ts SHARE_FOXHOLE).
+ */
+const SHARE_FOXHOLE = false;
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 // The countries with a picture in flags/ (<code>.svg; pictures, as Windows draws no flag emoji); the rest show their code
@@ -159,12 +164,28 @@ const CIRCUMFERENCE = 94.25; // the data ring's: 2π × 15
 
 let S = null; // the state as last sent
 const drawn = new Map(); // section → what it was last drawn from
-/** Runs draw() when `data` changed since this section was last drawn: the state comes every second. */
+/**
+ * Runs draw() when `data` changed since this section was last drawn: the state comes every second. A draw that fails
+ * is tried again with the next state, and the sections after it are still drawn.
+ */
 function section(key, data, draw) {
   const sig = JSON.stringify(data);
   if (drawn.get(key) === sig) return;
   drawn.set(key, sig);
-  draw();
+  try {
+    draw();
+  } catch (err) {
+    drawn.delete(key);
+    console.error(`drawing ${key}:`, err);
+  }
+}
+
+// what's shown once per event, not again on a redraw: an alert, the news, the toast, Settings closing on a switch
+const ONCE = new Set(["notice", "news", "toast", "switched"]);
+/** Everything drawn anew from the state as it is now, whatever was drawn before: after a sign-in, nothing of the account before stays. */
+function redraw() {
+  for (const key of [...drawn.keys()]) if (!ONCE.has(key)) drawn.delete(key);
+  if (S) render();
 }
 
 /** Plays a CSS animation again, e.g. on a title that just changed. */
@@ -397,10 +418,12 @@ function reveal() {
 // ── Toast: the last message, once nothing is in progress (the orb's subtitle shows progress) ─
 
 let toastTimer = 0;
+let accountNotice = false; // the alert on screen is an account's (signed in, or already on the list): its OK draws the window anew
 
 function renderNotice() {
   section("notice", [S.notice?.id], () => {
     if (!S.notice) return;
+    accountNotice = S.notice.kind !== "relay";
     const relay = S.notice.kind === "relay"; // a relay that came from another device (controller.js tvAccept)
     $("#notice-modal").classList.toggle("relay", relay);
     $("#notice-modal use").setAttribute("href", relay ? "#i-relay" : "#i-user");
@@ -421,6 +444,7 @@ function renderNews() {
     $("#notice-modal use").setAttribute("href", "#i-spark");
     $("#notice-title").textContent = t`News from Foxhole`;
     $("#notice-text").textContent = newsOpen = S.news;
+    accountNotice = false;
     $("#notice-modal").classList.add("on");
   });
 }
@@ -429,6 +453,10 @@ function noticeClose() {
   $("#notice-modal").classList.remove("on");
   if (newsOpen) void act("newsShown", newsOpen);
   newsOpen = null;
+  if (!accountNotice) return;
+  // an account signed in to: the newest state asked for, and all of the window drawn from it
+  accountNotice = false;
+  void act("state").then((state) => ((S = localize(state)), redraw()), redraw);
 }
 
 /** The account in use hasn't turned on Firefox's VPN: everything in dark red, the fox sad (fox3d.js), and how to turn it on. */
@@ -768,11 +796,13 @@ function renderSettings() {
     $("#share-box").innerHTML = s.share
       ? t`<div class="hint">Set ${PHONE ? t`the other device's` : t`your phone's`} Wi-Fi proxy to</div>
          <div class="addr"><span class="mono">${esc(addr)}</span><button class="mini" data-copy="${esc(addr)}" title="Copy">${icon("copy")}</button></div>
-         ${s.username || s.password ? t`<div class="hint">Devices sign in with the username and password below.</div>` : t`<div class="warn-line">No password: anyone on this network can use it. Set one below.</div>`}
          ${tgShare()}
-         ${S.fwHint ? t`<div class="hint">If they can't connect, open the port in the firewall:</div>${S.fwHint.map((c) => `<div class="cmd"><span class="mono">${esc(c)}</span><button class="mini" data-copy="${esc(c)}" title="Copy">${icon("copy")}</button></div>`).join("")}` : ""}`
+         ${S.fwHint ? t`<div class="hint">If they can't connect, open the port in the firewall:</div>${S.fwHint.map((c) => `<div class="cmd"><span class="mono">${esc(c)}</span><button class="mini" data-copy="${esc(c)}" title="Copy">${icon("copy")}</button></div>`).join("")}` : ""}
+         ${s.username || s.password ? t`<div class="hint">Devices sign in with the username and password below.</div>` : t`<div class="warn-line">No password: anyone on this network can use it. Set one below.</div>`}`
       : t`<div class="hint">Turn on to use the VPN from ${PHONE ? t`a computer or another phone` : t`your phone`}, on the same Wi-Fi.</div>`;
+    $("#login-form").hidden = !s.share; // the login is asked of other devices only: shown with sharing on
     drawSmartDns();
+    $("#give-group").hidden = !SHARE_FOXHOLE;
     $("#give-hint").textContent = S.platform === "android"
       ? t`Foxhole itself for a phone nearby, from this one with no internet, and your relay and split tunneling for the family's other devices.`
       : t`Your relay and split tunneling, for the family's other devices: a QR code for a phone to scan, or a link to send.`;
@@ -921,8 +951,11 @@ function choices(email, { firefox = true } = {}) {
   const ff = !firefox || PHONE ? ""
     : `<button class="choice" type="button" data-act="addAccount" data-arg="firefox">${icon("external")}<span><b>${email ? t`Use Firefox's account, ${esc(email)}` : t`Use Firefox's sign-in`}</b>
         <span>${email ? t`Firefox is signed in to it on this computer.` : mac ? t`macOS asks you to let Foxhole read Firefox's data (Full Disk Access).` : t`Firefox signed in to your Mozilla account, on this computer.`}</span></span></button>`;
+  // the sign-in of a device that's signed in already, sent here as a TV gets its own (tvModal)
+  const from = `<button class="choice" type="button" data-from>${icon(PHONE ? "monitor" : "phone")}<span><b>${t`Sign in from another device`}</b>
+      <span>${t`Foxhole on your computer, phone or TV, signed in, sends its sign-in here: with a QR code, or a 6-character code.`}</span></span></button>`;
   return t`<button class="choice primary" type="button" data-act="addAccount" data-arg="mozilla">${icon("user")}<span><b>Sign in to a Mozilla account</b>
-      <span>Mozilla's own page opens in Foxhole. Nothing to allow, and no Firefox needed.</span></span></button>${ff}`;
+      <span>Mozilla's own page opens in Foxhole. Nothing to allow, and no Firefox needed.</span></span></button>${ff}` + from;
 }
 
 /** Asks before an account's signed out of Foxhole (logout-ok then does it). */
@@ -962,11 +995,10 @@ function renderAccounts() {
   });
 }
 
-/** Adds an account: on a phone, Mozilla's sign-in at once (no Firefox there); else the choice. */
+/** Adds an account: a TV waits for a sign-in from another device (its remote's way is a link there); else the choice. */
 function addAccount() {
   if (TV) return tvModal(true);
-  if (PHONE) return act("addAccount", "mozilla");
-  act("refreshAccounts"); // Firefox's account, freshly read where that asks nothing
+  if (!PHONE) act("refreshAccounts"); // Firefox's account, freshly read where that asks nothing
   $("#add-modal").classList.add("on");
 }
 
@@ -995,16 +1027,19 @@ function renderOnboard() {
     const others = S.accounts.filter((x) => !x.current);
     const rest = others.length ? t`<p class="fine">Or use another account:</p><div class="accounts">${others.map((x) => accountRow(x, { remove: false })).join("")}</div>` : "";
     // settings from the family (share.ts): their relay gets the sign-in through where Mozilla is blocked
-    const take = t`<p class="fine">Got Foxhole settings from your family? <span class="link" id="onboard-take">Import them</span>: a relay in them gets through where Mozilla is blocked.</p>`;
+    const take = !SHARE_FOXHOLE ? "" : t`<p class="fine">Got Foxhole settings from your family? <span class="link" id="onboard-take">Import them</span>: a relay in them gets through where Mozilla is blocked.</p>`;
     // instead of Firefox's sign-in: Foxhole's own
     const own = t`<p class="fine">Or <span class="link" data-act="addAccount" data-arg="mozilla">sign in to a Mozilla account here</span>, without Firefox.</p>`;
+    // or a sign-in sent from a device that's signed in, as a TV gets its own (tvModal)
+    const from = `<button class="btn" type="button" data-from>${icon("monitor")}${t`Sign in from another device`}</button>`;
+    const fromToo = TV ? "" : t`<p class="fine">Or <span class="link" data-from>get the sign-in from another device</span> with Foxhole, signed in to it.</p>`;
     // a phone: Mozilla's sign-in page opens in the app itself (App.tsx), no Firefox needed
     const phone = {
       checking: () => t`${fox}<h2>Waking up the fox…</h2><p>Getting the VPN token from your Mozilla account.</p>${wait(t`One moment`)}`,
       choose: () => t`${fox}<h2>Sign in to your Mozilla account</h2>
         <p>Foxhole uses Firefox's free VPN, which comes with a <b>Mozilla account</b>: the one Firefox signs in with. Sign in with yours, or make one: it's free.</p>
         ${err}
-        <div class="buttons"><button class="btn primary" data-act="addAccount" data-arg="mozilla">${icon("user")}Sign in</button></div>
+        <div class="buttons"><button class="btn primary" data-act="addAccount" data-arg="mozilla">${icon("user")}Sign in</button>${from}</div>
         <p class="fine">You sign in on Mozilla's own page. Foxhole keeps the sign-in on this phone, to get the VPN's token with.</p>${take}`,
     };
     // a TV: signed in from a phone or computer on its network (tvPanel)
@@ -1026,7 +1061,7 @@ function renderOnboard() {
       expired: () => t`${fox}<h2>Sign in again</h2>
         <p>The sign-in to <b>${esc(a.email || t`your account`)}</b> has ended: signed out elsewhere, or expired.</p>
         <div class="buttons"><button class="btn primary" data-act="addAccount" data-arg="mozilla">${icon("user")}Sign in again</button>
-        <button class="btn" data-act="removeAccount" data-arg="${esc(a.id)}">${icon("logout")}Remove it</button></div>${rest}`,
+        <button class="btn" data-act="removeAccount" data-arg="${esc(a.id)}">${icon("logout")}Remove it</button></div>${fromToo + rest}`,
       // blocked here with no relay set (guardian.ts mozillaFetch): a relay gets the token through, and set, it's tried at once
       offline: () => a.blocked
         ? t`${fox}<h2>Mozilla's VPN service is blocked here</h2>
@@ -1079,45 +1114,60 @@ function renderOnboard() {
   });
 }
 
-// ── A TV's sign-in from a phone or computer (controller.js tvWait) ──────────────────────────────
+// ── A sign-in from another device (controller.js tvWait): a TV's way in, and a phone's or computer's other one ─────
 
-const TV_STAGES = new Set(["choose", "expired"]); // the sign-in screens that show tvPanel
+const TV_STAGES = new Set(["choose", "expired"]); // a TV's sign-in screens, which show tvPanel (elsewhere it's in its dialog: tvModal)
 
-/** The TV's QR code and code, for a phone or computer on its network to sign it in with, and that network. */
+/** This device's QR code and code, for one on its network that's signed in to sign it in with, and that network. */
 function tvPanel() {
   const w = S.tvWait;
   if (w?.error) return `<div class="err-box">${esc(w.error)}</div>`;
-  if (!w) return t`<div class="waiting"><span class="spin"></span>Getting a code…</div>`;
-  const net = w.host
-    ? t`<div class="tv-net">${icon("wifi")}<span>This TV is on <b>${esc(tr(S.net) ?? t`a network`)}</b> · ${esc(w.host)}${showName()}. The phone or computer must be on it too.</span></div>`
-    : t`<div class="tv-net warn">${icon("wifi")}<span>This TV isn't on a network: connect it to the Wi-Fi or a cable first.</span></div>`;
+  if (!w || w.want === "relay") return t`<div class="waiting"><span class="spin"></span>Getting a code…</div>`;
+  const on = [icon("wifi"), esc(tr(S.net) ?? t`a network`), esc(w.host), showName()];
+  const net = !w.host
+    ? TV ? t`<div class="tv-net warn">${icon("wifi")}<span>This TV isn't on a network: connect it to the Wi-Fi or a cable first.</span></div>`
+      : t`<div class="tv-net warn">${icon("wifi")}<span>This ${DEVICE} isn't on a network: connect it to the Wi-Fi first.</span></div>`
+    : TV ? t`<div class="tv-net">${on[0]}<span>This TV is on <b>${on[1]}</b> · ${on[2]}${on[3]}. The phone or computer must be on it too.</span></div>`
+      : t`<div class="tv-net">${on[0]}<span>This ${DEVICE} is on <b>${on[1]}</b> · ${on[2]}${on[3]}. The other device must be on it too.</span></div>`;
   const qr = w.qr
     ? `<svg class="tv-qr" viewBox="0 0 ${w.qr.size} ${w.qr.size}" role="img" aria-label="The QR code to sign in with"><rect width="100%" height="100%" fill="#fff"/><path d="${w.qr.path}"/></svg>`
     : "";
-  return t`<div class="tvpair">${qr}<div class="tv-how">
-    <ol class="steps">
-      <li><span>On your phone or computer, open <b>Foxhole</b>, then <b>Settings</b> → <b>Sign in a TV</b>.</span></li>
-      <li><span>Scan this QR code, or type this code:</span></li>
-    </ol>
+  const where = TV ? t`<li><span>On your phone or computer, open <b>Foxhole</b>, then <b>Settings</b> → <b>Sign in a TV or phone</b>.</span></li>`
+    : PHONE ? t`<li><span>On your computer, or a phone or TV that's signed in, open <b>Foxhole</b>, then <b>Settings</b> → <b>Sign in a TV or phone</b>.</span></li>`
+    : t`<li><span>On your phone or TV, signed in, open <b>Foxhole</b>, then <b>Settings</b> → <b>Sign in a TV or phone</b>.</span></li>`;
+  // a computer's firewall (Linux): the other device finds it once the port's open
+  const fw = w.fw?.length
+    ? t`<div class="hint">If the other device can't find this computer, open the port in its firewall:</div>` +
+      w.fw.map((c) => `<div class="cmd"><span class="mono">${esc(c)}</span><button class="mini" data-copy="${esc(c)}" title="Copy">${icon("copy")}</button></div>`).join("")
+    : "";
+  const relayToo = IOS ? "" // an iPhone has no use for one
+    : TV ? t`<p class="fine relay-note">Where Mozilla is blocked or refuses your country, the VPN relay on your phone or computer comes along with the sign-in.</p>`
+    : t`<p class="fine relay-note">Where Mozilla is blocked or refuses your country, the other device's VPN relay comes along with the sign-in.</p>`;
+  return `<div class="tvpair">${qr}<div class="tv-how">
+    <ol class="steps">${where}${t`<li><span>Scan this QR code, or type this code:</span></li>`}</ol>
     <div class="tv-code">${esc(w.code.slice(0, 3))} ${esc(w.code.slice(3))}</div>
-    ${net}
-    <p class="fine">Or <span class="link" data-act="addAccount" data-arg="mozilla">sign in on the TV, with the remote</span>.</p>
-  </div></div>` + t`<p class="fine relay-note">Where Mozilla is blocked or refuses your country, the VPN relay on your phone or computer comes along with the sign-in.</p>`;
+    ${net}${fw}
+    ${TV ? t`<p class="fine">Or <span class="link" data-act="addAccount" data-arg="mozilla">sign in on the TV, with the remote</span>.</p>` : ""}
+  </div></div>${relayToo}`;
 }
 
-let tvWanted = null; // what the TV (or phone) waits for, as last asked: "signin", "relay", or nothing (null)
-/** The TV waits for a sign-in from another device while its panel's on screen; a TV or phone, for a relay while relayPanel is. */
+let tvWanted = null; // what this device waits for, as last asked: "signin", "relay", or nothing (null)
+/** It waits for a sign-in from another device while tvPanel's on screen (its dialog; a TV's sign-in screens too); a TV or phone, for a relay while relayPanel is. */
 function syncTv() {
   const want = !S ? null
     : $("#relaywait-modal").classList.contains("on") ? "relay"
-    : TV && ($("#tvwait-modal").classList.contains("on") || ($("#onboard").classList.contains("on") && TV_STAGES.has(S.auth.stage))) ? "signin"
+    : $("#tvwait-modal").classList.contains("on") || (TV && $("#onboard").classList.contains("on") && TV_STAGES.has(S.auth.stage)) ? "signin"
     : null;
   if (want !== tvWanted) void act("tvWait", !!want, (tvWanted = want) ?? "signin");
 }
 
+/** The dialog with tvPanel: a TV's Add account; a phone's or computer's "Sign in from another device". */
 function tvModal(on) {
   $("#tvwait-modal").classList.toggle("on", on);
-  if (on) $("#tvwait-body").innerHTML = tvPanel();
+  if (on) {
+    $("#tvwait-title").textContent = TV ? t`Add a Mozilla account` : t`Sign in from another device`;
+    $("#tvwait-body").innerHTML = tvPanel();
+  }
   syncTv();
 }
 
@@ -1127,7 +1177,7 @@ function renderTv() {
   if (relayOpen && S.relayGot > relayGotSeen) relayWait(false); // it came: the alert says from where
   else section("relaywait", [S.tvWait, S.net], () => relayOpen && ($("#relaywait-body").innerHTML = relayPanel()));
   relayGotSeen = S.relayGot;
-  if (TV) section("tvwait", [S.tvWait, S.net], () => $("#tvwait-modal").classList.contains("on") && ($("#tvwait-body").innerHTML = tvPanel()));
+  section("tvwait", [S.tvWait, S.net], () => $("#tvwait-modal").classList.contains("on") && ($("#tvwait-body").innerHTML = tvPanel()));
   syncTv();
 }
 
@@ -1169,6 +1219,7 @@ function relayPanel() {
 let giveRelay = false; // the Share dialog's "my relay too", as last ticked: off each time it opens
 
 function giveOpen() {
+  if (!SHARE_FOXHOLE) return;
   giveRelay = false;
   $("#give-modal").classList.add("on");
   drawGive();
@@ -1212,6 +1263,7 @@ function drawGive() {
 let takeAsk = 0; // the newest check of the link typed: an older one's answer is dropped
 
 function takeOpen(link = "") {
+  if (!SHARE_FOXHOLE) return; // a shared link that opened the app too (foxholeImport)
   $("#take-link").value = link;
   $("#take-modal").classList.add("on");
   void takeCheck();
@@ -1262,7 +1314,7 @@ $("#take-form").addEventListener("submit", async (e) => {
 /** Android opened Foxhole with shared settings (App.tsx: the share page's "Open in Foxhole"). */
 window.foxholeImport = (link) => (S ? takeOpen(link) : setTimeout(() => window.foxholeImport(link), 200));
 
-// ── Signing in a TV from here (controller.js tvSend) ───────────────────────────────────────
+// ── Signing in a TV, phone or computer from here (controller.js tvSend) ───────────────────────────────────────
 
 /** An action's error, without Electron's wrapping. */
 const why = (err) => tr(String(err?.message ?? err).replace(/^Error invoking remote method '\w+': (\w*Error: )?/, ""));
@@ -1296,22 +1348,21 @@ function tvNote(tone, text) {
 
 function drawFound(tvs) {
   const relay = sendMode === "relay";
-  // a TV or phone waiting for a relay alone gets just that, from "Sign in a TV" too (controller.js tvSend)
+  // a TV or phone waiting for a relay alone gets just that, from "Sign in a TV or phone" too (controller.js tvSend)
   const names = tvs.map((tv) => (tv.want === "relay" && !relay ? t`<b>${esc(tv.name)}</b>, for a VPN relay` : `<b>${esc(tv.name)}</b>`)).join(", ");
   $("#tvsend-found").innerHTML = tvs.length
     ? relay ? t`${icon("relay")}<span>Waiting for your VPN relay: ${names}</span>` : t`${icon("tv")}<span>Waiting to sign in: ${names}</span>`
-    : relay ? t`${icon("relay")}<span>Nothing's waiting here yet. Is the TV or phone showing its code, on the same network as this ${DEVICE}?</span>`
-    : t`${icon("tv")}<span>No TV waiting here yet. Is it showing its code, on the same network as this ${DEVICE}?</span>`;
+    : t`${icon(relay ? "relay" : "tv")}<span>Nothing's waiting here yet. Is the TV or phone showing its code, on the same network as this ${DEVICE}?</span>`;
   $("#tvsend-found").classList.toggle("warn", !tvs.length);
   clearTimeout(tvLooking);
   if (!tvs.length && $("#tvsend-modal").classList.contains("on")) tvLooking = setTimeout(findTvs, 4000);
 }
 const findTvs = () => act("tvFind").then(drawFound, () => drawFound([]));
 
-let sendMode = "signin"; // the dialog's: "signin" (Sign in a TV), or "relay" (Settings → VPN relay → Send to a TV or phone)
-let sendRelay = true; // Sign in a TV's "My VPN relay too", as last switched: on each time it opens
+let sendMode = "signin"; // the dialog's: "signin" (Sign in a TV or phone), or "relay" (Settings → VPN relay → Send to a TV or phone)
+let sendRelay = true; // Sign in a TV or phone's "My VPN relay too", as last switched: on each time it opens
 
-/** Sign in a TV's "My VPN relay too": shown when there's one here to send. */
+/** Sign in a TV or phone's "My VPN relay too": shown when there's one here to send. */
 function drawRelayToo() {
   $("#tvsend-relay-wrap").hidden = sendMode === "relay" || !S.settings.relay;
   $("#tvsend-relay").classList.toggle("on", sendRelay);
@@ -1319,8 +1370,8 @@ function drawRelayToo() {
 }
 
 /**
- * The "Sign in a TV" dialog (`mode` "relay": sends this device's relay to a TV or phone instead); with a TV's QR
- * code's `link` (scanned with the phone's camera app: App.tsx), it sends at once.
+ * The "Sign in a TV or phone" dialog, for a computer waiting too (`mode` "relay": sends this device's relay to a TV
+ * or phone instead); with a QR code's `link` (scanned with the phone's camera app: App.tsx), it sends at once.
  */
 function tvSendOpen(link, mode = "signin") {
   sendMode = mode;
@@ -1328,20 +1379,20 @@ function tvSendOpen(link, mode = "signin") {
   const relay = mode === "relay";
   $("#tvsend-modal .box").classList.toggle("relay-send", relay);
   $("#tvsend-orb").innerHTML = icon(relay ? "relay" : "tv");
-  $("#tvsend-title").textContent = relay ? t`Send your VPN relay` : t`Sign in a TV`;
+  $("#tvsend-title").textContent = relay ? t`Send your VPN relay` : t`Sign in a TV or phone`;
   $("#tvsend-intro").textContent = relay
     ? t`On the TV or phone, open Foxhole, then Settings → VPN relay → Get it: it shows a QR code and a 6-character code. Scan the QR code, or type the code.`
-    : t`Open Foxhole on the TV: it shows a QR code and a 6-character code. Scan the QR code, or type the code.`;
+    : t`Open Foxhole on the TV: it shows a QR code and a 6-character code. On a phone or computer, pick Sign in from another device, where it asks to sign in. Scan the QR code, or type the code.`;
   $("#tvsend-go").textContent = relay ? t`Send` : t`Sign in`;
   const accts = S.accounts.filter((a) => a.send);
   $("#tvsend-acct").innerHTML = accts.map((a) => `<option value="${esc(a.id)}"${a.current ? " selected" : ""}>${esc(a.email || t`Firefox's account`)}</option>`).join("");
   $("#tvsend-acct-wrap").hidden = relay || accts.length < 2;
   drawRelayToo();
   drawSendNet();
-  $("#tvsend-found").innerHTML = relay ? t`${icon("relay")}<span>Looking for TVs and phones on this network…</span>` : t`${icon("tv")}<span>Looking for TVs on this network…</span>`;
+  $("#tvsend-found").innerHTML = t`${icon(relay ? "relay" : "tv")}<span>Looking for TVs and phones on this network…</span>`;
   $("#tvsend-found").classList.remove("warn");
   $("#tvsend-code").value = "";
-  tvNote("", relay || accts.length ? "" : t`Sign in to a Mozilla account on this device first: Foxhole sends the TV a sign-in of it.`);
+  tvNote("", relay || accts.length ? "" : t`Sign in to a Mozilla account on this device first: Foxhole sends the other one a sign-in of it.`);
   $("#tvsend-modal").classList.add("on");
   void findTvs();
   void (canScan ??= scanWorks()).then((ok) => ($("#tvsend-scan").hidden = !ok || !!camera));
@@ -1358,11 +1409,11 @@ function tvSendClose() {
 }
 
 async function tvSend(to) {
-  const id = $("#tvsend-acct").value; // none (no account here that can sign in a TV): a TV waiting for a relay alone still gets it
+  const id = $("#tvsend-acct").value; // none (no account here that can sign in another device): a TV waiting for a relay alone still gets it
   const relay = sendMode === "relay";
   const btn = $("#tvsend-form button");
   btn.disabled = true;
-  tvNote("", relay ? t`Sending your VPN relay…` : t`Signing in the TV…`);
+  tvNote("", relay ? t`Sending your VPN relay…` : t`Signing it in…`);
   try {
     const got = await act("tvSend", to, id || null, { relayOnly: relay, withRelay: sendRelay });
     if (!got.account) {
@@ -1389,7 +1440,7 @@ async function startScan() {
   video.srcObject = camera;
   $("#tvsend-cam").hidden = false;
   $("#tvsend-scan").hidden = true;
-  tvNote("", t`Point the camera at the QR code on the TV.`);
+  tvNote("", t`Point the camera at the QR code on the other screen.`);
   await video.play().catch(() => {});
   const reader = new BarcodeDetector({ formats: ["qr_code"] });
   for (let warned = false; camera; await new Promise((r) => setTimeout(r, 200))) {
@@ -1399,7 +1450,7 @@ async function startScan() {
       stopScan();
       return tvSend({ link });
     }
-    if (read.length && !warned) (warned = true), tvNote("warn", t`That isn't a Foxhole TV's QR code.`);
+    if (read.length && !warned) (warned = true), tvNote("warn", t`That isn't one of Foxhole's QR codes.`);
   }
 }
 
@@ -1414,17 +1465,17 @@ function stopScan() {
 $("#tvsend-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const code = $("#tvsend-code").value.replace(/\s/g, "");
-  if (code.length < 6) return tvNote("error", t`The code on the TV has 6 letters and digits.`);
+  if (code.length < 6) return tvNote("error", t`The code has 6 letters and digits.`);
   void tvSend({ code });
 });
-// typed as on the TV: capitals, in two threes; sent once it's all there
+// typed as on the other screen: capitals, in two threes; sent once it's all there
 $("#tvsend-code").addEventListener("input", (e) => {
   const v = e.target.value.toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 6);
   e.target.value = v.length > 3 ? `${v.slice(0, 3)} ${v.slice(3)}` : v;
   if (v.length === 6) $("#tvsend-form").requestSubmit();
 });
 
-/** A TV's QR code scanned with the phone's camera app opens Foxhole with it (App.tsx). */
+/** A TV's QR code (a phone's or computer's, waiting as one) scanned with the phone's camera app opens Foxhole with it (App.tsx). */
 window.foxholeTvLink = (link) => (S ? tvSendOpen(link) : setTimeout(() => window.foxholeTvLink(link), 200));
 
 // ── The Wi-Fi's name, which macOS, Windows and Android show only to apps allowed Location ─────────────────
@@ -1682,6 +1733,7 @@ document.addEventListener("click", async (e) => {
   if (!btn || !S) return;
   if (btn.dataset.lang) return setLang(btn.dataset.lang);
   if (btn.dataset.act === "addAccount") $("#add-modal").classList.remove("on"), TV && tvModal(false);
+  if (btn.hasAttribute("data-from")) return $("#add-modal").classList.remove("on"), tvModal(true); // Sign in from another device
   if (btn.dataset.logout !== undefined) return askLogout(btn.dataset.logout);
   if (btn.hasAttribute("data-wifi")) return askWifi();
   if (btn.dataset.netRule !== undefined) return act("setNetRule", S.net, btn.dataset.netRule || null);

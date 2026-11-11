@@ -214,14 +214,33 @@
       <div class="seg small three" id="net-rule" data-v="0"><span class="thumb"></span><button type="button" data-net-rule="">Nothing</button><button type="button" data-net-rule="connect">Connect</button><button type="button" data-net-rule="pause">Pause</button></div>
       <div class="chips" id="net-rules"></div>
     </div>
-    <div class="group">
+    <div class="group" id="share-group">
       <div class="row-line">
         <div><div class="label"><svg class="i"><use href="#i-phone"/></svg>Share with devices on this network</div><div class="hint" id="share-hint"></div></div>
         <button class="switch" id="share" role="switch" aria-checked="false" aria-label="Share with devices on this network"></button>
       </div>
       <div class="share-box" id="share-box"></div>
     </div>
-    <div class="group not-tv">
+    <!-- the proxy's port, and (sharing on) its login: one section with the sharing above (style.css) -->
+    <form class="group" id="port-form">
+      <div class="label"><svg class="i"><use href="#i-plug"/></svg>Proxy port</div>
+      <div class="input-row">
+        <input id="port" inputmode="numeric" maxlength="5" autocomplete="off">
+        <button class="btn" type="submit">Save</button>
+      </div>
+      <div class="hint">One port serves SOCKS5 and HTTP. Default 1080.</div>
+    </form>
+    <form class="group" id="login-form" hidden>
+      <div class="label"><svg class="i"><use href="#i-lock"/></svg>Login for other devices</div>
+      <input id="username" placeholder="Username (optional)" autocomplete="off" spellcheck="false">
+      <div class="input-row">
+        <div class="pw-wrap"><input id="password" type="password" placeholder="Password (optional)" autocomplete="off"><button class="mini" type="button" id="reveal" title="Show"><svg class="i"><use href="#i-eye"/></svg></button></div>
+        <button class="btn" type="submit">Save</button>
+      </div>
+      <div class="hint">Asked from other devices when sharing is on; apps on this computer don't need it. Empty means no login.</div>
+    </form>
+    <!-- Share Foxhole: hidden for now (app.js SHARE_FOXHOLE shows it again) -->
+    <div class="group not-tv" id="give-group" hidden>
       <div class="label"><svg class="i"><use href="#i-share"/></svg>Share Foxhole</div>
       <div class="hint" id="give-hint"></div>
       <div class="row-btns">
@@ -245,23 +264,6 @@
       </div>
       <div class="share-box" id="dns-box"></div>
     </div>
-    <form class="group" id="port-form">
-      <div class="label"><svg class="i"><use href="#i-plug"/></svg>Proxy port</div>
-      <div class="input-row">
-        <input id="port" inputmode="numeric" maxlength="5" autocomplete="off">
-        <button class="btn" type="submit">Save</button>
-      </div>
-      <div class="hint">One port serves SOCKS5 and HTTP. Default 1080.</div>
-    </form>
-    <form class="group" id="login-form">
-      <div class="label"><svg class="i"><use href="#i-lock"/></svg>Login for other devices</div>
-      <input id="username" placeholder="Username (optional)" autocomplete="off" spellcheck="false">
-      <div class="input-row">
-        <div class="pw-wrap"><input id="password" type="password" placeholder="Password (optional)" autocomplete="off"><button class="mini" type="button" id="reveal" title="Show"><svg class="i"><use href="#i-eye"/></svg></button></div>
-        <button class="btn" type="submit">Save</button>
-      </div>
-      <div class="hint">Asked from other devices when sharing is on; apps on this computer don't need it. Empty means no login.</div>
-    </form>
     <div class="relay-zone">
       <form class="group" id="relay-form">
         <div class="label"><svg class="i"><use href="#i-shield"/></svg>VPN relay<span class="tier" id="relay-badge"></span></div>
@@ -296,7 +298,7 @@
       <div class="accounts" id="accounts"></div>
       <div class="row-btns">
         <button class="btn" type="button" id="add-account"><svg class="i"><use href="#i-plus"/></svg>Add account</button>
-        <button class="btn not-tv" type="button" id="tvsend-open"><svg class="i"><use href="#i-tv"/></svg>Sign in a TV</button>
+        <button class="btn" type="button" id="tvsend-open"><svg class="i"><use href="#i-tv"/></svg>Sign in a TV or phone</button>
       </div>
     </div>
     <div class="group about">
@@ -478,10 +480,10 @@
   </div>
 </div>
 
-<!-- A TV (Android TV) signs in from a phone or computer on its network: its QR code and code (app.js tvPanel) -->
+<!-- A TV (Android TV) signs in from a phone or computer on its network; a phone or computer too, by "Sign in from another device": its QR code and code (app.js tvPanel) -->
 <div class="modal backdrop" id="tvwait-modal">
   <div class="box glass wide">
-    <h2>Add a Mozilla account</h2>
+    <h2 id="tvwait-title">Add a Mozilla account</h2>
     <div id="tvwait-body"></div>
     <span class="link fine" id="tvwait-close">Cancel</span>
   </div>
@@ -497,24 +499,24 @@
   </div>
 </div>
 
-<!-- A phone or computer signs in a TV on its network (or sends a TV or phone its relay): the QR code scanned, or the code typed -->
+<!-- A phone, computer or TV signs in a TV, phone or computer on its network (or sends a TV or phone its relay): the QR code scanned, or the code typed -->
 <div class="modal backdrop" id="tvsend-modal">
   <div class="box glass">
     <div class="lock-orb" id="tvsend-orb"><svg class="i"><use href="#i-tv"/></svg></div>
-    <h2 id="tvsend-title">Sign in a TV</h2>
-    <p id="tvsend-intro">Open Foxhole on the TV: it shows a QR code and a 6-character code. Scan the QR code, or type the code.</p>
+    <h2 id="tvsend-title">Sign in a TV or phone</h2>
+    <p id="tvsend-intro"></p>
     <div class="tv-nets">
       <div class="tv-net"><svg class="i"><use href="#i-wifi"/></svg><span id="tvsend-net"></span></div>
       <div class="tv-net" id="tvsend-found"></div>
     </div>
     <label class="tv-acct" id="tvsend-acct-wrap">Account to sign in with <select id="tvsend-acct"></select></label>
     <div class="row-line" id="tvsend-relay-wrap" hidden>
-      <div><div class="label"><svg class="i"><use href="#i-relay"/></svg>My VPN relay too</div><div class="hint">Where Mozilla is blocked or refuses your country, the TV needs it to connect.</div></div>
+      <div><div class="label"><svg class="i"><use href="#i-relay"/></svg>My VPN relay too</div><div class="hint">Where Mozilla is blocked or refuses your country, the other device needs it to connect.</div></div>
       <button class="switch on" type="button" id="tvsend-relay" role="switch" aria-checked="true" aria-label="My VPN relay too"></button>
     </div>
     <div class="tv-cam" id="tvsend-cam" hidden><video id="tvsend-video" muted playsinline></video><i></i></div>
     <form class="tv-code-form" id="tvsend-form">
-      <input id="tvsend-code" placeholder="ABC 234" maxlength="7" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="The code on the TV">
+      <input id="tvsend-code" placeholder="ABC 234" maxlength="7" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="The code on the other screen">
       <button class="btn primary" type="submit"><svg class="i"><use href="#i-check"/></svg><span id="tvsend-go">Sign in</span></button>
     </form>
     <button class="btn" type="button" id="tvsend-scan" hidden><svg class="i"><use href="#i-camera"/></svg>Scan the QR code</button>

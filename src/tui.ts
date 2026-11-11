@@ -61,15 +61,19 @@ const LEFT_W = 53;
 const TABLE_W = 44;
 const SIDE_W = LEFT_W + 4 + 1 + TABLE_W + 1;
 
+/** Share Foxhole (Share settings, Import settings): hidden for now; true shows them again (the window's: app.js SHARE_FOXHOLE). */
+const SHARE_FOXHOLE: boolean = false;
+/** A row that's shown. */
+const shown = (key: string) => SHARE_FOXHOLE || (key !== "give" && key !== "take");
 /** The Settings popup's rows, in order, each with its entry in `values`. "On this network" (key netRule) is hidden for now. */
-const SETTINGS = [
+const ALL_SETTINGS = [
   { key: "share", label: "Share with devices on this network" },
   { key: "port", label: "Proxy port" },
   { key: "username", label: "Username" },
   { key: "password", label: "Password" },
   { key: "telegram", label: "Use in Telegram" },
   { key: "smartDns", label: "Smart DNS for a TV or console" },
-  { key: "tv", label: "Sign in a TV" },
+  { key: "tv", label: "Sign in a TV or phone" },
   { key: "give", label: "Share settings" },
   { key: "take", label: "Import settings" },
   { key: "relaySetup", label: "Set up" }, // these last ones in the VPN relay box
@@ -78,6 +82,7 @@ const SETTINGS = [
   { key: "relayCheck", label: "Check" },
   { key: "relayCert", label: "Certificate" },
 ] as const;
+const SETTINGS = ALL_SETTINGS.filter((it) => shown(it.key));
 /** Where the relay's rows start: the last ones, in a purple box of their own. */
 /** A Smart DNS device's Telegram, with this computer as its router (gateway.ts): macOS's for now. */
 const GATEWAY = process.platform === "darwin";
@@ -185,8 +190,8 @@ export class Tui {
   #relayIntro = false; // the popup saying what Relay is (its row, before one is set up), with the setup a key away
   #setSel = 0;
   #edit: { key: "port" | "username" | "password" | "relayId" | "relayKey" | "take" | "tv"; text: string } | null = null; // the setting being typed
-  #tvRelay = true; // Sign in a TV sends the relay too (tab while typing its code): on each time it's typed
-  #tvNote: { tone: "ok" | "error" | "busy"; text: string } | null = null; // how the last Sign in a TV went
+  #tvRelay = true; // Sign in a TV or phone sends the relay too (tab while typing its code): on each time it's typed
+  #tvNote: { tone: "ok" | "error" | "busy"; text: string } | null = null; // how the last Sign in a TV or phone went
   readonly #login = (address: string | undefined) => loginFor(this.#settings, address); // live: a change applies to the next client
   #settingsNote = "";
   #fwHint: string[] | null = null; // commands that open the proxy's port in an active firewall (Linux)
@@ -1159,7 +1164,7 @@ export class Tui {
         if (e.key === "port" && !validPort(Number(e.text))) this.#settingsNote = red("A port is a number from 1 to 65535.");
         else if (e.key === "tv") {
           const code = normalizeCode(e.text);
-          if (!code) this.#tvNote = { tone: "error", text: "The code is 6 letters and digits, as on the TV." };
+          if (!code) this.#tvNote = { tone: "error", text: "The code is 6 letters and digits, as on the other screen." };
           else return void ((this.#edit = null), this.#tvSend(code));
         } else if (e.key === "take") {
           const shared = parseShared(e.text);
@@ -1235,12 +1240,12 @@ export class Tui {
   }
 
   /**
-   * Sign in a TV: the account in use (a VPN-only sign-in of its own: auth.ts refreshToken), with the relay as ticked,
-   * to the TV waiting on this network with that `code`; a TV or phone waiting for a relay alone gets just the relay.
+   * Sign in a TV or phone: the account in use (a VPN-only sign-in of its own: auth.ts refreshToken), with the relay as ticked,
+   * to the TV (or the phone or computer waiting as one) on this network with that `code`; a TV or phone waiting for a relay alone gets just the relay.
    * As the desktop app's tvSend (gui/controller.js).
    */
   async #tvSend(code: string): Promise<void> {
-    this.#tvNote = { tone: "busy", text: "looking for the TV on this network…" };
+    this.#tvNote = { tone: "busy", text: "looking for it on this network…" };
     this.#render();
     const relay = this.#fullRelay();
     let account: TvAccount | null = null;
@@ -1257,7 +1262,7 @@ export class Tui {
     };
     try {
       const tvs = await findTvs();
-      if (!tvs.length) throw new Error("No TV is waiting on this network. Is the TV on the same Wi-Fi, showing its code?");
+      if (!tvs.length) throw new Error("Nothing is waiting on this network. Is the other device on the same Wi-Fi, showing its code?");
       this.#tvNote = { tone: "busy", text: "sending…" };
       this.#render();
       let lastErr: unknown;
@@ -1731,7 +1736,7 @@ export class Tui {
       e?.key === "password" ? "•".repeat(e.text.length) + cursor : s.password ? "••••••••" : dim("optional"),
       dim("⏎ QR code for your phone"),
       onOff(!!s.smartDns) + (s.smartDns && this.#smartDnsYields ? yellow("  paused") : s.smartDns && this.#smartDnsError ? red("  ✗ can't start") : s.smartDns && this.#routerNeedsHelper ? yellow("  a allow Telegram") : ""),
-      e?.key === "tv" ? e.text + cursor : dim("⏎ type the TV's code"),
+      e?.key === "tv" ? e.text + cursor : dim("⏎ type its code"),
       dim("⏎ QR code and link"),
       e?.key === "take" ? (e.text.length > 23 ? "…" + e.text.slice(-22) : e.text) + cursor : this.#take ? yellow("⏎ import") : dim("⏎ paste a link"),
       (s.relay ? green("on") : dim("off")) + dim("  ⏎ step by step"),
@@ -1739,7 +1744,7 @@ export class Tui {
       relayVal(e?.key === "relayKey" ? e.text : s.relay?.authKey ?? "", e?.key === "relayKey", true),
       !rc ? dim("⏎ check") : rc.tone === "busy" ? dim("checking…") : { ok: purple("✓ works"), warn: yellow("old script"), error: red("✗ not working") }[rc.tone] + dim("  ⏎ again"),
       this.#caOk === undefined ? dim("…") : this.#caOk ? green("trusted") + dim("  ⏎ remove") : yellow("not trusted") + dim("  ⏎ trust"),
-    ];
+    ].filter((_, i) => shown(ALL_SETTINGS[i].key));
     const w = Math.max(...SETTINGS.map((it) => it.label.length));
     const rows = SETTINGS.map((it, i) => {
       const here = i === this.#setSel;
@@ -1797,8 +1802,8 @@ export class Tui {
             ],
       tv: [
         ...(e?.key === "tv"
-          ? [dim("Type the 6-character code on the TV · enter send · esc cancel"), ...(this.#fullRelay() ? [`${this.#tvRelay ? green("✓") : dim("✗")} ${this.#tvRelay ? "My VPN relay too" : dim("My VPN relay too")}${dim("  tab change")}`] : [])]
-          : [dim("An Android TV on this Wi-Fi, showing Foxhole's code: send it"), dim(`a sign-in of the account in use${this.#fullRelay() ? ", with your VPN relay" : ""}.`)]),
+          ? [dim("Type the 6-character code on its screen · enter send · esc cancel"), ...(this.#fullRelay() ? [`${this.#tvRelay ? green("✓") : dim("✗")} ${this.#tvRelay ? "My VPN relay too" : dim("My VPN relay too")}${dim("  tab change")}`] : [])]
+          : [dim("A TV, phone or computer on this Wi-Fi, showing Foxhole's code"), dim("(a phone or computer: Sign in from another device): send it"), dim(`a sign-in of the account in use${this.#fullRelay() ? ", with your VPN relay" : ""}.`)]),
         ...(this.#tvNote ? wrap(this.#tvNote.text, 62).map({ ok: green, error: red, busy: dim }[this.#tvNote.tone]) : []),
       ],
       give: [dim("Your relay and split tunneling, for the family's other devices:"), dim("a QR code for a phone to scan, or a link to send.")],

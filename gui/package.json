@@ -27,7 +27,7 @@
     "directories": { "output": "release" },
     "files": ["start.js", "main.js", "signinwindow.js", "controller.js", "tray.js", "badge.js", "updater.js", "autostart.js", "preload.cjs", "signin.cjs", "renderer/**/*", "dist/**/*", "build/icon.png", "build/tray/*.png", "build/flags/*.png"],
     "mac": { "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }], "category": "public.app-category.utilities", "identity": "-", "hardenedRuntime": false,
-      "extendInfo": { "NSCameraUsageDescription": "Foxhole scans a TV's QR code with the camera, to sign the TV in." },
+      "extendInfo": { "NSCameraUsageDescription": "Foxhole scans another device's QR code with the camera, to sign it in." },
       "artifactName": "${productName}-${version}-${arch}.${ext}" },
     "win": { "target": "nsis" },
     "nsis": { "artifactName": "${productName}-${version}-setup.${ext}" },

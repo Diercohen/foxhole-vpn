@@ -18,7 +18,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <!-- an update: its APK, downloaded by the app, to Android's installer -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-    <!-- Sign in a TV: a phone scans the TV's QR code -->
+    <!-- Sign in a TV or phone: a phone scans the other device's QR code -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <!-- the Wi-Fi's name, which Android shows only to apps allowed precise Location: asked for only when the user
