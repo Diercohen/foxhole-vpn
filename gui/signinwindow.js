@@ -1,10 +1,11 @@
 // Foxhole's own Mozilla sign-in (accounts.ts): Mozilla's page as Firefox opens it for its VPN, in a window of its own,
 // as the phone app has it (mobile/App.tsx). signin.cjs answers its WebChannel as Firefox would, and the session it hands
-// over goes to `done`: the app adds it to the accounts (main.js), and its internal sign-in app hands it to the terminal's
-// foxhole (start.js). The page talks to Firefox only: the window says it's Firefox. A fresh, in-memory session each
-// time, nothing left behind.
+// over goes to `done` once Mozilla has confirmed it (fxalogin.ts PageSignIn): the app adds it to the accounts (main.js),
+// and its internal sign-in app hands it to the terminal's foxhole (start.js). The page talks to Firefox only: the window
+// says it's Firefox. A fresh, in-memory session each time, nothing left behind.
 import { BrowserWindow, ipcMain, shell } from "electron";
 import { fileURLToPath } from "node:url";
+import { PageSignIn } from "./dist/fxalogin.js";
 
 /** Firefox on Windows, a version of now (a new one comes every 4 weeks; 144 came out 2025-10-14). */
 const firefoxUa = () => {
@@ -24,19 +25,20 @@ const signInUrl = () =>
 /** Mozilla's own sites (and the Google and Apple sign-ins it offers) open in the sign-in; any other link, in the browser. */
 const SIGN_IN_HOSTS = /^https:\/\/([\w-]+\.)*(firefox\.com|mozilla\.org|mozilla\.com|google\.com|gstatic\.com|apple\.com)(\/|:|$)/;
 let signInWin = null;
-let signedIn = null; // the session the page gave, until it's signed in with
-let done = () => {};
+let page = null; // what the window's page handed over (PageSignIn), till it's given to `done` and the window's closed
 
-/** Opens the sign-in window (or brings it up): `then` gets the session once it's verified, as by a code from the email. */
-export function openSignIn({ title, parent, done: then }) {
+/**
+ * Opens the sign-in window (or brings it up): `done` gets the session once Mozilla has confirmed it, as by a code from
+ * the email; `closed`, once the window's closed and what it handed over has been looked at a last time.
+ */
+export function openSignIn({ title, parent, done, closed = () => {} }) {
   if (signInWin) return signInWin.focus();
-  signedIn = null;
-  done = then;
-  signInWin = new BrowserWindow({
+  const handed = (page = new PageSignIn(done));
+  const win = (signInWin = new BrowserWindow({
     width: 520, height: 760, parent, title, backgroundColor: "#ffffff", autoHideMenuBar: true,
     webPreferences: { preload: fileURLToPath(new URL("signin.cjs", import.meta.url)), partition: `signin-${Date.now()}`, sandbox: true, contextIsolation: true },
-  });
-  const wc = signInWin.webContents;
+  }));
+  const wc = win.webContents;
   wc.setUserAgent(firefoxUa());
   wc.setWindowOpenHandler(({ url }) => {
     if (SIGN_IN_HOSTS.test(url)) void wc.loadURL(url);
@@ -48,13 +50,20 @@ export function openSignIn({ title, parent, done: then }) {
     e.preventDefault();
     void shell.openExternal(url);
   });
-  signInWin.on("closed", () => (signInWin = null));
-  void signInWin.loadURL(signInUrl());
+  win.on("closed", () => {
+    if (signInWin === win) signInWin = null;
+    // the code typed, but the page's last step failed (its red alert) or the window closed first: Mozilla says
+    void handed.closed().finally(() => {
+      if (page === handed) page = null;
+      closed();
+    });
+  });
+  void win.loadURL(signInUrl());
 }
 
-/** Closes the window once the page gave its session (main.js: the app's signed in with it). */
+/** Closes the window once what it handed over was given to `done` (main.js: the app's signed in with it). */
 export function closeSignIn() {
-  if (signedIn) signInWin?.close();
+  if (page?.given) signInWin?.close();
 }
 
 ipcMain.on("signin", (e, json) => {
@@ -65,12 +74,10 @@ ipcMain.on("signin", (e, json) => {
   } catch {
     return;
   }
-  if (m.t === "login" && m.account) {
-    signedIn = m.account;
-    if (m.account.verified) done(m.account);
-  } else if (m.t === "done") {
+  if (m.t === "login") page.login(m.account);
+  else if (m.t === "done") {
     // the page's last step, once the sign-in is confirmed (as by a code from the email)
-    if (signedIn && !signedIn.verified) done({ ...signedIn, verified: true });
+    page.confirmed();
     signInWin.close();
   }
 });

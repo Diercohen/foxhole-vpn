@@ -14,6 +14,7 @@ import { publicIp } from "./dist/netinfo.js";
 import { caPem, loadCa } from "./dist/mitm.js";
 import { useFastlyFallback } from "./dist/dns.js";
 import { currentSplit, appOf } from "./dist/split.js";
+import { PageSignIn } from "./dist/fxalogin.js";
 import { log } from "./dist/log.js";
 import "./fa.js"; // foxholeCountry, foxholeWords: for Settings → Language (prepare.mjs copies them from gui/renderer)
 import "./ru.js";
@@ -131,6 +132,16 @@ const apk = process.platform === "android" && {
   check: (file, version) => ask("apkCheck", { path: file, version }),
   open: (file) => ask("apkInstall", { path: file }),
 };
+// The app's sign-in page (App.tsx): what it hands over, kept till Mozilla has confirmed it (fxalogin.ts PageSignIn),
+// then added to the accounts and in use; once it's signed in with, the page is put away.
+let page = null;
+const newPage = () => new PageSignIn((account) => controller.signedIn(account));
+function openSignIn() {
+  void page?.closed(); // one opened before, its page lost unclosed (the app's screen made anew): looked at once more
+  page = newPage();
+  send({ t: "signIn" });
+}
+
 // what this device is: a TV (Android TV) signs in from another device (tvpair.ts); its name is shown on both
 const device = {};
 const deviceKnown = process.platform === "android" ? ask("device").then((d) => (Object.assign(device, d), controller.emit("change")), () => {}) : Promise.resolve();
@@ -145,7 +156,7 @@ const controller = new Controller({
     get name() {
       return typeof device.name === "string" ? device.name : "";
     },
-    openSignIn: () => send({ t: "signIn" }), // its session comes back as "signedIn"
+    openSignIn, // its session comes back as "signedIn"
     globalSession,
     apps: () => ask("apps"), // split tunneling's: [{ id: its package, name }] (Phone.kt)
     network: () => ask("network").catch(() => null),
@@ -229,6 +240,10 @@ function push() {
   timer = null;
   const s = view();
   if (shown) send({ t: "state", s });
+  if (page?.given && s.auth?.stage === "ready") {
+    page = null; // signed in with what the sign-in page handed over: it's done
+    send({ t: "signIn", open: false });
+  }
   const t = foxholeWords(s.settings?.lang);
   // in the language Settings has (no Intl here for country names: fa.js and ru.js have them); the relay's row is "Relay"
   const place = (code) => foxholeCountry(s.settings?.lang, code) || (s.countries.find((c) => c.code === code)?.name ?? "");
@@ -316,8 +331,14 @@ function handle(msg) {
       asked.delete(msg.id);
       return msg.error ? a?.reject(new Error(msg.error)) : a?.resolve(msg.v);
     }
-    case "signedIn": // the app's sign-in page's session (App.tsx): added to the accounts, and in use
-      return controller.signedIn(msg.account ?? {});
+    case "signedIn": // the app's sign-in page's session (App.tsx), confirmed or with a code from the email to type
+      return (page ??= newPage()).login(msg.account);
+    case "signInDone": // the page's last step: the sign-in's confirmed
+      return page?.confirmed();
+    case "signInClosed": { // closed first: Mozilla's asked once more
+      const closing = page;
+      return void closing?.closed().finally(() => page === closing && !closing.given && (page = null));
+    }
     case "vpnStopped": // Android took the VPN down: the user, or another VPN app
       return vpn?.exit("another VPN app, or Settings");
     // the notification's buttons (FoxholeService)

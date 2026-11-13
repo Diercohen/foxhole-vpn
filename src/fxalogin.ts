@@ -5,12 +5,14 @@
 // from that profile as from the one in use (auth.ts FirefoxAuth). Since 2026-11 Mozilla's edge turns away an app's own
 // sign-in with the password (HTTP 406, whatever the account or network), and its page a browser driven from outside
 // (its "Client Challenge" fails in a Chrome run over its DevTools pipe): it's signed in to in a browser as people use one.
+// What Mozilla's page in Foxhole's own window hands over, the desktop app's and the phone's, is taken as PageSignIn has it.
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { sessionVerified } from "./auth.js";
 import { firefoxCommand, userHome } from "./profile.js";
 import { REPO_URL } from "./ui.js";
 
@@ -75,6 +77,87 @@ const parse = (s: string): unknown => {
     return null;
   }
 };
+
+/** How long a session the page handed over is asked about while the window's open: a phone's can be lost unclosed (its screen made anew). */
+const ASK_FOR = 15 * 60_000;
+
+/**
+ * Mozilla's sign-in page in Foxhole's own window (gui/signinwindow.js; the phone's, mobile/App.tsx, through its core):
+ * the session it hands over, to `give` once Mozilla has confirmed the sign-in, once. The page hands it over as soon as
+ * the password's in, confirmed then (`verified`) or with a code from the email still to type. Once that's in, the page
+ * says so only by its last step (`confirmed`), and where that step fails (its red alert) it says nothing more, though
+ * the sign-in's confirmed (Mozilla's email says so). So, as Firefox does, Mozilla's asked: every few seconds (`every`
+ * ms) while the window's open, and once more as it closes.
+ */
+export class PageSignIn {
+  readonly #give: (login: FxaLogin) => void;
+  readonly #every: number;
+  #held: FxaLogin | null = null; // the page's session, till it's given (or another takes its place)
+  #given = false;
+  #asking: ReturnType<typeof setTimeout> | null = null; // the next look, while it's being looked at
+  #until = 0; // when it stops looking
+
+  constructor(give: (login: FxaLogin) => void, every = 3000) {
+    this.#give = give;
+    this.#every = every;
+  }
+
+  /** Its session's been given (the window closes once that's the one in use: main.js, main.mjs). */
+  get given(): boolean {
+    return this.#given;
+  }
+
+  /** The page's sign-in (its fxaccounts:login message): the session, confirmed or not yet. */
+  login(a: unknown): void {
+    const s = session(a);
+    if (!s || (this.#given && s.sessionToken === this.#held?.sessionToken)) return; // given already
+    this.#stop();
+    this.#held = s;
+    this.#given = false;
+    if ((a as { verified?: unknown }).verified === true) return this.#hand(s);
+    this.#until = Date.now() + ASK_FOR;
+    this.#ask(s);
+  }
+
+  /** The page's last step (its fxaccounts:oauth_login message): the sign-in's confirmed. */
+  confirmed(): void {
+    if (this.#held) this.#hand(this.#held);
+  }
+
+  /** The window's closed: a session not given yet is looked at once more (its code typed as it closed, or the last step failed). */
+  async closed(): Promise<void> {
+    this.#stop();
+    const s = this.#held;
+    if (s && !this.#given && (await this.#verified(s))) this.#hand(s);
+  }
+
+  #hand(s: FxaLogin): void {
+    if (this.#given || s !== this.#held) return;
+    this.#given = true;
+    this.#stop();
+    this.#give(s);
+  }
+
+  /** Mozilla's answer: not yet where it can't say (offline, the session gone). */
+  #verified = (s: FxaLogin): Promise<boolean> => sessionVerified(s.sessionToken, AbortSignal.timeout(15_000)).catch(() => false);
+
+  #ask(s: FxaLogin): void {
+    const timer = setTimeout(async () => {
+      const yes = await this.#verified(s);
+      if (this.#asking !== timer) return; // stopped meanwhile: closed, given, or another session's taken its place
+      if (yes) this.#hand(s);
+      else if (Date.now() < this.#until) this.#ask(s);
+      else this.#asking = null;
+    }, this.#every);
+    timer.unref?.();
+    this.#asking = timer;
+  }
+
+  #stop(): void {
+    if (this.#asking) clearTimeout(this.#asking);
+    this.#asking = null;
+  }
+}
 
 const unavailable = (why: string) => new Error(`Signing in in a window isn't available right now: ${why}.`);
 

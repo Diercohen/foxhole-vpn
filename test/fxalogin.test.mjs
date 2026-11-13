@@ -1,8 +1,9 @@
 // Foxhole's own sign-in in a terminal (fxalogin.ts): the desktop app's sign-in window (gui/start.js --sign-in, its
 // session said on its stdout), or else a Firefox of its own (a fresh profile, its session read from there). Stand-ins
-// play the app's and Firefox's side.
+// play the app's and Firefox's side. Then what Mozilla's page in Foxhole's own window hands over (PageSignIn), a
+// stand-in for Mozilla saying which sessions are confirmed.
 import assert from "node:assert";
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,7 +38,8 @@ await assert.rejects(signInWindow(undefined, undefined, null, null), /neither is
 mkdirSync(join(home, "bin"));
 writeFileSync(join(home, "bin", "firefox"), "");
 process.env.PATH = `${join(home, "nothing")}:${join(home, "bin")}`;
-assert.deepEqual(firefox(), { path: "firefox", args: [] }, "Firefox, on the PATH");
+const official = "/opt/firefox-official/firefox"; // Mozilla's own build, where it's installed here: that one first
+assert.deepEqual(firefox(), { path: existsSync(official) ? official : "firefox", args: [] }, "Firefox, on the PATH");
 Object.defineProperty(process, "platform", platform);
 Object.assign(process.env, { PATH }, DISPLAY === undefined ? {} : { DISPLAY }, WAYLAND_DISPLAY === undefined ? {} : { WAYLAND_DISPLAY });
 if (WAYLAND_DISPLAY === undefined) delete process.env.WAYLAND_DISPLAY;
@@ -124,3 +126,113 @@ await assert.rejects(signInWindow(undefined, undefined, null, { path: join(home,
 await new Promise((r) => setTimeout(r, 100)); // said on its 'error', its profile goes on its 'close'
 assert.deepEqual(profiles(), before, "its profile's gone each time");
 console.log("ok - sign-in in a terminal: the desktop app's window (as it last ran, or the repo's), else a Firefox of its own; its session, closed, stopped, no window, no app");
+
+// ── What the page hands over (PageSignIn): its session as the password's in, confirmed or with a code from the email
+// to type; given once Mozilla has confirmed it, though the page's own last step fails ─────────────────────────────
+const { PageSignIn } = await import("../dist/fxalogin.js");
+const { sessionCredentials } = await import("../dist/auth.js");
+const confirmed = new Set(); // the sessions Mozilla's confirmed (as by their code), by their HAWK id
+let asked = 0;
+let down = false; // Mozilla's account server doesn't answer
+globalThis.fetch = async (url, init) => {
+  assert.equal(`${init.method} ${url}`, "GET https://api.accounts.firefox.com/v1/session/status");
+  asked++;
+  if (down) return new Response("Service Unavailable", { status: 503 });
+  const id = /id="(\w+)"/.exec(init.headers.authorization)[1];
+  const yes = confirmed.has(id);
+  return Response.json({ state: yes ? "verified" : "unverified", uid: "u1", details: { accountEmailVerified: true, sessionVerified: yes, sessionVerificationMeetsMinimumAAL: true } });
+};
+const confirm = (token) => confirmed.add(sessionCredentials(token).id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const until = async (ok) => {
+  for (let i = 0; !ok() && i < 200; i++) await sleep(10);
+};
+const login = (token, verified) => ({ uid: "u1", email: "me@example.com", sessionToken: token, verified });
+const as = (token) => ({ uid: "u1", email: "me@example.com", sessionToken: token });
+const tokens = ["a", "b", "c", "d", "e", "f", "0"].map((c) => c.repeat(64));
+let given = [];
+const page = (every = 20) => ((given = []), new PageSignIn((s) => given.push(s), every));
+
+// confirmed as the password's in: given at once, Mozilla not asked; once, whatever the page says after
+let p = page();
+p.login(login(tokens[0], true));
+assert.deepEqual(given, [as(tokens[0])]);
+assert.ok(p.given);
+p.login(login(tokens[0], true));
+p.confirmed();
+await p.closed();
+assert.deepEqual(given, [as(tokens[0])], "given once");
+assert.equal(asked, 0, "Mozilla wasn't asked");
+
+// a code to type: Mozilla's asked meanwhile, and once it says it's confirmed it's given, though the page's last step
+// never comes (it failed: its red alert); then it isn't asked any more
+p = page();
+p.login(login(tokens[1], false));
+await sleep(120);
+assert.deepEqual(given, [], "not before its code's in");
+assert.ok(asked >= 2, `asked meanwhile (${asked})`);
+assert.ok(!p.given);
+confirm(tokens[1]);
+await until(() => given.length);
+assert.deepEqual(given, [as(tokens[1])], "given once Mozilla says it's confirmed");
+let n = asked;
+await sleep(100);
+assert.equal(asked, n, "asked no more");
+p.confirmed();
+await p.closed();
+assert.deepEqual(given, [as(tokens[1])], "given once");
+
+// ...and where the page's last step comes, given then, without waiting for Mozilla
+p = page(60_000);
+p.login(login(tokens[2], false));
+p.confirmed();
+assert.deepEqual(given, [as(tokens[2])]);
+
+// the window closed before Mozilla's said (the code typed just as it closed): given as it closes
+p = page(60_000);
+p.login(login(tokens[3], false));
+confirm(tokens[3]);
+await p.closed();
+assert.deepEqual(given, [as(tokens[3])], "given as it closes");
+
+// closed before its code was in: not given, and not asked any more
+p = page();
+p.login(login(tokens[4], false));
+await sleep(50);
+await p.closed();
+n = asked;
+await sleep(100);
+assert.deepEqual(given, [], "not given");
+assert.equal(asked, n, "asked no more once closed");
+
+// Mozilla not answering: asked again, and given once it answers
+p = page();
+down = true;
+p.login(login(tokens[5], false));
+confirm(tokens[5]);
+await sleep(100);
+assert.deepEqual(given, [], "nothing said, nothing given");
+down = false;
+await until(() => given.length);
+assert.deepEqual(given, [as(tokens[5])]);
+
+// another sign-in in the same page (another account, say) takes its place: the one before is given no more
+p = page();
+p.login(login(tokens[6], false));
+p.login(login("9".repeat(64), false));
+confirm(tokens[6]);
+await sleep(100);
+assert.deepEqual(given, [], "the one before isn't given");
+confirm("9".repeat(64));
+await until(() => given.length);
+assert.deepEqual(given, [as("9".repeat(64))]);
+await p.closed();
+
+// what isn't a session isn't taken
+p = page();
+p.login({ uid: "u1", email: "me@example.com", sessionToken: "short", verified: true });
+p.login(undefined);
+p.confirmed();
+await p.closed();
+assert.deepEqual(given, []);
+console.log("ok - the page's sign-in: given confirmed, or once Mozilla says its code's in (the page's last step failed, the window closed first), once; not before, nor once closed");

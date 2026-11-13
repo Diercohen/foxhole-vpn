@@ -111,7 +111,6 @@ function Main() {
   const web = useRef<React.ComponentRef<typeof WebView>>(null);
   const [signIn, setSignIn] = useState(false);
   const [keyboard, setKeyboard] = useState(0); // its height: the window ends above it
-  const account = useRef<object | null>(null); // from the sign-in page, until the core is signed in with it
   const askedNotify = useRef(false);
   // a QR code scanned with the camera app, its page opening Foxhole: a TV's (foxhole://tv?l=…) to the window's "Sign in
   // a TV", shared settings (foxhole://settings?d=…, share.ts) to its "Import settings". The window's call, till it's there.
@@ -131,15 +130,12 @@ function Main() {
   };
 
   useEffect(() => {
-    // the core's lines: its state, log and answers go to the window; it asks for the sign-in page
+    // the core's lines: its state, log and answers go to the window; it asks for the sign-in page, and puts it away
+    // once it's signed in with what the page handed over
     const lines = Core.onLine((line) => {
       const m = JSON.parse(line);
-      if (m.t === "signIn") return setSignIn(true);
+      if (m.t === "signIn") return setSignIn(m.open !== false);
       if (m.t === "state") {
-        if (m.s.auth.stage === "ready" && account.current) {
-          account.current = null; // signed in with it: the sign-in page is done
-          setSignIn(false);
-        }
         if (m.s.active && !askedNotify.current && Platform.OS === "android") {
           askedNotify.current = true; // the notification that keeps it running while connected
           void PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
@@ -178,18 +174,23 @@ function Main() {
     else if (m.t === "back") Core.moveToBack();
   };
 
+  // What the sign-in page hands over goes to the core, which keeps it till Mozilla has confirmed it (fxalogin.ts
+  // PageSignIn): its code from the email typed, even where the page's last step fails.
   const fromSignIn = (e: WebViewMessageEvent) => {
     // what sent it: Mozilla's sign-in, not another site in it (its origin, as Android's WebView says; or its URL)
     if (!/^https:\/\/accounts\.firefox\.com(\/|$)/.test(e.nativeEvent.url)) return;
     const m = JSON.parse(e.nativeEvent.data);
-    if (m.t === "login") {
-      account.current = m.account;
-      if (m.account.verified) Core.send(JSON.stringify({ t: "signedIn", account: m.account }));
-    } else if (m.t === "done") {
+    if (m.t === "login") Core.send(JSON.stringify({ t: "signedIn", account: m.account }));
+    else if (m.t === "done") {
       // the page's last step, once the sign-in is confirmed (as by a code from the email)
-      if (account.current) Core.send(JSON.stringify({ t: "signedIn", account: { ...account.current, verified: true } }));
+      Core.send(JSON.stringify({ t: "signInDone" }));
       setSignIn(false);
     }
+  };
+  // closed before it's done (✕, the back button): the core asks Mozilla once more
+  const closeSignIn = () => {
+    setSignIn(false);
+    Core.send(JSON.stringify({ t: "signInClosed" }));
   };
 
   return (
@@ -218,7 +219,7 @@ function Main() {
         webviewDebuggingEnabled={__DEV__}
         style={styles.web}
       />
-      {signIn && <SignIn onClose={() => setSignIn(false)} onMessage={fromSignIn} />}
+      {signIn && <SignIn onClose={closeSignIn} onMessage={fromSignIn} />}
     </View>
   );
 }

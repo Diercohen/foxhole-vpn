@@ -46,33 +46,38 @@ export function sessionCredentials(sessionToken: string): { id: string; key: Buf
   return { id: out.subarray(0, 32).toString("hex"), key: out.subarray(32) };
 }
 
-/** A HAWK Authorization header for a JSON POST to `url`, at server time `ts` (epoch seconds). */
-function hawkHeader(url: URL, body: string, creds: { id: string; key: Buffer }, ts: number): string {
+/**
+ * A HAWK Authorization header for a request to `url`, at server time `ts` (epoch seconds): a JSON POST's `body` is
+ * signed with it (its hash); a GET has none.
+ */
+function hawkHeader(method: "GET" | "POST", url: URL, body: string | null, creds: { id: string; key: Buffer }, ts: number): string {
   const nonce = randomBytes(6).toString("base64");
-  const hash = createHash("sha256").update(`hawk.1.payload\napplication/json\n${body}\n`).digest("base64");
+  const hash = body === null ? "" : createHash("sha256").update(`hawk.1.payload\napplication/json\n${body}\n`).digest("base64");
   const port = url.port || (url.protocol === "https:" ? "443" : "80");
   // The trailing empty line is the (unused) ext field.
-  const normalized = `hawk.1.header\n${ts}\n${nonce}\nPOST\n${url.pathname}${url.search}\n${url.hostname}\n${port}\n${hash}\n\n`;
+  const normalized = `hawk.1.header\n${ts}\n${nonce}\n${method}\n${url.pathname}${url.search}\n${url.hostname}\n${port}\n${hash}\n\n`;
   const mac = createHmac("sha256", creds.key).update(normalized).digest("base64");
-  return `Hawk id="${creds.id}", ts="${ts}", nonce="${nonce}", hash="${hash}", mac="${mac}"`;
+  return `Hawk id="${creds.id}", ts="${ts}", nonce="${nonce}", ${hash ? `hash="${hash}", ` : ""}mac="${mac}"`;
 }
 
 /** What FxA answers: the JSON, its errno and message on an error. */
 export type FxaAnswer = { ok: boolean; status: number; data: Record<string, unknown> & { errno?: number; message?: string } };
 
 /**
- * A JSON POST to FxA's `path` (e.g. "/oauth/token"), signed with `sessionToken` when given (HAWK), as Firefox
- * makes it. Signed: again once on the server's clock if this one is off (errno 111).
+ * A request to FxA's `path` (e.g. "/oauth/token"): a JSON POST of `payload`, or a GET where it's null; signed with
+ * `sessionToken` when given (HAWK), as Firefox makes it. Signed: again once on the server's clock if this one is off
+ * (errno 111).
  */
-export async function fxaPost(path: string, payload: object, sessionToken?: string, signal?: AbortSignal): Promise<FxaAnswer> {
+async function fxaRequest(path: string, payload: object | null, sessionToken?: string, signal?: AbortSignal): Promise<FxaAnswer> {
   const url = new URL(FXA_API + path);
-  const body = JSON.stringify(payload);
+  const method = payload ? "POST" : "GET";
+  const body = payload ? JSON.stringify(payload) : null;
   const creds = sessionToken ? sessionCredentials(sessionToken) : null;
   let ts = Math.floor(Date.now() / 1000);
   for (let attempt = 0; ; attempt++) {
-    const headers: Record<string, string> = { "content-type": "application/json" };
-    if (creds) headers.authorization = hawkHeader(url, body, creds, ts);
-    const res = await mozillaFetch(url.href, { method: "POST", headers, body }, signal); // through the relay where it's blocked
+    const headers: Record<string, string> = body === null ? {} : { "content-type": "application/json" };
+    if (creds) headers.authorization = hawkHeader(method, url, body, creds, ts);
+    const res = await mozillaFetch(url.href, { method, headers, ...(body !== null && { body }) }, signal); // through the relay where it's blocked
     const data = ((await res.json().catch(() => ({}))) ?? {}) as FxaAnswer["data"];
     if (creds && data.errno === 111 && typeof data.serverTime === "number" && attempt === 0) {
       ts = data.serverTime;
@@ -82,11 +87,28 @@ export async function fxaPost(path: string, payload: object, sessionToken?: stri
   }
 }
 
+/** A JSON POST to FxA's `path` (fxaRequest). */
+export function fxaPost(path: string, payload: object, sessionToken?: string, signal?: AbortSignal): Promise<FxaAnswer> {
+  return fxaRequest(path, payload, sessionToken, signal);
+}
+
 /** An error FxA gave: its errno with it (110: the session is gone, signed out or expired). */
 export class FxaError extends Error {
   constructor(message: string, readonly errno?: number) {
     super(message);
   }
+}
+
+/**
+ * Whether Mozilla has confirmed a session's sign-in, as Mozilla's sign-in page has it once it's done: the session
+ * verified (as by a code from the email), the account's email too, and the second step where the account has one.
+ * Throws where it can't say (FxaError 110: the session's gone, signed out or expired).
+ */
+export async function sessionVerified(sessionToken: string, signal?: AbortSignal): Promise<boolean> {
+  const { ok, status, data } = await fxaRequest("/session/status", null, sessionToken, signal);
+  if (!ok) throw new FxaError(`Mozilla's account server didn't say if the sign-in is confirmed: ${data.message ?? `HTTP ${status}`}`, data.errno);
+  const details = (data.details ?? {}) as { accountEmailVerified?: boolean; sessionVerificationMeetsMinimumAAL?: boolean };
+  return data.state === "verified" && details.accountEmailVerified !== false && details.sessionVerificationMeetsMinimumAAL !== false;
 }
 
 /**

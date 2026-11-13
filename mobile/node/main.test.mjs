@@ -21,8 +21,14 @@ writeFileSync(join(dir, "controller.js"), `
 import { EventEmitter } from "node:events";
 const moment = () => new Promise((r) => setTimeout(r, 80));
 export class Controller extends EventEmitter {
-  #android; #active = null; #global = null; #busy = false; #connecting = null;
+  #android; #active = null; #global = null; #busy = false; #connecting = null; #auth = { stage: "choose" }; #signed = [];
   constructor({ android }) { super(); this.#android = android; }
+  addAccount(how) { if (how === "mozilla") this.#android.openSignIn(); }
+  // the sign-in page's session: in use, and signed in with a moment later
+  signedIn({ email }) {
+    this.#signed.push(email); this.#auth = { stage: "checking" }; this.#changed();
+    void moment().then(() => ((this.#auth = { stage: "ready" }), this.#changed()));
+  }
   async start() {}
   via() {}
   reloadList(url, method) { return fetch(url, { method, body: method === "POST" ? "hi" : undefined }).then((r) => r.text()); }
@@ -59,7 +65,7 @@ export class Controller extends EventEmitter {
     this.#busy = false; this.#changed();
   }
   state() {
-    return { active: this.#active, global: this.#global ? this.#active : null, globalOn: !!this.#global, busy: this.#busy, connecting: this.#connecting,
+    return { auth: this.#auth, signed: this.#signed, active: this.#active, global: this.#global ? this.#active : null, globalOn: !!this.#global, busy: this.#busy, connecting: this.#connecting,
       relayOn: false, proxy: this.#active ? { addr: "127.0.0.1:1080" } : null, countries: [{ code: "DE", name: "Germany" }, { code: "US", name: "United States" }] };
   }
 }`);
@@ -71,6 +77,7 @@ const notes = []; // what the notification said, in order: its title (" [Resume]
 const texts = []; // and its text
 const vpn = []; // Android's VPN asked up and down
 const disguises = []; // disguise mode's codes, as the app was told them (Disguise.kt)
+const pages = []; // the sign-in page (App.tsx), as the app was told to show it (true) or put it away (false)
 const replies = new Map();
 let buf = "";
 app.setEncoding("utf8");
@@ -80,6 +87,7 @@ app.on("data", (chunk) => {
     const m = JSON.parse(buf.slice(0, i));
     buf = buf.slice(i + 1);
     if (m.t === "reply") replies.get(m.id)?.(m.v);
+    if (m.t === "signIn") pages.push(m.open !== false);
     if (m.t !== "ask") continue;
     if (m.cmd === "keepAlive") notes.push(m.args.off ? "off" : `${m.args.title}${m.args.paused ? " [Resume]" : ""}`), texts.push(m.args.text ?? "");
     if (m.cmd === "vpnStart" || m.cmd === "vpnStop") vpn.push(m.cmd);
@@ -199,7 +207,37 @@ try {
   await act("disguise", null);
   assert.deepEqual(disguises, ["2580", null]);
   assert.equal((await act("state")).disguise, null);
-  console.log("main.mjs: fetch() without WebAssembly, Pause and Resume, the tile, a network's pause and disguise mode ok");
+
+  // The sign-in page (App.tsx), opened by the window's Add account: what it hands over confirmed as the password's in
+  // is signed in with, and the page put away once it is; its last step after that signs in nothing more
+  await act("addAccount", "mozilla");
+  await settle();
+  assert.deepEqual(pages, [true]);
+  out({ t: "signedIn", account: { uid: "u1", email: "me@example.com", sessionToken: "ab".repeat(32), verified: true } });
+  await settle();
+  assert.deepEqual((await act("state")).signed, ["me@example.com"]);
+  assert.deepEqual(pages, [true, false], "put away once it's signed in with");
+  out({ t: "signInDone" });
+  await settle();
+  assert.deepEqual((await act("state")).signed, ["me@example.com"], "not twice");
+  // another, with a code from the email to type: the page stays though it's signed in already (with the one
+  // before), and its last step signs it in
+  await act("addAccount", "mozilla");
+  out({ t: "signedIn", account: { uid: "u2", email: "two@example.com", sessionToken: "cd".repeat(32), verified: false } });
+  await settle();
+  assert.deepEqual((await act("state")).signed, ["me@example.com"], "not before its code's in");
+  assert.deepEqual(pages, [true, false, true], "the page stays for its code");
+  out({ t: "signInDone" });
+  await settle();
+  assert.deepEqual((await act("state")).signed, ["me@example.com", "two@example.com"]);
+  assert.deepEqual(pages, [true, false, true, false]);
+  // closed before it handed anything over: nothing's signed in
+  await act("addAccount", "mozilla");
+  out({ t: "signInClosed" });
+  await settle();
+  assert.deepEqual((await act("state")).signed, ["me@example.com", "two@example.com"]);
+  assert.deepEqual(pages, [true, false, true, false, true]);
+  console.log("main.mjs: fetch() without WebAssembly, Pause and Resume, the tile, a network's pause, disguise mode and the sign-in page ok");
 } finally {
   core.kill();
   rmSync(dir, { recursive: true, force: true });
