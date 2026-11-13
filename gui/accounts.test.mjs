@@ -2,7 +2,7 @@
 // session is kept); another one is added. Sessions are made up: Mozilla turns them down, which changes nothing here.
 // Then a sign-in another device sends (tvAccept): one here already, its sign-in good, stays as it is (its sender's
 // told; an alert says so, with the relay that came with it); one whose sign-in has ended is replaced, and signed out;
-// a new one is added, and in use.
+// a new one is added, and in use. Then signing out: the account in use disconnected first, and an alert says so.
 import assert from "node:assert";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -88,5 +88,37 @@ else {
   assert.equal(loadAccounts().current, "u3");
 }
 
-console.log("ok - accounts: one signed in to again isn't added twice; another is; a sign-in another device sends, as the terminal takes one");
+// ── Signing out (Settings → Accounts, its button): the account in use is disconnected first, while it's still the one
+// in use, so nothing goes on through it; then it's off the list, signed out at Mozilla, and an alert says so. One not
+// in use: nothing's disconnected. The last one gone: the sign-in screen ─────────────────────────────────────────────
+const disconnects = []; // the account in use as each disconnect began
+const off = c.disconnect.bind(c);
+c.disconnect = () => (disconnects.push(loadAccounts().current), off());
+const before = loadAccounts();
+const inUse = before.own.find((x) => x.uid === before.current);
+destroyed.length = 0;
+await c.removeAccount(inUse.uid);
+assert.deepEqual(disconnects, [inUse.uid], "disconnected first, while it was the one in use");
+assert.ok(!loadAccounts().own.some((x) => x.uid === inUse.uid), "off the list");
+assert.notEqual(loadAccounts().current, inUse.uid);
+assert.equal(c.state().notice.title, "Signed out");
+assert.equal(c.state().notice.text, `You're signed out of ${inUse.email}, and Foxhole has forgotten it. You can sign in again any time.`);
+for (let i = 0; !destroyed.length && i < 50; i++) await sleep(20);
+assert.deepEqual(destroyed, [inUse.sessionToken ?? inUse.refreshToken], "signed out at Mozilla");
+
+c.signedIn({ uid: "u9", email: "nine@example.com", sessionToken: tok("f") }); // in use now
+disconnects.length = 0;
+await c.removeAccount("u1");
+assert.deepEqual(disconnects, [], "one not in use: nothing disconnected");
+assert.equal(loadAccounts().current, "u9");
+assert.match(c.state().notice.text, /^You're signed out of Me@Example\.com, and Foxhole has forgotten it\./);
+
+for (const id of loadAccounts().own.map((x) => x.uid)) await c.removeAccount(id);
+assert.deepEqual(loadAccounts(), { current: null, firefox: false, own: [], lowSeen: {} });
+// once the sign-in's done with what it asked meanwhile: the made-up sessions above went to Mozilla (15 s at most)
+for (let i = 0; c.state().auth.stage !== "choose" && i < 1000; i++) await sleep(20);
+assert.equal(c.state().auth.stage, "choose", "the sign-in screen");
+assert.equal(c.state().notice.title, "Signed out");
+
+console.log("ok - accounts: one signed in to again isn't added twice; another is; a sign-in another device sends, as the terminal takes one; signing out, the one in use disconnected first");
 process.exit(0); // the controller's sign-in tries go on in the background

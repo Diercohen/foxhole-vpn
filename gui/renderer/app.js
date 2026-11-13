@@ -426,7 +426,7 @@ function renderNotice() {
     accountNotice = S.notice.kind !== "relay";
     const relay = S.notice.kind === "relay"; // a relay that came from another device (controller.js tvAccept)
     $("#notice-modal").classList.toggle("relay", relay);
-    $("#notice-modal use").setAttribute("href", relay ? "#i-relay" : "#i-user");
+    $("#notice-modal use").setAttribute("href", relay ? "#i-relay" : S.notice.kind === "signedOut" ? "#i-logout" : "#i-user");
     $("#notice-title").textContent = S.notice.title;
     $("#notice-text").textContent = S.notice.text;
     $("#notice-modal").classList.add("on");

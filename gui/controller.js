@@ -672,16 +672,32 @@ export class Controller extends EventEmitter {
     void this.#resignIn();
   }
 
-  /** Signs an account out of Foxhole (Firefox's: Foxhole stops reading it; Firefox stays signed in). */
-  removeAccount(id) {
+  /**
+   * Signs an account out of Foxhole (Firefox's: Foxhole stops reading it; Firefox stays signed in), and says so. The one
+   * in use is disconnected first, as a switch of accounts is (the terminal's too), so nothing goes on through it: the
+   * last one gone, the sign-in screen covers the power button, and the tray's Disconnect waits for a sign-in.
+   */
+  async removeAccount(id) {
+    if (!this.#ids().includes(id)) return;
+    if (id === this.#accounts.current) {
+      if (this.#busy) return this.#say("warn", "wait for it to connect (or disconnect), then sign out");
+      await this.disconnect();
+      if (!this.#ids().includes(id)) return; // signed out of meanwhile
+    }
     const own = this.#accounts.own.find((x) => x.uid === id);
     if (own) void signOut(own);
     const was = this.#accounts.current;
     this.#saveAccounts(without(this.#accounts, id));
     this.#others.delete(id);
     if (id === FIREFOX) forgetToken(); // the token got from it
+    this.#alert(
+      own
+        ? `You're signed out of ${own.email || "your account"}, and Foxhole has forgotten it. You can sign in again any time.`
+        : "Foxhole doesn't use Firefox's sign-in anymore. Firefox itself stays signed in, and you can add it again any time.",
+      "Signed out",
+      "signedOut",
+    );
     if (id === was) void this.#resignIn();
-    else this.#changed();
   }
 
   /** The data left of the accounts not in use (the one in use's comes with its passes): when Settings opens. */
@@ -1585,7 +1601,7 @@ export class Controller extends EventEmitter {
     this.#changed();
   }
 
-  /** A dialog with an OK; `kind` "relay": in the relay's colors (the window's renderNotice). */
+  /** A dialog with an OK; `kind` "relay": in the relay's colors, "signedOut": with sign-out's icon (the window's renderNotice). */
   #alert(text, title = "Already signed in", kind = "account") {
     this.#notice = { title, text, kind, id: (this.#notice?.id ?? 0) + 1 };
     this.#changed();
