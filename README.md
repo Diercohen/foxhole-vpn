@@ -237,7 +237,7 @@ The Persian is `gui/renderer/fa.js` and the Russian `gui/renderer/ru.js`, by the
 t\`…\` (the core's messages as they are); `node gui/i18n.test.mjs --missing [ru]` lists
 the ones with no translation yet, and the GUI's tests fail on them.
 
-Release: push a tag (`git tag v1.2.1 && git push origin v1.2.1`); GitHub builds
+Release: push a tag (`git tag v1.3.0 && git push origin v1.3.0`); GitHub builds
 the apps into a draft release.
 
 ## License
