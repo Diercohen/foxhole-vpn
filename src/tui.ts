@@ -14,8 +14,9 @@ import { SHARE_PORT, serveShare, shareData, shareLink, parseShared, sharedWhat, 
 import { traffic, runsOut, sizeOf } from "./traffic.js";
 import { knownBlocked, sanctioned, verdictOf, verdictText, tryText, wantOf } from "./smart.js";
 import { forgetToken } from "./tokenserver.js";
-import { FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox, saveAccounts, signOut, withFirefox, withOwn, without, type Accounts } from "./accounts.js";
+import { AlreadySignedIn, FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox, saveAccounts, signOut, takeSent, withFirefox, withOwn, withSent, without, type Accounts } from "./accounts.js";
 import { desktopApp, signInWindow, type FxaLogin } from "./fxalogin.js";
+import { deviceLines, deviceName, waitProblem } from "./devicelogin.js";
 import { fetchUsage, type Usage } from "./guardian.js";
 import { startProxy, onProxyWarning, checkSite, netState, onNetState, type ProxyHandle } from "./proxy.js";
 import { startSmartDns, smartDnsHost, smartDnsProblem, type SmartDns } from "./smartdns.js";
@@ -34,7 +35,7 @@ import { RelayWizard, GRAPHICS, CELL_QUERY, cellSize, pictureAt, wrap } from "./
 import { relayCheck, relayVerdict, relayStats, onRelayNotice, onRelaySplit } from "./relaymode.js";
 import { caTrusted, setCaTrust } from "./catrust.js";
 import { startGateway } from "./gateway.js";
-import { findTvs, normalizeCode, sendToTv, type TvAccount, type TvRelay } from "./tvpair.js";
+import { TV_PORT, findTvs, normalizeCode, sendToTv, waitForSignIn, type TvAccount, type TvRelay, type TvSignIn } from "./tvpair.js";
 import { SessionAuth, destroyToken } from "./auth.js";
 
 const ESC = "\x1b[";
@@ -95,6 +96,19 @@ const RELAY_SETUP: Country = { code: "RELAY-SETUP", name: "Relay", locked: false
 
 /** A country's name with its flag in front, where the TUI shows flags (EMOJI). */
 const flagged = (code: string, name: string) => (EMOJI ? `${flag(code)} ${name}` : name);
+
+/**
+ * Accounts' "Sign in from another device", while it's open: this computer waiting as a TV does (tvpair.ts), `handle`
+ * once it does (`error`: why it can't); a firewall's commands that let the other device in; how what was sent went.
+ */
+type DeviceIn = { wait: Promise<TvSignIn | null>; handle: TvSignIn | null; error: string; fw: string[] | null; note: string[] };
+
+/** What was sent isn't taken, said both ways: to its sender (the message), and `here`, on this screen. */
+class Refused extends Error {
+  constructor(toSender: string, readonly here: string) {
+    super(toSender);
+  }
+}
 
 /** Merges a relay change into the current config; undefined (off) once both parts are empty. */
 const relayWith = (cur: Settings["relay"], patch: { deploymentId?: string; authKey?: string }): Settings["relay"] => {
@@ -256,6 +270,7 @@ export class Tui {
   #acctNote = "";
   #removeAsk: string | null = null; // the account x was pressed on once: again signs it out
   #signingIn: AbortController | null = null; // Foxhole's own sign-in (fxalogin.ts), its window open: esc stops waiting
+  #deviceIn: DeviceIn | null = null; // over Accounts, "Sign in from another device": this computer's code and QR code, till a sign-in comes or esc
   #others = new Map<string, { usage: Usage | null; error: string | null }>(); // data left of those not in use
   #lowOpen = false; // the popup saying the account in use is low on data
   #notesOpen = false; // the popup with what's new in the update ('u'), whose Enter updates
@@ -514,6 +529,7 @@ export class Tui {
   /** Keystrokes while the Accounts popup is open. */
   #acctKey(key: readline.Key): void {
     if (this.#signingIn) return void (key.name === "escape" && this.#signingIn.abort());
+    if (this.#deviceIn) return void (key.name === "escape" && (this.#deviceClose(), this.#render()));
     const ids = this.#ids();
     if (key.name !== "x" && key.name !== "delete" && key.name !== "backspace") {
       this.#removeAsk = null; // a sign-out asked for goes with any other key
@@ -535,10 +551,12 @@ export class Tui {
         this.#acctSel = (this.#acctSel + 1) % this.#acctRows();
         this.#removeAsk = null;
         break;
-      case "return":
-        // after the accounts: Foxhole's own sign-in, then Firefox's (till it's on the list)
-        if (this.#acctSel === ids.length) return void this.#windowSignIn();
-        else if (this.#acctSel === ids.length + 1) {
+      case "return": {
+        // after the accounts, the ways to add one (#acctAdds)
+        const add = this.#acctSel >= ids.length ? this.#acctAdds()[this.#acctSel - ids.length] : null;
+        if (add === "window") return void this.#windowSignIn();
+        if (add === "device") return this.#deviceOpen();
+        if (add === "firefox") {
           if (!authFor(withFirefox(this.#accounts), FIREFOX)) return void ((this.#acctNote = red("Firefox isn't signed in (or can't be read): sign in to Firefox, then try again.")), this.#render());
           const ff = findAccount()?.email?.toLowerCase();
           const twin = this.#accounts.own.find((x) => !!ff && x.email.toLowerCase() === ff);
@@ -548,6 +566,7 @@ export class Tui {
           this.#acctSel = 0;
         } else if (ids[this.#acctSel] !== this.#accounts.current) void this.#use(ids[this.#acctSel]);
         break;
+      }
       case "x":
       case "delete":
       case "backspace": {
@@ -566,9 +585,14 @@ export class Tui {
     this.#render();
   }
 
-  /** The Accounts popup's rows: the accounts, "Sign in to a Mozilla account", and Firefox's sign-in till it's on the list. */
+  /** The ways to add an account, after the accounts in the popup: Foxhole's own sign-in, Firefox's till it's on the list, another device's. */
+  #acctAdds(): ("window" | "firefox" | "device")[] {
+    return ["window", ...(this.#accounts.firefox ? [] : (["firefox"] as const)), "device"];
+  }
+
+  /** The Accounts popup's rows: the accounts, then the ways to add one. */
   #acctRows(): number {
-    return this.#ids().length + 1 + (this.#accounts.firefox ? 0 : 1);
+    return this.#ids().length + this.#acctAdds().length;
   }
 
   /** Foxhole's own sign-in: in a window of its own, the desktop app's or a Firefox of its own (fxalogin.ts), through the VPN while connected. */
@@ -605,6 +629,97 @@ export class Tui {
     void this.#use(uid).then(() => ((this.#acctNote = wrap(`✓ Signed in with ${email}, and it's the account in use now.`, 58).map(green).join("\n")), this.#render()));
   }
 
+  /**
+   * Accounts' "Sign in from another device" (devicelogin.ts): this computer waits as a TV does (tvpair.ts), its code
+   * and QR code in a popup (#devicePopup), till a sign-in comes or esc. A phone, computer or TV where Foxhole is signed
+   * in sends it, from its Settings → Sign in a TV or phone.
+   */
+  #deviceOpen(): void {
+    const d: DeviceIn = { wait: Promise.resolve(null), handle: null, error: "", fw: null, note: [] };
+    d.wait = waitForSignIn({
+      name: deviceName(),
+      host: () => lanIp(),
+      accept: (got, from) => this.#deviceTake(d, got, from),
+      changed: () => this.#render(), // a new code
+    }).then(
+      (h) => ((d.handle = h), this.#render(), h),
+      (err) => ((d.error = waitProblem(err)), this.#render(), null),
+    );
+    void firewallHint(TV_PORT).then((fw) => ((d.fw = fw), this.#render()), () => {});
+    this.#deviceIn = d;
+    this.#render();
+  }
+
+  /** Puts it away: back to Accounts, and this computer waits no more (`now` false: once a sender has its answer). */
+  #deviceClose(now = true): void {
+    const d = this.#deviceIn;
+    this.#deviceIn = null;
+    const stop = () => void d?.wait.then((h) => h?.stop());
+    if (now) stop();
+    else setTimeout(stop);
+  }
+
+  /** Resolves once nothing's connecting or disconnecting here; a sender isn't kept waiting long for it. */
+  async #idle(): Promise<void> {
+    for (let i = 0; this.#busy && i < 100; i++) await new Promise((r) => setTimeout(r, 100));
+    if (this.#busy) throw new Refused("the other device is busy connecting: send it again in a moment", "this computer was busy connecting. Send it again in a moment.");
+  }
+
+  /**
+   * What another device sent: its relay, saved (in place of one here) and in use at once; a sign-in, checked with
+   * Mozilla (through that relay where Mozilla's blocked), then added and in use. What's thrown, the sender is told. As
+   * the desktop app's tvAccept (gui/controller.js): an account that's on the list already, its sign-in still good,
+   * stays as it is (accounts.ts takeSent), and Accounts opens on it.
+   */
+  async #deviceTake(d: DeviceIn, { account, relay }: { account: TvAccount | null; relay: TvRelay | null }, from: string): Promise<void> {
+    const who = from || "another device";
+    const came = relay ? wrap(`✓ Your VPN relay came from ${who}.`, 58).map(purple) : [];
+    const gone = () => new Refused("the other device stopped waiting", "this computer had stopped waiting.");
+    try {
+      if (this.#deviceIn !== d) throw gone();
+      await this.#idle();
+      if (relay) {
+        await this.#changeSetting({ relay }); // Mozilla's reached through it at once, where it's blocked
+        if (this.#settings.relay !== relay) throw new Refused("couldn't save the relay", "the relay couldn't be saved on this computer."); // as the desktop app says it
+      }
+      if (!account) return void ((d.note = [...came, dim("Still waiting for the sign-in…")]), this.#render());
+      const took = await takeSent(this.#accounts, account);
+      if (this.#deviceIn !== d) throw gone(); // esc while Mozilla was asked
+      await this.#idle(); // a relay in use reconnects through the new one
+      this.#saveAccounts(withSent(this.#accounts, took));
+      if (took.replaced) void signOut(took.replaced); // the sign-in it replaces
+      this.#others.delete(account.uid);
+      await this.#use(account.uid);
+      this.#deviceClose(false);
+      this.#acctSel = Math.max(0, this.#ids().indexOf(account.uid));
+      this.#acctNote = wrap(`✓ Signed in with ${account.email}${from ? `, sent from ${from}` : ""}${relay ? ", with its VPN relay" : ""}: it's the account in use now.`, 58).map(green).join("\n");
+      this.#render();
+    } catch (err) {
+      if (err instanceof AlreadySignedIn && this.#deviceIn === d) {
+        // on the list all along: Accounts, on it (enter uses it)
+        this.#deviceClose(false);
+        this.#acctSel = Math.max(0, this.#ids().indexOf(err.id));
+        this.#acctNote = [...came, ...wrap(`You're already signed in with ${err.email}${err.id === FIREFOX ? " (Firefox's sign-in)" : ""}, so it isn't added again.`, 58).map(yellow)].join("\n");
+      } else d.note = [...came, ...wrap(`The sign-in from ${who} wasn't taken: ${err instanceof Refused ? err.here : (err as Error).message}`, 58).map(red)];
+      this.#render();
+      throw err;
+    }
+  }
+
+  /** This computer's code and QR code for a sign-in from another device, in Accounts' place while it waits. */
+  #devicePopup(width: number, frameHeight: number): string[] {
+    const d = this.#deviceIn!;
+    const w = d.handle?.waiting();
+    const note = d.note.length ? ["", ...d.note] : [];
+    // the room the frame leaves: the overlay's margin, the box's border, a blank line above, and one before the key under it
+    const body = d.error
+      ? wrap(d.error, 58).map(red)
+      : w
+        ? deviceLines(w, { width: Math.min(width - 6, 98), height: frameHeight - 7 - note.length, net: this.#net, fw: d.fw })
+        : [dim("Getting a code…")];
+    return box(["", ...body, ...note, "", dim(d.error ? "esc back" : "waiting for the sign-in · esc back")], { title: bold(cyan("Sign in from another device")), width: 62 });
+  }
+
   #accountsPopup(): string[] {
     const ids = this.#ids();
     const rows = ids.map((id, i) => {
@@ -619,9 +734,13 @@ export class Tui {
     });
     const ff = this.#firefoxEmail;
     const pick = (i: number) => (this.#acctSel === i ? cyan("❯") : " ");
+    const way = {
+      window: "Sign in to a Mozilla account",
+      firefox: `Use Firefox's sign-in${ff ? `, ${ff}` : ""}${process.platform === "darwin" ? dim(" (Full Disk Access)") : ""}`,
+      device: "Sign in from another device",
+    };
     const add = [
-      `${pick(ids.length)} ${cyan("+")} Sign in to a Mozilla account`,
-      ...(this.#accounts.firefox ? [] : [`${pick(ids.length + 1)} ${cyan("+")} Use Firefox's sign-in${ff ? `, ${ff}` : ""}${process.platform === "darwin" ? dim(" (Full Disk Access)") : ""}`]),
+      ...this.#acctAdds().map((a, i) => `${pick(ids.length + i)} ${cyan("+")} ${way[a]}`),
       "",
       ...this.#acctNote.split("\n"),
       "",
@@ -688,6 +807,7 @@ export class Tui {
         await this.#proxy?.close();
         this.#smartDns?.close();
         void this.#give?.server.then((server) => server?.close());
+        this.#deviceClose();
         process.stdin.removeListener("data", onData);
         process.stdout.removeListener("resize", onResize);
         try {
@@ -2123,7 +2243,7 @@ export class Tui {
           : this.#notesOpen
           ? this.#notesPopup(width, frame.length)
           : this.#acctOpen
-          ? this.#accountsPopup()
+          ? this.#deviceIn ? this.#devicePopup(width, frame.length) : this.#accountsPopup()
           : this.#settingsOpen
           ? this.#tgOpen ? this.#telegramPopup(frame.length) : this.#give ? this.#givePopup(frame.length) : this.#settingsPopup()
           : this.#splitOpen

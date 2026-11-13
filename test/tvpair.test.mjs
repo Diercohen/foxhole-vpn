@@ -2,7 +2,7 @@
 // is refused, and after a few the TV shows a new one; what the TV refuses to sign in with, the sender is told. A VPN
 // relay comes along with a sign-in, or alone; and a TV or phone waiting for a relay alone takes only that.
 import assert from "node:assert";
-import { askTv, normalizeCode, parseTvLink, sendToTv, waitForSignIn } from "../dist/tvpair.js";
+import { askTv, distinctTvs, normalizeCode, parseTvLink, sendToTv, waitForSignIn } from "../dist/tvpair.js";
 
 const account = { uid: "u1", email: "me@example.com", refreshToken: "ab".repeat(32) };
 const relay = { deploymentId: "AKfycb" + "x".repeat(40), authKey: "my key" };
@@ -30,6 +30,9 @@ assert.ok(fromLink && fromLink.host === "127.0.0.1" && fromLink.port === 47599 &
 assert.equal(parseTvLink("http://127.0.0.1:47599/#nope"), null);
 assert.equal(parseTvLink("https://example.com/"), null);
 assert.equal((await askTv(fromLink)).want, "signin", "it says what it waits for");
+// a device on a cable and Wi-Fi is found at both addresses: it's one (its key), sent to once
+const elsewhere = { ...fromLink, host: "192.168.1.9" }, another = { ...fromLink, host: "192.168.1.7", pub: "another device's key" };
+assert.deepEqual(distinctTvs([fromLink, another, elsewhere]), [fromLink, another]);
 
 const byCode = { host: "127.0.0.1", port: 47599, name: "", pub: fromLink.pub };
 assert.deepEqual(await sendToTv(byCode, { code: code.toLowerCase() }, { account }, "Laptop"), { account: true, relay: false });
@@ -56,6 +59,11 @@ assert.equal(changes, 1, "a new code after five wrong ones");
 assert.notEqual(tv.waiting().code, code);
 await assert.rejects(sendToTv(fromLink, {}, { account }, "x"), /isn't the one on the other screen anymore/, "the old QR code with it");
 tv.stop();
+// stopped, it's gone at once: for a sender that asked a moment ago too, on the connection it still has (before Node 19 a
+// closed server keeps those, and would go on answering as the wait that's over)
+assert.equal(await askTv(fromLink), null, "nothing waits there anymore");
+await assert.rejects(sendToTv(fromLink, {}, { account }, "x"), "and nothing is taken");
+assert.equal(got.length, 0);
 
 // a phone (or a TV, later) waiting for a relay alone: a sign-in sent along isn't taken, and one without a relay is refused
 const phone = await waitForSignIn({ name: "Phone", want: "relay", host: () => "127.0.0.1", port: 47598, accept: async (a, from) => void got.push({ ...a, from }), changed: () => {} });

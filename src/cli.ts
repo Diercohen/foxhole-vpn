@@ -7,6 +7,7 @@ import { findAccount, openBrowser, FULL_DISK_ACCESS, type AccountState, type Pro
 import { FirefoxAuth, StaticAuth, type Authenticator, type FxaError } from "./auth.js";
 import { FIREFOX, authFor, loadAccounts, peekFirefox, saveAccounts, withFirefox, withOwn, without } from "./accounts.js";
 import { desktopApp, signInWindow } from "./fxalogin.js";
+import { deviceLogin } from "./devicelogin.js";
 import { Connection, findCountry } from "./connection.js";
 import { fetchEntitlement, useRelay, GuardianBlocked } from "./guardian.js";
 import { loadRelay } from "./httprelay.js";
@@ -161,15 +162,15 @@ async function ensureAuth(): Promise<Authenticator> {
   // either), the TUI's popup, with the relay's setup a key away; once it's set, the login's tokens come through it
   if (blocked) return (blockedAtStart = blocked), new FirefoxAuth(account!);
   // Firefox's profile can't be read (macOS privacy protection): signing in again wouldn't help, allowing it does, or
-  // in a terminal Foxhole's own sign-in (e), which needs nothing allowed
+  // in a terminal Foxhole's own sign-in (e) or another device's (d), which need nothing allowed
   if (account?.blocked) {
     if (!process.stdin.isTTY) blockedExit(account.blocked);
     sayBlocked(account.blocked);
-    console.log(dim(`\nOr press ${under("e")} to sign in in a window of its own: nothing to allow · ${under("q")} quits`));
-    const keys = cancelKeys("e");
+    console.log(dim(`\nOr press ${under("e")} to sign in in a window of its own, or ${under("d")} from another device: nothing to allow · ${under("q")} quits`));
+    const keys = cancelKeys("e", "d");
     const pressed = await keys.cancelled;
     keys.stop();
-    if (pressed && (await windowLogin())) return ensureAuth();
+    if (pressed && (await (pressed === "d" ? fromDevice() : windowLogin()))) return ensureAuth();
     process.exit(1);
   }
   const error = errors.join("\n");
@@ -389,7 +390,7 @@ async function cmdDoctor() {
   console.log();
 }
 
-/** Opens the browser's own sign-in and waits for it, or for Foxhole's own (e). True once signed in. */
+/** Opens the browser's own sign-in and waits for it, or for Foxhole's own (e) or another device's (d). True once signed in. */
 async function cmdLogin(): Promise<boolean> {
   const account = findAccount();
   if (account?.blocked) blockedExit(account.blocked);
@@ -411,7 +412,7 @@ async function cmdLogin(): Promise<boolean> {
           "",
           `${bold("Sync is optional")}: foxhole only needs the sign-in, so you can`,
           `turn off everything on the ${bold("Choose what to sync")} screen.`,
-          ...(process.stdin.isTTY ? ["", `Or press ${bold(cyan("e"))} to sign in in a window of its own instead (not this Firefox).`] : []),
+          ...(process.stdin.isTTY ? ["", `Or press ${bold(cyan("e"))} to sign in in a window of its own instead (not this Firefox),`, `or ${bold(cyan("d"))} from another device where Foxhole is signed in.`] : []),
         ],
         { title: cyan("🦊 foxhole login") },
       ).join("\n") +
@@ -423,7 +424,7 @@ async function cmdLogin(): Promise<boolean> {
   }
 
   console.log(dim(`Waiting for Firefox to sign in (up to 5 minutes) · press ${under("q")} or ${under("Ctrl+C")} to cancel`));
-  const keys = cancelKeys("e");
+  const keys = cancelKeys("e", "d");
   let timer: NodeJS.Timeout | undefined;
   let ticks = 0;
   const found = new Promise<AccountState | "timeout">((resolve) => {
@@ -437,6 +438,7 @@ async function cmdLogin(): Promise<boolean> {
   clearInterval(timer);
   keys.stop();
   if (result === "e") return windowLogin();
+  if (result === "d") return fromDevice();
   if (result === null) {
     console.log(yellow("Cancelled."));
     return false;
@@ -451,7 +453,7 @@ async function cmdLogin(): Promise<boolean> {
 
 /**
  * A first start (no account yet): how to sign in, asked as the desktop app does, before Firefox is opened or read
- * (macOS would ask first). True once signed in with an email; false: Firefox's sign-in it is.
+ * (macOS would ask first). True once signed in with an email, or from another device; false: Firefox's sign-in it is.
  */
 async function firstSignIn(): Promise<boolean> {
   const ff = peekFirefox(); // Firefox's account, where reading it asks nothing
@@ -468,13 +470,15 @@ async function firstSignIn(): Promise<boolean> {
           dim(desktopApp() ? "   the desktop app's sign-in window" : "   a Firefox of its own, without Sync"),
           `${bold(cyan("f"))}  ${ff ? `Use Firefox's account, ${ff}` : "Use Firefox's sign-in"}`,
           dim(`   ${firefoxWhat}`),
+          `${bold(cyan("d"))}  Sign in from another device, where Foxhole is signed in`,
+          dim("   a phone, computer or TV on this network: no window, no Firefox"),
         ],
         { title: cyan("🦊 foxhole login") },
       ).join("\n"),
   );
   for (;;) {
-    console.log(dim(`\npress ${under("e")} or ${under("f")} · ${under("q")} or ${under("Ctrl+C")} to cancel`));
-    const keys = cancelKeys("e", "f");
+    console.log(dim(`\npress ${under("e")}, ${under("f")} or ${under("d")} · ${under("q")} or ${under("Ctrl+C")} to cancel`));
+    const keys = cancelKeys("e", "f", "d");
     const key = await keys.cancelled;
     keys.stop();
     if (key === null) {
@@ -482,7 +486,7 @@ async function firstSignIn(): Promise<boolean> {
       process.exit(130); // the app can't connect without a sign-in
     }
     if (key === "f") return false;
-    if (await windowLogin()) return true; // cancelled, or no window here: asked again
+    if (await (key === "d" ? fromDevice() : windowLogin())) return true; // cancelled, or no window here: asked again
   }
 }
 
@@ -506,6 +510,27 @@ async function windowLogin(): Promise<boolean> {
     saveAccounts(withOwn(without(loadAccounts(), FIREFOX), { uid: s.uid, email: s.email, sessionToken: s.sessionToken }));
     console.log(green(`✓ Signed in with ${s.email}.`));
     return true;
+  } catch (err) {
+    console.log(red((err as Error).message));
+    return false;
+  } finally {
+    keys.stop();
+  }
+}
+
+/**
+ * "Sign in from another device" (devicelogin.ts), as the TUI's Accounts has it: this computer's code and QR code
+ * here, till a phone, computer or TV where Foxhole is signed in sends its sign-in, which is then the account in use.
+ * False when cancelled, or where it can't wait (said).
+ */
+async function fromDevice(): Promise<boolean> {
+  const stop = new AbortController();
+  const keys = cancelKeys();
+  void keys.cancelled.then(() => stop.abort());
+  try {
+    const email = await deviceLogin({ signal: stop.signal, say: (text) => console.log(text) });
+    if (!email) console.log(yellow("Cancelled."));
+    return !!email;
   } catch (err) {
     console.log(red((err as Error).message));
     return false;

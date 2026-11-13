@@ -6,12 +6,12 @@ import { readFile } from "node:fs/promises";
 import { findAccount, openBrowser, macApp } from "./dist/profile.js";
 import { fetchServerList } from "./dist/serverlist.js";
 import { Connection, RELAY_CODE } from "./dist/connection.js";
-import { FirefoxAuth, RefreshAuth, StaticAuth, destroyToken } from "./dist/auth.js";
+import { FirefoxAuth, StaticAuth, destroyToken } from "./dist/auth.js";
 import { askTv, findTvs, parseTvLink, sendToTv, waitForSignIn, TV_PORT } from "./dist/tvpair.js";
 import { qrSvgPath } from "./dist/qr.js";
 import { SHARE_PORT, serveShare, shareData, shareLink, parseShared, sharedWhat, importPlan } from "./dist/share.js";
 import { newNotice, noticeShown, onHot, refreshHot } from "./dist/hot.js";
-import { FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox, saveAccounts, signOut, withFirefox, withOwn, without } from "./dist/accounts.js";
+import { AlreadySignedIn, FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox, saveAccounts, signOut, takeSent, withFirefox, withOwn, withSent, without } from "./dist/accounts.js";
 import { fetchEntitlement, fetchUsage } from "./dist/guardian.js";
 import { GuardianError, GuardianBlocked, GUARDIAN_HOST, useRelay } from "./dist/guardian.js";
 import { loadRelay, relayUrl } from "./dist/httprelay.js";
@@ -427,22 +427,34 @@ export class Controller extends EventEmitter {
   /**
    * What another device sent: its relay, saved (in place of one here), and in use at once; a sign-in, checked with
    * Mozilla (through that relay where Mozilla's blocked; the sender's told if it doesn't work), then added and in use.
+   * An account that's on the list already, its sign-in still good, stays as it is (accounts.ts takeSent): a full
+   * sign-in isn't given up for a VPN-only one, which couldn't sign in a TV in turn (tvSend). An alert says so, and its
+   * sender's told (it ends the sign-in it made).
    */
   async #tvAccept({ account, relay }, from) {
     if (relay && (await this.#changeSetting({ relay })) !== true) throw new Error(this.#settingsNote?.text ?? "couldn't save the relay");
-    if (account) await new RefreshAuth(account.refreshToken).getAccessToken(AbortSignal.timeout(15_000));
+    const came = relay ? `Your VPN relay came from ${from || "another device"}: where Mozilla is blocked or refuses your country, Foxhole reaches it through the relay.` : "";
+    let took = null;
+    try {
+      if (account) took = await takeSent(this.#accounts, account);
+    } catch (err) {
+      if (!(err instanceof AlreadySignedIn)) throw err;
+      if (relay) this.#relayGot++;
+      setTimeout(() => void this.tvWait(false)); // once the sender has its answer
+      this.#alert([came, `You're already signed in with ${err.email}${err.id === FIREFOX ? " (Firefox's sign-in)" : ""}, so it isn't added again.`].filter(Boolean).join("\n"));
+      throw err;
+    }
     if (relay) this.#relayGot++;
     if (!account) {
       // a TV's sign-in screen goes on waiting, for the sign-in
       if (this.#tvWant === "relay") setTimeout(() => void this.tvWait(false)); // once the sender has its answer
       log(`relay: from ${from || "another device"}`);
-      return this.#alert(`Your VPN relay came from ${from || "another device"}: where Mozilla is blocked or refuses your country, Foxhole reaches it through the relay.`, "Relay added", "relay");
+      return this.#alert(came, "Relay added", "relay");
     }
-    const { uid, email, refreshToken } = account;
+    const { uid, email } = account;
     await this.disconnect(); // as a switch of accounts does
-    const old = this.#accounts.own.find((x) => x.uid === uid);
-    this.#saveAccounts(withOwn(this.#accounts, { uid, email, refreshToken }));
-    if (old) void signOut(old); // the sign-in it replaces
+    this.#saveAccounts(withSent(this.#accounts, took));
+    if (took.replaced) void signOut(took.replaced); // the sign-in it replaces
     this.#others.delete(uid);
     setTimeout(() => void this.tvWait(false)); // once the sender has its answer
     this.#alert(`You're signed in with ${email}${from ? `, sent from ${from}` : ""}${relay ? ", with its VPN relay" : ""}, and it's the account in use now.`, "Signed in");

@@ -104,12 +104,14 @@ export async function waitForSignIn(opts: {
   };
   let keys = await fresh();
   let busy = false; // one sign-in at a time
+  let stopped = false;
 
   const answer = (res: http.ServerResponse, status: number, body: object) =>
     res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
 
   const server = http.createServer((req, res) => {
     const path = (req.url ?? "/").split("?")[0];
+    if (stopped) return answer(res, 404, { error: "not here" }); // on a connection that outlived the wait
     if (req.method === "GET" && path === PATH) return answer(res, 200, { foxhole: 1, name: opts.name, pub: b64(keys.pub), want });
     if (req.method === "GET") return void res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(page(opts.name, want));
     if (req.method !== "POST" || path !== PATH) return answer(res, 404, { error: "not here" });
@@ -143,7 +145,8 @@ export async function waitForSignIn(opts: {
         // an older Foxhole sends a sign-in only
         if (want === "relay" && !relay) return answer(res, 400, { error: "it's waiting for a VPN relay, and none came: update Foxhole on this device, or set its relay up first" });
         if (!account && !relay) return answer(res, 400, { error: "no account in it" });
-        await opts.accept({ account, relay }, typeof from === "string" ? from.slice(0, 80) : "");
+        // the sender's name goes on this device's screen, a terminal's too: no control characters in it
+        await opts.accept({ account, relay }, typeof from === "string" ? from.replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 80) : "");
         answer(res, 200, { ok: true, name: opts.name, account: !!account, relay: !!relay });
       } catch (err) {
         answer(res, 400, { error: (err as Error).message });
@@ -158,7 +161,13 @@ export async function waitForSignIn(opts: {
       const host = opts.host();
       return { code: keys.code, host, link: host ? `http://${host}:${port}/#${b64(keys.secret)}.${b64(keys.pub)}` : null };
     },
-    stop: () => void server.close(),
+    stop: () => {
+      // for good, at once: before Node 19 a closed server keeps the connections it has, and a sender that asked a
+      // moment ago would go on reaching this wait (its old code and key) instead of none, or of the next one
+      stopped = true;
+      server.close();
+      server.closeIdleConnections();
+    },
   };
 }
 
@@ -236,8 +245,15 @@ export async function findTvs(ms = 2500): Promise<Tv[]> {
     for (let i = 1; i < 255; i++) if (`${base}.${i}` !== a) hosts.add(`${base}.${i}`);
   }
   const found = await Promise.all([...hosts].map((h) => ask(h, TV_PORT, ms)));
-  return found.filter((t): t is Tv => !!t);
+  return distinctTvs(found.filter((t): t is Tv => !!t));
 }
+
+/**
+ * Those found, each device once: one with two addresses on the network (a computer on a cable and Wi-Fi) answers at
+ * both, with the one key, and would be sent to twice (a mistyped code counted twice, its answer lost under the
+ * second's). Pure.
+ */
+export const distinctTvs = (found: Tv[]): Tv[] => found.filter((t, i) => found.findIndex((x) => x.pub === t.pub) === i);
 
 /** The TV's details again, from its QR code's address (its name, and that it's still waiting). */
 export const askTv = (tv: Tv, ms = 4000) => ask(tv.host, tv.port, ms);

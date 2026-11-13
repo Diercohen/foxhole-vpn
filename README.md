@@ -66,7 +66,11 @@ The terminal opens it in the desktop app's window where that has run on the comp
 (Firefox's own sign-in on a fresh profile, deleted after: your Firefox stays as it is, and nothing syncs); where
 there's neither, or no screen (a container, SSH), it says so. Mozilla turns away sign-ins typed into apps themselves
 (HTTP 406), and its page a browser driven from outside.
-On a first start the terminal asks which: `e` that window, or `f` Firefox's sign-in (whose screen offers `e` too).
+On a first start the terminal asks which: `e` that window, `f` Firefox's sign-in (whose screen offers `e` too), or
+`d` to **sign in from another device**: the terminal shows a 6-character code (and a QR code where it fits), and a
+phone, computer or TV where Foxhole is signed in, on the same network, sends the sign-in from its **Settings → Sign
+in a TV or phone**, with its VPN relay where it has one. It takes no window and no Firefox, so it works in a
+container or over SSH too. The terminal UI adds accounts the same way: `a` → **Sign in from another device**.
 
 ## Usage
 

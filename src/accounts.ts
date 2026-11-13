@@ -119,6 +119,44 @@ export function authFor(a: Accounts, id: string): Authenticator | null {
   return !own ? null : own.sessionToken ? new SessionAuth(() => own.sessionToken as string) : new RefreshAuth(own.refreshToken as string);
 }
 
+/** takeSent's: the account's on the list already (`id`: its own, or FIREFOX), its sign-in still good. Said to the sender as it is. */
+export class AlreadySignedIn extends Error {
+  constructor(readonly id: string, readonly email: string) {
+    super(`the other device is already signed in with ${email}`);
+  }
+}
+
+/** What takeSent took: the sign-in, as the file keeps one; the one on the list it replaces (its sign-in had ended). */
+export interface Taken {
+  account: OwnAccount;
+  replaced: OwnAccount | null;
+}
+
+/**
+ * A sign-in another device sent this one (tvpair.ts), for the list `a`: checked with Mozilla first, whose refusal is
+ * thrown (the sender's told, and ends the sign-in it made). The account's on the list already, its sign-in still
+ * good: it stays as it is, a full sign-in not given up for a VPN-only one, and AlreadySignedIn is thrown. One that
+ * has ended (or can't be checked), the new one takes its place. withSent puts what's taken on the list as it is by
+ * then; the one it replaces is signed out once the list's saved (it leaves the account's devices list).
+ */
+export async function takeSent(a: Accounts, sent: Pick<OwnAccount, "uid" | "email" | "refreshToken">): Promise<Taken> {
+  const acct = { uid: sent.uid, email: sent.email, refreshToken: sent.refreshToken };
+  // as the file keeps one, and nothing a terminal would take for more than letters
+  if (!isOwn(acct) || /[\x00-\x1f\x7f-\x9f]/.test(acct.uid + acct.email)) throw new Error("that isn't a sign-in Foxhole can keep");
+  const same = (x: { uid?: string; email?: string | null }) => x.uid === acct.uid || (!!x.email && x.email.toLowerCase() === acct.email.toLowerCase());
+  const twin = a.own.find(same);
+  const good = (auth: Authenticator | null) => (auth ? auth.getAccessToken(AbortSignal.timeout(15_000)).then(() => true, () => false) : false);
+  // the two asked at once: the sender waits half a minute for its answer
+  const [, kept] = await Promise.all([new RefreshAuth(acct.refreshToken as string).getAccessToken(AbortSignal.timeout(15_000)), twin ? good(authFor(a, twin.uid)) : false]);
+  if (twin && kept) throw new AlreadySignedIn(twin.uid, twin.email);
+  const firefox = !twin && a.firefox ? findAccount() : null; // on the list: reading it was allowed
+  if (firefox?.signedIn && same(firefox)) throw new AlreadySignedIn(FIREFOX, firefox.email ?? acct.email);
+  return { account: acct, replaced: twin ?? null };
+}
+
+/** What takeSent took, on the list as it is when it's saved (it may have changed while Mozilla was asked): in the place of the one it replaces, and in use. Pure. */
+export const withSent = (a: Accounts, { account, replaced }: Taken): Accounts => withOwn(replaced ? without(a, replaced.uid) : a, account);
+
 /**
  * Firefox's account, where it can be read without asking: not on macOS, whose privacy protection would ask the user
  * first (or want Full Disk Access). Null: not known.
