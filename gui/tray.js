@@ -25,15 +25,21 @@ const flagIcon = (code) => (flagFile(code) ? { icon: flagFile(code) } : {});
 /** What the tray shows for a state (controller.js state()): icon, the text beside it (macOS), tooltip, menu. Pure. */
 export function trayView(s, act) {
   const t = foxholeWords(s.settings?.lang);
+  // no internet: a connect waits for it (s.offline), or a connection carries on once it's back (s.lost)
+  const waitingFor = (code) => (code ? t`Waiting for the internet · ${named(s, code)}` : t`Waiting for the internet`);
   const status = s.restoring
     ? t`Restoring networking…`
     : s.busy
       ? s.connecting ? t`Connecting to ${named(s, s.connecting)}…` : t`Working…`
-      : s.globalOn
-        ? t`Whole system · ${named(s, s.global)}`
-        : s.active ? t`Connected · ${named(s, s.active)}` : t`Not connected`;
+      : s.offline
+        ? waitingFor(s.offline.code)
+        : s.lost
+          ? waitingFor(s.global ?? s.active)
+          : s.globalOn
+            ? t`Whole system · ${named(s, s.global)}`
+            : s.active ? t`Connected · ${named(s, s.active)}` : t`Not connected`;
   const ready = s.auth.stage === "ready" && !s.busy && !s.restoring;
-  const here = s.active ?? s.selected; // where Connect goes, and the location ticked
+  const here = s.active ?? s.offline?.code ?? s.selected; // where Connect goes, and the location ticked
   return {
     // relay mode: a purple dot where Firefox VPN's is mint or pink (on macOS, monochrome: "Relay" beside it)
     icon: s.globalOn ? (s.relayOn ? "relayGlobal" : "global") : s.active ? (s.relayOn ? "relay" : "on") : "off",
@@ -45,9 +51,14 @@ export function trayView(s, act) {
       ...(s.active && s.ip ? [{ label: `IP ${s.ip}`, enabled: false }] : []),
       { type: "separator" },
       // each click in its own arrow: Electron calls it with (menuItem, window, event)
-      s.active
-        ? { label: t`Disconnect`, enabled: ready, click: () => act.disconnect() }
-        : { label: here ? t`Connect to ${named(s, here)}` : t`Connect`, enabled: ready && !!here, click: () => act.connect(), ...flagIcon(here) },
+      ...(s.active
+        ? [{ label: t`Disconnect`, enabled: ready, click: () => act.disconnect() }]
+        : s.offline
+          ? [
+              { label: t`Try again`, enabled: ready && !s.offline.checking, click: () => act.retry() },
+              { label: t`Cancel connecting`, enabled: ready, click: () => act.cancel() },
+            ]
+          : [{ label: here ? t`Connect to ${named(s, here)}` : t`Connect`, enabled: ready && !!here, click: () => act.connect(), ...flagIcon(here) }]),
       { label: t`Whole system`, type: "checkbox", checked: s.active ? s.globalOn : s.wantGlobal, enabled: ready, click: () => act.toggleGlobal() },
       {
         label: t`Location`,

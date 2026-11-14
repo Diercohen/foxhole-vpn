@@ -18,7 +18,7 @@ import { AlreadySignedIn, FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox,
 import { desktopApp, signInWindow, type FxaLogin } from "./fxalogin.js";
 import { deviceLines, deviceName, waitProblem } from "./devicelogin.js";
 import { fetchUsage, type Usage } from "./guardian.js";
-import { startProxy, onProxyWarning, checkSite, netState, onNetState, type ProxyHandle } from "./proxy.js";
+import { startProxy, onProxyWarning, checkSite, netState, onNetState, reach, watchReach, NET_CUT, type ProxyHandle, type Reach } from "./proxy.js";
 import { startSmartDns, smartDnsHost, smartDnsProblem, type SmartDns } from "./smartdns.js";
 import { logLines, onLog } from "./log.js";
 import { useSplit, splitOn, splitSummary, parseRule, parseSite, appOf, wayOf, hits, recentSites, SMART, type Split, type Via } from "./split.js";
@@ -219,6 +219,14 @@ export class Tui {
   #active: Country | null = null;
   #message = "";
   #busy = false;
+  // Enter with no internet: the popup says so, and it connects to `country` by itself once the internet's back
+  // (why "cut": only Iran's own sites open; tries: the Try again's that found it still so; checking: one under way)
+  #offline: { country: Country; why: Exclude<Reach, "online">; tries: number; checking: boolean } | null = null;
+  #skipLook = false; // its Connect anyway: the next connect doesn't look at the network first
+  #lost: Exclude<Reach, "online"> | null = null; // connected, but the internet's gone ("offline") or abroad's cut off ("cut")
+  #listOffline = false; // the server list didn't come for want of the internet: it's loaded once it's back
+  #globalDown = false; // global mode's session says the network's down
+  #netWatch: { now(): void; stop(): void } | null = null; // the looks at the network while something waits for it
   #netPaused: Country | null = null; // the location a network's rule paused (Settings → On this network), connected again on leaving it
   #global: GlobalSession | null = null;
   #globalCountry: Country | null = null;
@@ -312,7 +320,12 @@ export class Tui {
       this.#message = red(`proxy: ${msg}`);
       this.#render();
     });
-    onNetState((said) => ((this.#message = said ? red(said) : green("the internet is back")), this.#render())); // cut off or offline while connected
+    // the VPN's connections fail for the network (cut off, offline): connected, the status says so till it's back (#lose)
+    onNetState((said) => {
+      if (said && this.#active) return this.#lose(said === NET_CUT ? "cut" : "offline");
+      if (!said && this.#lost) return this.#back();
+      if (said || !this.#active) (this.#message = said ? red(said) : green("the internet is back")), this.#render();
+    });
     // A closed terminal fails every write and read (EIO): that must not crash the quit that
     // puts global mode's routes back (it comes as SIGHUP, with nothing left to draw on).
     process.stdout.on("error", () => {});
@@ -329,11 +342,17 @@ export class Tui {
     // A network switch changes the public IP too; the network is cheap to poll. The
     // LAN address catches switches the name can't show (when macOS hides it).
     let lan = lanIp();
+    let had = true; // a network, at the last look
     setInterval(() => {
       void network().then((n) => {
         const was = lan;
         lan = lanIp();
         if (this.#net !== undefined && (n !== this.#net || lan !== was)) this.#refreshNet();
+        // gone while connected: a look says whether the internet is too; back while waiting: a look at once
+        const has = n !== null || lan !== null;
+        if (has && !had) this.#netWatch?.now();
+        else if (!has && had && this.#active && !this.#lost) void reach().then((r) => r && r !== "online" && this.#lose(r));
+        had = has;
       });
     }, 5000).unref();
     void checkUpdate(this.#updateWays()).then(() => this.#render()); // show the update notice once npm answers (by another way if not directly)
@@ -345,15 +364,138 @@ export class Tui {
   async #loadList(): Promise<void> {
     try {
       this.#setList(order(await fetchServerList()));
-      if (this.#loading) this.#message = "";
+      if (this.#loading || this.#listOffline) this.#message = "";
+      this.#listOffline = false;
+      this.#followNet();
     } catch (err) {
       this.#setList([]);
-      this.#saysBlocked(err);
+      const blocked = this.#saysBlocked(err);
       this.#message = existsSync("/sys/class/net/foxhole0")
         ? red("offline: a killed global session's routes are still on — quit and run  foxhole restore")
         : red(`server list failed: ${(err as Error).message}`) + this.#relayHint();
+      // for want of the internet: said so, and loaded once it's back
+      const failed = this.#message;
+      if (!blocked)
+        void reach().then((r) => {
+          if (!r || r === "online" || this.#list.length) return;
+          this.#listOffline = true;
+          if (this.#message === failed) this.#message = yellow(r === "cut" ? "international internet looks cut off: the locations load once it's back" : "no internet: the locations load once you're back online");
+          this.#followNet();
+          this.#render();
+        });
     }
     this.#loading = false;
+  }
+
+  // ── No internet: Enter waits for it (the popup says so), a connection that lost it carries on once it's back ──────
+
+  /** Looks at the network every few seconds while something waits for it: a connect, a connection that lost it, the list. */
+  #followNet(): void {
+    const want = !!this.#offline || !!this.#lost || this.#listOffline;
+    if (want && !this.#netWatch) this.#netWatch = watchReach((r) => this.#seen(r));
+    else if (!want && this.#netWatch) {
+      this.#netWatch.stop();
+      this.#netWatch = null;
+    }
+  }
+
+  /** What a look at the network found (proxy.ts reach; null: it can't be told, in global mode): what waited for the internet goes on once it's back. */
+  #seen(r: Reach | null): void {
+    const back = r === "online" || (r === null && !this.#globalDown);
+    if (back && this.#listOffline) {
+      this.#listOffline = false;
+      void this.#loadList().then(() => this.#render());
+    }
+    if (this.#lost) {
+      if (!this.#active) this.#lost = null;
+      else if (back) this.#back();
+      else if (r && r !== this.#lost) this.#lose(r);
+    }
+    if (this.#offline) {
+      if (back) void this.#goOnline();
+      else if (r && r !== this.#offline.why) (this.#offline.why = r), this.#render();
+    }
+    this.#followNet();
+  }
+
+  /** Before Enter's connect while off: whether the internet's there (or can't be told). If not, the popup says so (#offlinePopup). */
+  async #online(): Promise<boolean> {
+    const country = this.#countries[this.#sel];
+    if (this.#skipLook) return !(this.#skipLook = false);
+    if (!country || country === RELAY_SETUP || (country === RELAY_ROW && !loadRelay(this.#settings))) return true; // nothing to wait for
+    this.#busy = true;
+    this.#message = dim(country === RELAY_ROW ? "connecting through your relay…" : `connecting to ${countryName(country.code, country.name)}…`);
+    this.#render();
+    const r = await reach();
+    this.#busy = false;
+    if (!r || r === "online") return true;
+    this.#wait(country, r);
+    return false;
+  }
+
+  /** No internet (`why`): the popup says so, and it connects to `country` once it's back (#goOnline). */
+  #wait(country: Country, why: Exclude<Reach, "online">): void {
+    this.#offline = { country, why, tries: 0, checking: false };
+    this.#message = "";
+    this.#followNet();
+    this.#render();
+  }
+
+  /** The internet's back, or Connect anyway: the connect that waited goes on (without another look), to the location it was for. */
+  async #goOnline(): Promise<void> {
+    if (this.#busy || !this.#offline) return; // something's under way: at the next look
+    const { country } = this.#offline;
+    this.#offline = null;
+    this.#followNet();
+    if (!this.#list.length && country !== RELAY_ROW) await this.#loadList(); // the start found no internet: the locations come now
+    const i = this.#countries.findIndex((c) => c.code === country.code);
+    if (i < 0 || this.#busy) return this.#render();
+    this.#sel = i;
+    this.#skipLook = true;
+    await this.#connectInMode();
+  }
+
+  /** The popup's keys: Enter tries again at once, c connects anyway (a network the look gets wrong), esc cancels. */
+  #offlineKey(key: readline.Key): void {
+    const o = this.#offline!;
+    if (key.name === "escape") (this.#offline = null), this.#followNet();
+    else if (key.name === "c") return void this.#goOnline();
+    else if (key.name === "return" && !o.checking) {
+      o.checking = true;
+      void reach().then((r) => {
+        o.checking = false;
+        if (this.#offline !== o) return;
+        if (!r || r === "online") return void this.#goOnline();
+        o.why = r;
+        o.tries++;
+        this.#render();
+      });
+    }
+    this.#render();
+  }
+
+  /** Connected, but the internet's gone (`why`: "offline", or "cut": abroad's cut off): the status says so till it's back (#back). */
+  #lose(why: Exclude<Reach, "online">): void {
+    if (!this.#active || this.#lost === why) return;
+    this.#lost = why;
+    this.#message = yellow(why === "cut" ? "international internet looks cut off · foxhole reconnects by itself once it's back" : "offline · foxhole reconnects by itself once you're back online");
+    this.#followNet();
+    this.#render();
+  }
+
+  /** The internet's back while connected: a new pass if one's due, the IP and data left looked at again, and it's said. */
+  #back(): void {
+    if (!this.#lost) return;
+    this.#lost = null;
+    this.#followNet();
+    if (!this.#active) return this.#render();
+    const relay = this.#relayOn();
+    if (!relay) void this.#conn.currentPass().catch(() => {}); // before the first page needs it
+    const c = this.#global ? this.#globalCountry : this.#active;
+    this.#message = relay ? purple("back online · connected through your relay again") : green(`back online · connected to ${c ? countryName(c.code, c.name) : "the VPN"} again`);
+    this.#refreshNet();
+    this.#refreshUsage();
+    this.#render();
   }
 
   /** Re-reads the network and the public IP: the VPN exit's when connected, else the real one. */
@@ -855,6 +997,7 @@ export class Tui {
           if (key.name === "return" || key.name === "escape") (this.#trustAsk = false), this.#render();
           return;
         }
+        if (this.#offline) return this.#offlineKey(key);
         if (this.#lowOpen) return this.#lowKey(key);
         if (this.#notesOpen) {
           if (key.name === "return") return void this.#startUpdate();
@@ -934,7 +1077,7 @@ export class Tui {
    */
   #mouse(b: number, x: number, y: number, press: (name: string) => void): void {
     if (b === 64 || b === 65) return press(b === 64 ? "up" : "down");
-    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#dataOpen || this.#restoring || this.#wizard || this.#blocked || this.#relayIntro || this.#trustAsk || this.#acctOpen || this.#lowOpen || this.#notesOpen) return;
+    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#dataOpen || this.#restoring || this.#wizard || this.#blocked || this.#relayIntro || this.#trustAsk || this.#offline || this.#acctOpen || this.#lowOpen || this.#notesOpen) return;
     const h = this.#hit;
     const fx = x - h.left, fy = y - h.top;
     if (this.#settingsOpen && !this.#tgOpen && !this.#give) {
@@ -967,7 +1110,8 @@ export class Tui {
     }
   }
 
-  async #connect(country = this.#countries[this.#sel]): Promise<void> {
+  /** `looked`: the network was looked at first (Enter's, while off): a failure for want of the internet waits for it, as that does. */
+  async #connect(country = this.#countries[this.#sel], looked = false): Promise<void> {
     if (!country) return;
     if (country === RELAY_SETUP) return void ((this.#relayIntro = true), this.#render());
     const relay = country === RELAY_ROW ? loadRelay(this.#settings) : null;
@@ -1007,7 +1151,14 @@ export class Tui {
         const cause = (err as Error).cause as { code?: string; message?: string } | undefined;
         this.#message = red(`connect failed: ${(err as Error).message}${cause ? ` (${cause.code ?? cause.message})` : ""}`) + this.#relayHint();
         const failed = this.#message;
-        if (!blocked) void netState().then((said) => said && this.#message === failed && ((this.#message = red(said)), this.#render())); // why, when it's the network (nothing said since)
+        // why, when it's the network (nothing said since): after a look first, it waits for it, as one found offline does
+        if (!blocked)
+          void netState().then((said) => {
+            if (!said || this.#message !== failed) return;
+            if (looked && !this.#active && !this.#busy && !this.#offline) return this.#wait(country, said === NET_CUT ? "cut" : "offline");
+            this.#message = red(said);
+            this.#render();
+          });
       }
       if (this.#proxy && !this.#active) {
         await this.#proxy.close();
@@ -1022,12 +1173,15 @@ export class Tui {
 
   async #disconnect(): Promise<void> {
     this.#netPaused = null;
+    this.#offline = null; // a connect waiting for the internet doesn't
     if (this.#global) await this.#disableGlobal();
-    if (!this.#proxy) return;
+    if (!this.#proxy) return void this.#followNet();
     await this.#proxy.close();
     this.#proxy = null;
     this.#proxyStale = false;
     this.#active = null;
+    this.#lost = null;
+    this.#followNet();
     this.#message = dim("disconnected");
     this.#refreshUsage();
     this.#refreshNet();
@@ -1052,7 +1206,9 @@ export class Tui {
   async #connectInMode(): Promise<void> {
     this.#netPaused = null; // the user's choice from now on
     const off = !this.#active;
-    await this.#connect();
+    const looked = off && !this.#skipLook;
+    if (off && !(await this.#online())) return; // no internet: the popup waits for it, then connects (#goOnline)
+    await this.#connect(undefined, looked);
     if (!off || !this.#active || this.#settings.proxyOnly || this.#global) return;
     // relay mode's certificate first: its question and the password's would come up together
     if (this.#relayOn() && !(await caTrusted())) return;
@@ -1172,6 +1328,7 @@ export class Tui {
         // tun2socks died: tear down the routes so the system keeps working.
         this.#global = null;
         this.#globalCountry = null;
+        this.#globalDown = false;
         this.#message = red(`tun2socks stopped (${code}) — restoring networking…`);
         this.#render();
         void session?.stop().finally(() => {
@@ -1182,6 +1339,10 @@ export class Tui {
         });
       });
       session.onNetworkChange((event, detail) => {
+        // no network at all: the status says so till it's back (#lose); the internet too, once the network is (a look)
+        if (event === "lost" && detail.startsWith("network down")) return void ((this.#globalDown = true), this.#lose("offline"));
+        if (event === "restored") this.#globalDown = false;
+        if (event === "restored" && this.#lost) return void this.#netWatch?.now();
         this.#message = event === "lost" ? yellow(`global: ${detail}`) : green(`global ON · rerouted ${detail}`);
         if (event === "restored") this.#refreshNet();
         this.#render();
@@ -1253,6 +1414,7 @@ export class Tui {
     const session = this.#global;
     this.#global = null;
     this.#globalCountry = null;
+    this.#globalDown = false;
     try {
       await session.stop();
       this.#message = dim("global off (SOCKS proxy still on)");
@@ -2073,7 +2235,7 @@ export class Tui {
 
   /** The fox's mood: what the connection is doing. */
   #mood(): Mood {
-    return this.#busy || this.#loading ? "waiting" : this.#global ? "global" : this.#active ? "proxy" : "off";
+    return this.#busy || this.#loading || this.#lost || this.#offline ? "waiting" : this.#global ? "global" : this.#active ? "proxy" : "off";
   }
 
   /** The fox's next frame, over the last where the last render put it: only its lines that changed are drawn. */
@@ -2103,11 +2265,13 @@ export class Tui {
           (runsOut(u.max, u.remaining, u.reset) ? yellow(` · runs out ~${shortDate(runsOut(u.max, u.remaining, u.reset)!)}`) : u.reset ? dim(` · resets ${shortDate(u.reset)}`) : "");
     const gc = this.#globalCountry;
     const place = (c: Country) => (c === RELAY_ROW ? "Relay" : flagged(c.code, countryName(c.code, c.name)));
-    const state = this.#global
-      ? `${on(" GLOBAL TUN ON ")} ${ok(place(gc!))}`
-      : this.#active
-        ? ok(`● connected ${place(this.#active)}`)
-        : dim("○ disconnected");
+    const state = this.#lost // connected, with no internet: it carries on once it's back
+      ? yellow(`◌ waiting for the internet · ${place(this.#global ? gc! : this.#active!)}`)
+      : this.#global
+        ? `${on(" GLOBAL TUN ON ")} ${ok(place(gc!))}`
+        : this.#active
+          ? ok(`● connected ${place(this.#active)}`)
+          : dim("○ disconnected");
     const sp = this.#settings.split;
     const split = splitSummary(sp);
     const route = this.#global
@@ -2247,6 +2411,8 @@ export class Tui {
           ? this.#relayPopup()
           : this.#trustAsk
           ? this.#trustPopup()
+          : this.#offline
+          ? this.#offlinePopup()
           : this.#lowOpen
           ? this.#lowPopup()
           : this.#notesOpen
@@ -2505,6 +2671,31 @@ export class Tui {
     this.#blockedRegion = err.region;
     this.#blockedHost = err.host;
     return true;
+  }
+
+  /** Enter with no internet: said so, and it connects by itself once it's back (#goOnline), or Enter looks again at once. */
+  #offlinePopup(): string[] {
+    const o = this.#offline!;
+    const cut = o.why === "cut";
+    const where = o.country === RELAY_ROW ? "your relay" : flagged(o.country.code, countryName(o.country.code, o.country.name));
+    const note = o.checking
+      ? dim("Checking…")
+      : yellow(cut ? (o.tries ? "Still cut off." : "Waiting for it to come back…") : o.tries ? "Still offline." : "Waiting for the internet…");
+    return box(
+      [
+        "",
+        bold(yellow(cut ? "International internet looks cut off" : "You're offline")),
+        "",
+        ...wrap(cut ? "Iran's own sites open, but nothing abroad does, so the VPN can't connect. It isn't your Wi-Fi, nor foxhole." : "foxhole can't reach the internet. Turn on Wi-Fi, or plug in a cable.", 54),
+        "",
+        note,
+        ...wrap(`foxhole connects to ${where} as soon as ${cut ? "it's back" : "you're back online"}.`, 54),
+        "",
+        `${bold(cyan("[⏎ Try again]"))}   ${dim("[C Connect anyway]")}   ${dim("[esc Cancel]")}`,
+        "",
+      ],
+      { title: bold(yellow(emoji("📡 ") + (cut ? "Cut off" : "No internet"))) },
+    );
   }
 
   /** What Relay is, from its row before one is set up, with the setup a key away. */

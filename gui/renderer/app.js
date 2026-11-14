@@ -142,6 +142,8 @@ const STILL = IOS && !(+/OS (\d+)_/.exec(navigator.userAgent)?.[1] > 16);
 const TV = !!fh.tv; // Android TV (phone.js): signs in from a phone or computer on its network, driven by a remote
 let remoteUsed = false; // a TV: until its first key or click, the power button keeps the focus
 const DEVICE = TV ? t`TV` : PHONE ? t`phone` : t`computer`;
+/** What brings this device online: the offline dialog's words, and the sign-in screen's. */
+const ONLINE_HOW = TV ? t`Check the TV's Wi-Fi or its cable.` : PHONE ? t`Turn on Wi-Fi or mobile data.` : t`Turn on Wi-Fi, or plug in a cable.`;
 /**
  * Share Foxhole (Settings' Share and Import settings, the sign-in screens' "Import them", a shared link opening the
  * app): hidden for now, on every platform. true shows it all again (the terminal UI's: tui.ts SHARE_FOXHOLE).
@@ -217,11 +219,13 @@ function render() {
   const ph = phase();
   document.body.dataset.phase = ph;
   document.body.toggleAttribute("data-relay", S.relayOn); // purple, where Firefox VPN is mint and pink
+  document.body.toggleAttribute("data-lost", !!S.lost && ph !== "busy"); // amber, the fox searching: connected, with no internet
   renderHeader();
   renderHero(ph);
   renderCards();
   renderList();
   renderToast(ph);
+  renderOffline();
   renderNotice();
   renderNews();
   renderEntitled();
@@ -301,6 +305,15 @@ function renderHero(ph) {
   let title, sub, label;
   if (S.restoring) [title, sub, label] = [t`Restoring…`, t`Putting your routes and DNS back`, t`Wait`];
   else if (ph === "busy") [title, sub, label] = [S.connecting ? t`Connecting…` : t`Working…`, esc(S.message?.text ?? ""), t`Wait`];
+  // connected, but the internet's gone (controller.js #lose): it carries on by itself once it's back
+  else if (S.lost) {
+    const cut = S.lost === "cut";
+    title = cut ? t`International internet looks cut off` : t`You're offline`;
+    sub = S.relayOn
+      ? cut ? t`Foxhole reconnects through your relay by itself once it's back` : t`Foxhole reconnects through your relay by itself once you're back online`
+      : cut ? t`Foxhole reconnects to ${where} by itself once it's back` : t`Foxhole reconnects to ${where} by itself once you're back online`;
+    label = t`Disconnect`;
+  }
   // relay mode carries the web only: the rest goes direct, so it isn't "fully protected"
   else if (ph === "global" && S.relayOn) [title, sub, label] = [t`Relay, system-wide`, t`The web through your relay · the rest direct`, t`Disconnect`];
   else if (ph === "on" && S.relayOn) [title, sub, label] = [t`Relay on`, t`Through your Google script · apps set to use the proxy`, t`Disconnect`];
@@ -485,6 +498,35 @@ function renderToast(ph) {
     $("#toast-text").textContent = m.text;
     replay(el, "on");
     if (m.tone === "ok" || m.tone === "info") toastTimer = setTimeout(() => el.classList.remove("on"), 6000);
+  });
+}
+
+// ── No internet: a connect waits for it (controller.js #wait), and connects by itself once it's back ───────────────
+
+let offlineTries = 0; // the Try again's that found it still offline, as last drawn: one more shakes the dialog
+function renderOffline() {
+  const o = S.offline;
+  section("offline", [o, S.countries.length], () => {
+    const modal = $("#offline-modal");
+    const wasOpen = modal.classList.contains("on");
+    modal.classList.toggle("on", !!o);
+    if (!o) return void (offlineTries = 0);
+    const c = o.code ? country(o.code) : null;
+    const where = !c ? "" : c.code === RELAY ? t`your relay` : `${flagInline(c.code)}${esc(c.name)}`; // HTML: with its flag
+    const cut = o.why === "cut";
+    $("#offline-title").textContent = cut ? t`International internet looks cut off` : t`You're offline`;
+    $("#offline-why").textContent = cut
+      ? t`Iran's own sites open, but nothing abroad does, so the VPN can't connect. It isn't your Wi-Fi, nor Foxhole.`
+      : t`Foxhole can't reach the internet. ${ONLINE_HOW}`;
+    const still = cut ? (o.tries ? t`Still cut off.` : t`Waiting for it to come back…`) : o.tries ? t`Still offline.` : t`Waiting for the internet…`;
+    const then = cut
+      ? where ? t`Foxhole connects to ${where} as soon as it's back.` : t`Foxhole connects as soon as it's back.`
+      : where ? t`Foxhole connects to ${where} as soon as you're back online.` : t`Foxhole connects as soon as you're back online.`;
+    $("#offline-note").innerHTML = o.checking ? t`Checking…` : `${still} ${then}`;
+    $("#offline-retry").disabled = !!o.checking;
+    if (wasOpen && o.tries > offlineTries) replay($("#offline-modal .box"), "shake");
+    offlineTries = o.tries;
+    if (!wasOpen) setTimeout(() => S.offline && $("#offline-retry").focus({ preventScroll: true }), 250); // Enter (a TV's OK) tries again
   });
 }
 
@@ -1074,6 +1116,11 @@ function renderOnboard() {
           `<div class="buttons">${IOS ? "" : `<button class="btn primary" id="onboard-relay">${PHONE ? icon("relay") + (TV ? t`Get it from your phone or computer` : t`Get it from your computer`) : icon("spark") + t`Set up a relay`}</button>`}
           <button class="btn${IOS ? " primary" : ""}" data-act="retrySignIn">${icon("refresh")}${t`Try again`}</button></div>
           ${wait(t`Trying again in a moment…`)}${take}${rest}`
+        // no internet (controller.js #netOff): it signs in by itself once it's back
+        : a.net ? `${fox}<h2>${a.net === "cut" ? t`International internet looks cut off` : t`You're offline`}</h2>
+          <p>${a.net === "cut" ? t`Iran's own sites open, but nothing abroad does, so Foxhole can't reach Mozilla for the VPN's token. It isn't your Wi-Fi, nor Foxhole.` : t`Foxhole can't reach the internet, so it can't get the VPN's token for <b>${esc(a.email || t`your account`)}</b> yet. ${ONLINE_HOW}`}</p>
+          <div class="buttons"><button class="btn primary" data-act="retrySignIn">${icon("refresh")}${t`Try again`}</button></div>
+          ${wait(a.net === "cut" ? t`Waiting for it to come back… Foxhole signs in by itself as soon as it does.` : t`Waiting for the internet… Foxhole signs in by itself as soon as you're back online.`)}${take}${rest}`
         : t`${fox}<h2>Can't reach Mozilla</h2>
         <p>Foxhole couldn't get the VPN's token for <b>${esc(a.email || t`your account`)}</b>.</p>${err}
         <div class="buttons"><button class="btn primary" data-act="retrySignIn">${icon("refresh")}Try again</button></div>
@@ -1847,6 +1894,9 @@ document.addEventListener("click", async (e) => {
     case "tvsend-scan": return startScan();
     case "add-later": return $("#add-modal").classList.remove("on");
     case "logout-cancel": return $("#logout-modal").classList.remove("on");
+    case "offline-cancel": return act("cancelOffline");
+    case "offline-retry": return act("retryOffline");
+    case "offline-anyway": return act("connectAnyway");
     case "notice-ok": return noticeClose();
     case "unentitled-close": return $("#unentitled-modal").classList.remove("on");
     case "unentitled-check":
@@ -2010,6 +2060,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (S?.pw) return void act("cancelPassword");
     if (S?.trustAsk) return void act("dismissTrust");
+    if (S?.offline) return void act("cancelOffline"); // a phone's Back too (phone.js)
     if ($("#wizard").classList.contains("on")) return closeWizard();
     if ($("#update-modal").classList.contains("on")) return $("#update-modal").classList.remove("on");
     if ($("#notes-modal").classList.contains("on")) return $("#notes-modal").classList.remove("on");

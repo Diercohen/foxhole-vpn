@@ -1,7 +1,8 @@
 // The hero's fox: the app icon's low-poly fox head in 3D (WebGL), lit by the connection's colors (--a1, --a2) and
 // in a mood for each phase (body[data-phase]): asleep when off, searching while busy, awake and watching the pointer
-// when connected, its eyes glowing in a ring of stars in whole-system mode; sad, in tears, when the account hasn't
-// turned on Firefox's VPN (body[data-unentitled]). Without WebGL the orb keeps its power icon.
+// when connected, its eyes glowing in a ring of stars in whole-system mode; looking slowly about while connected with
+// no internet (body[data-lost]); sad, in tears, when the account hasn't turned on Firefox's VPN (body[data-unentitled]).
+// Without WebGL the orb keeps its power icon.
 // Not on Android, nor on iOS 16 and older (.still, app.js), where WebGL in WebKit's GPU process stalls the page's painting for good about a second in.
 (() => {
   if (document.body.classList.contains("still") || window.foxhole?.platform === "android") return;
@@ -212,10 +213,13 @@
     global: { pitch: 0.07, roll: 0, ear: 0.2, open: 1, sat: 1.08, light: 1.06, rim: 1.15, glow: 1, scan: 0, search: 0, watch: 1, gather: 0, drift: 0, stars: 1, breathe: 0.5, lift: 0.03, tears: 0 },
     // bowed, its ears flat back, its eyes half shut, sighing, in tears
     sad: { pitch: -0.6, roll: -0.12, ear: -1.6, open: 1, sat: 0.85, light: 0.8, rim: 0.85, glow: 0, scan: 0, search: 0, watch: 0.12, gather: 0, drift: 0, stars: 0, breathe: 1.8, lift: -0.05, tears: 1 },
+    // connected, with no internet (body[data-lost]): its ears up, looking slowly about for it
+    lost: { pitch: 0.02, roll: 0, ear: 0.5, open: 1, sat: 0.9, light: 0.94, rim: 0.85, glow: 0, scan: 0.45, search: 0.55, watch: 0.25, gather: 0, drift: 0, stars: 0, breathe: 0.7, lift: 0.02, tears: 0 },
   };
   const phaseNow = () => {
     const p = document.body.dataset.phase;
     if (p === "off" && "unentitled" in document.body.dataset) return "sad";
+    if ((p === "on" || p === "global") && "lost" in document.body.dataset) return "lost";
     return MOODS[p] ? p : "off";
   };
   let phase = phaseNow();
@@ -235,7 +239,7 @@
   function draw(t, dt) {
     const now = phaseNow();
     if (now !== phase) {
-      if (phase === "busy" && (now === "on" || now === "global") && !still.matches) (ev.popV += 7), (ev.burst = t);
+      if ((phase === "busy" || phase === "lost") && (now === "on" || now === "global") && !still.matches) (ev.popV += 7), (ev.burst = t); // connected, or the internet back
       phase = now;
     }
     const goal = MOODS[phase];
@@ -396,7 +400,7 @@
   still.addEventListener("change", wake);
   window.addEventListener("focus", () => ((focused = true), wake()));
   window.addEventListener("blur", () => (focused = false));
-  new MutationObserver(wake).observe(document.body, { attributes: true, attributeFilter: ["data-phase", "data-unentitled"] });
+  new MutationObserver(wake).observe(document.body, { attributes: true, attributeFilter: ["data-phase", "data-unentitled", "data-lost"] });
   canvas.addEventListener("webglcontextlost", (e) => (e.preventDefault(), cancelAnimationFrame(raf), (raf = 0), wrap.classList.remove("has-fox")));
   canvas.addEventListener("webglcontextrestored", () => (init(), wrap.classList.add("has-fox"), wake()));
   wake();

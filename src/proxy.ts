@@ -335,6 +335,7 @@ async function dial(conn: Connection, target: Target): Promise<tls.TLSSocket | n
     pass = await conn.currentPass();
   } catch (err) {
     warn(`cannot get a VPN pass: ${(err as Error).message}`);
+    dialed(false); // offline, maybe, as a new pass was due
     return null;
   }
   try {
@@ -677,13 +678,89 @@ const WORLD = ["www.cloudflare.com", "www.microsoft.com"]; // abroad, and not fi
 export const NET_CUT = "International internet looks cut off: Iran's own sites open, the rest of the world doesn't. It isn't your Wi-Fi, nor Foxhole.";
 export const NET_OFF = "No internet: not even Iran's own sites open. Check the Wi-Fi or mobile data.";
 
+/** How far the network reaches: the world ("online"), only Iran's own sites ("cut"), or nothing ("offline"). */
+export type Reach = "online" | "cut" | "offline";
+
+// A name's lookup still under way (a DNS server that doesn't answer keeps it for 10 s or more): the next look waits on
+// it rather than starting another, so looks every few seconds can't pile lookups up in Node's few threads for them.
+const looking = new Map<string, Promise<string | null>>();
+function addressOf(host: string, family: 0 | 4): Promise<string | null> {
+  const key = `${host}/${family}`;
+  let found = looking.get(key);
+  if (!found) {
+    found = lookup(host, { family }).then((a) => a.address, () => null).finally(() => looking.delete(key));
+    looking.set(key, found);
+  }
+  return found;
+}
+
+/** net.connect's lookup, through addressOf: one lookup of a name at a time, however many looks ask for it. */
+const lookupOnce = ((host: string, opts: { all?: boolean }, cb: (err: Error | null, address: unknown, family?: number) => void) =>
+  void addressOf(host, directFrom ? 4 : 0).then((ip) => {
+    if (!ip) return cb(Object.assign(new Error(`no address for ${host}`), { code: "ENOTFOUND" }), opts.all ? [] : "", 4);
+    const family = net.isIP(ip);
+    if (opts.all) cb(null, [{ address: ip, family }]);
+    else cb(null, ip, family);
+  })) as unknown as net.LookupFunction;
+
+/** True when `host`'s port 443 takes a direct connection within `ms`. Quiet: a look at the network often fails, and that's its answer. */
+function knock(host: string, ms: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const s = net.connect({ host, port: 443, lookup: lookupOnce, ...(directFrom ? { localAddress: directFrom, family: 4 } : {}) });
+    const done = (ok: boolean) => {
+      clearTimeout(timer);
+      s.destroy();
+      resolve(ok);
+    };
+    const timer = setTimeout(() => done(false), ms);
+    s.on("error", () => done(false));
+    s.once("connect", () => done(true));
+  });
+}
+
+/**
+ * The network as it is now, looked at directly (each look a few connections, none logged): "online" as soon as a site
+ * abroad opens; null where it can't be told (global mode with direct connections held, or macOS's, which would route
+ * them around the tun for every app).
+ */
+export async function reach(ms = 4000): Promise<Reach | null> {
+  if (pinDirect || !directOk) return null;
+  const opens = (hosts: string[]) => Promise.any(hosts.map((host) => knock(host, ms).then((ok) => ok || Promise.reject()))).then(() => true, () => false);
+  const home = opens(HOME); // meanwhile: asked only if the world doesn't open
+  const r = (await opens(WORLD)) ? "online" : (await home) ? "cut" : "offline";
+  // what the VPN's next dial is told against (dialed): one that works after a look found nothing says the internet's back
+  netSaid = r === "online" ? null : r === "cut" ? NET_CUT : NET_OFF;
+  return r;
+}
+
+/**
+ * Looks at the network (reach) every `ms`, one look at a time, and tells `fn` what each look found, till stop(); now()
+ * looks at once (a network change, a Try again), or right after the look under way.
+ */
+export function watchReach(fn: (r: Reach | null) => void, ms = 2500): { now(): void; stop(): void } {
+  let timer: NodeJS.Timeout | undefined;
+  let looking = false, soon = false, stopped = false;
+  const look = async (): Promise<void> => {
+    clearTimeout(timer);
+    if (stopped) return;
+    if (looking) return void (soon = true);
+    looking = true;
+    const r = await reach();
+    looking = false;
+    if (stopped) return;
+    fn(r);
+    if (stopped) return;
+    if (soon) return void ((soon = false), look());
+    timer = setTimeout(look, ms);
+  };
+  timer = setTimeout(look, ms);
+  return { now: () => void look(), stop: () => void ((stopped = true), clearTimeout(timer)) };
+}
+
 /** NET_CUT or NET_OFF when the network is so, else null (the world opens, or it can't be told: global mode). */
 export async function netState(): Promise<string | null> {
-  if (pinDirect || !directOk) return null;
-  const opens = (hosts: string[]) =>
-    Promise.any(hosts.map((host) => dialDirect({ host, port: 443 }, 5000).then((s) => s?.destroy() ?? Promise.reject()))).then(() => true, () => false);
-  const [home, world] = await Promise.all([opens(HOME), opens(WORLD)]);
-  return world ? null : home ? NET_CUT : NET_OFF;
+  const r = await reach(5000);
+  return r === "cut" ? NET_CUT : r === "offline" ? NET_OFF : null;
 }
 
 let netSink: ((said: string | null) => void) | null = null;
@@ -695,15 +772,16 @@ export function onNetState(fn: (said: string | null) => void): void {
   netSink = fn;
 }
 
-/** A dial's outcome: failures look at the network, once a minute at most (a page fails many at once). */
+/** A dial's outcome: failures look at the network, twice a minute at most (a page fails many at once). */
 function dialed(ok: boolean): void {
   if (ok) {
     if (netSaid) netSink?.((netSaid = null));
     return;
   }
-  if (!netSink || Date.now() - netAt < 60_000) return;
+  if (!netSink || Date.now() - netAt < 30_000) return;
   netAt = Date.now();
-  void netState().then((said) => said !== netSaid && netSink?.((netSaid = said)));
+  const was = netSaid; // a look sets it to what it finds
+  void netState().then((said) => said !== was && netSink?.((netSaid = said)));
 }
 
 /**

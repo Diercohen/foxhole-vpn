@@ -20,7 +20,7 @@ import { network, publicIp, lanIp, firewallHint } from "./dist/netinfo.js";
 import { helperFor, helperInstalled, helperReady } from "./dist/helper.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor, telegramLink, onJoin, ruleable, withNetRule, withHidden } from "./dist/settings.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenProblem } from "./dist/tokenserver.js";
-import { startProxy, onProxyWarning, checkSite, netState, onNetState } from "./dist/proxy.js";
+import { startProxy, onProxyWarning, checkSite, netState, onNetState, reach, watchReach, NET_CUT } from "./dist/proxy.js";
 import { startSmartDns, smartDnsHost, smartDnsProblem } from "./dist/smartdns.js";
 import { startGateway } from "./dist/gateway.js";
 import { log, logLines, onLog } from "./dist/log.js";
@@ -78,6 +78,7 @@ export class Controller extends EventEmitter {
   #blockedHost = GUARDIAN_HOST; // the last time's: vpn.mozilla.org, or another of Mozilla's (its account server, the server list)
   #blockedTold = false; // said once already: a background check doesn't say it again, a connect does
   #listError = null;
+  #listing = null; // the locations being loaded: one load at a time
   #selected = loadLastCountry(); // where the power button connects
   #proxy = null;
   #proxyAt = ""; // the address the running proxy was started on
@@ -89,6 +90,17 @@ export class Controller extends EventEmitter {
   #tun2socksPath = null;
   #busy = false;
   #connecting = null; // the country being connected to
+  // Connect pressed with no internet: { code, why: "offline" | "cut" (only Iran's own sites open), tries: Try again's
+  // that found it still so, quiet: not to bring the window up (a start at login), id }. It connects by itself once the
+  // internet's back, as it was asked (#again), till it's cancelled.
+  #offline = null;
+  #again = null;
+  #offlineSeq = 0;
+  #offlineLook = false; // a Try again's look under way
+  #skipLook = false; // Connect anyway: the next connect doesn't look at the network first
+  #lost = null; // connected, but the internet's gone ("offline") or abroad's cut off ("cut"): it carries on by itself once it's back
+  #globalDown = false; // whole-system mode's session says the network's down
+  #netWatch = null; // the looks at the network (proxy.ts watchReach) while something waits for it
   #message = null; // { tone: info | ok | warn | error, text, id }
   #notice = null; // { text, id }: the window shows it as an alert (an account already on the list)
   #auth = { stage: "checking" };
@@ -171,7 +183,12 @@ export class Controller extends EventEmitter {
     useSplit(() => this.#settings.split); // live: a change applies to the next connection
     onLog(() => this.emit("log", logLines[logLines.length - 1]));
     onProxyWarning((msg) => this.#say("error", `proxy: ${msg}`));
-    onNetState((said) => this.#say(said ? "error" : "ok", said ?? "the internet is back")); // cut off or offline while connected
+    // the VPN's connections fail for the network (cut off, offline): connected, the orb says so till it's back (#lose)
+    onNetState((said) => {
+      if (said && this.#active) return this.#lose(said === NET_CUT ? "cut" : "offline");
+      if (!said && this.#lost) return this.#back();
+      if (said || !this.#active) this.#say(said ? "error" : "ok", said ?? "the internet is back");
+    });
     onRelayNotice((msg) => this.#say("warn", msg));
     onRelaySplit((split) => this.#saveSplit(split)); // a bot-check page's "Open it directly"
     onHot(() => this.#changed()); // its notice, for the window to show
@@ -181,17 +198,156 @@ export class Controller extends EventEmitter {
     this.#refreshNet();
     // A network switch changes the public IP too; the LAN address catches switches the name can't show.
     let lan = lanIp();
+    let had = true; // a network, at the last look
     setInterval(() => {
       void this.#network().then((n) => {
         const was = lan;
         lan = lanIp();
         if (this.#net !== undefined && (n !== this.#net || lan !== was)) this.#refreshNet();
+        const has = n !== null || lan !== null;
+        if (has !== had) this.#netMoved(has);
+        had = has;
       });
     }, 5000).unref();
     await this.#resignIn();
     await list;
-    if (connect && this.#rows().some((c) => c.code === loadLastCountry())) void this.connect(loadLastCountry()).then(() => global && this.#active && this.toggleGlobal());
+    if (connect) {
+      // at login the network may not be up yet: then it waits for it, without bringing the window up, and connects
+      const code = loadLastCountry();
+      const go = () => this.connect(code, { again: go, quiet: true }).then(() => global && this.#active && !this.#global && this.toggleGlobal());
+      if (this.#listError || this.#rows().some((c) => c.code === code)) void go();
+    }
     setInterval(() => (this.#refreshUsage(), this.#entitled === false && this.#checkEntitled(false)), 3 * 60_000).unref();
+  }
+
+  // ── No internet: a connect waits for it, a connection that lost it carries on once it's back ─────────────────────
+
+  /** The device's network went away (`has` false) or came (true): connected, a look says whether it's offline; waiting, whether it's back. */
+  #netMoved(has) {
+    if (has) return void this.#netWatch?.now();
+    if (this.#active && !this.#lost) void reach().then((r) => (r === "offline" || r === "cut") && this.#lose(r));
+  }
+
+  /** Looks at the network every few seconds while something waits for it: a connect, a connection that lost it, the sign-in. */
+  #followNet() {
+    const want = !!this.#offline || !!this.#lost || (this.#auth.stage === "offline" && !!this.#auth.net);
+    if (want && !this.#netWatch) this.#netWatch = watchReach((r) => this.#seen(r));
+    else if (!want && this.#netWatch) {
+      this.#netWatch.stop();
+      this.#netWatch = null;
+    }
+  }
+
+  /** What a look at the network found (proxy.ts reach; null: it can't be told, in global mode): what waited for the internet goes on once it's back. */
+  #seen(r) {
+    const back = r === "online" || (r === null && !this.#globalDown);
+    if (back && this.#listError) void this.reloadList(); // the locations, as the start found no internet
+    const a = this.#auth;
+    if (a.stage === "offline" && a.net) {
+      if (back) (a.net = null), this.retrySignIn();
+      else if (r && r !== a.net) (a.net = r), this.#changed();
+    }
+    if (this.#lost) {
+      if (!this.#active) this.#lost = null;
+      else if (back) this.#back();
+      else if (r && r !== this.#lost) this.#lose(r);
+    }
+    if (this.#offline) {
+      if (back) this.#goOnline();
+      else if (r && r !== this.#offline.why) (this.#offline = { ...this.#offline, why: r }), this.#changed();
+    }
+    this.#followNet();
+  }
+
+  /** Before a connect while off: whether the internet's there (or can't be told). If not, the connect waits for it (#wait). */
+  async #online(code, again, quiet) {
+    const country = this.#rows().find((c) => c.code === code);
+    this.#busy = true;
+    this.#connecting = code ?? null;
+    this.#say("info", country === RELAY_ROW ? "connecting through your relay…" : country ? `connecting to ${label(country)}…` : "connecting…");
+    const r = await reach();
+    this.#busy = false;
+    this.#connecting = null;
+    if (r !== "offline" && r !== "cut") return true;
+    this.#wait(code, r, again, quiet);
+    return false;
+  }
+
+  /** No internet (`why`): the window says so, and the connect to `code` is made by `again` once it's back (#goOnline). */
+  #wait(code, why, again, quiet) {
+    const was = this.#offline;
+    // asked again meanwhile (the tray's locations): the same wait, to the new choice
+    this.#offline = { code: code ?? null, why, tries: was?.tries ?? 0, quiet: quiet && (was?.quiet ?? true), id: was?.id ?? ++this.#offlineSeq };
+    this.#again = again;
+    this.#message = null; // the dialog says it
+    if (!was) log(`connect: ${why === "cut" ? "international internet cut off" : "no internet"} — waiting for it, then connecting`);
+    this.#followNet();
+    this.#changed();
+  }
+
+  /** The internet's back: the connect that waited for it goes on, as it was asked. */
+  #goOnline() {
+    if (this.#busy) return; // something's under way: at the next look
+    const again = this.#again;
+    this.#offline = this.#again = null;
+    this.#followNet();
+    log("connect: the internet's back — connecting");
+    void again?.();
+  }
+
+  /** The offline dialog's Try again: a look at once. Still offline, it's said (the dialog shakes), and it goes on waiting. */
+  async retryOffline() {
+    if (!this.#offline || this.#offlineLook) return;
+    this.#offlineLook = true;
+    this.#changed();
+    const r = await reach();
+    this.#offlineLook = false;
+    if (this.#offline && (r === "online" || r === null)) this.#goOnline();
+    else if (this.#offline) this.#offline = { ...this.#offline, why: r, tries: this.#offline.tries + 1 };
+    this.#changed();
+  }
+
+  /** The offline dialog's Connect anyway, for a network the look gets wrong: the connect goes on now, without one. */
+  connectAnyway() {
+    if (!this.#offline || this.#busy) return;
+    const again = this.#again;
+    this.#offline = this.#again = null;
+    this.#skipLook = true;
+    this.#followNet();
+    log("connect: anyway, without the internet found");
+    void again?.();
+  }
+
+  /** The offline dialog's Cancel, and the tray's: it stops waiting, and doesn't connect. */
+  cancelOffline() {
+    if (!this.#offline) return;
+    this.#offline = this.#again = null;
+    this.#followNet();
+    log("connect: cancelled while waiting for the internet");
+    this.#changed();
+  }
+
+  /** Connected, but the internet's gone (`why`: "offline", or "cut": abroad's cut off): the orb says so, and it's back by itself (#back) once it is. */
+  #lose(why) {
+    if (!this.#active || this.#lost === why) return;
+    if (!this.#lost) log(`network: ${why === "cut" ? "international internet cut off" : "offline"} — the VPN carries on by itself once it's back`);
+    this.#lost = why;
+    this.#message = null; // the orb says it
+    this.#followNet();
+    this.#changed();
+  }
+
+  /** The internet's back while connected: a new pass if one's due, the IP and data left looked at again, and it's said. */
+  #back() {
+    if (!this.#lost) return;
+    this.#lost = null;
+    this.#followNet();
+    if (!this.#active) return this.#changed();
+    log("network: back online");
+    if (!this.#relayOn()) void this.#conn?.currentPass().catch(() => {}); // before the first page needs it
+    this.#say("ok", this.#relayOn() ? "back online · connected through your relay again" : `back online · connected to ${label(this.#active)} again`);
+    this.#refreshNet();
+    this.#refreshUsage();
   }
 
   /** Signs in (again) with the account in use, ending a sign-in still waiting for the one before. */
@@ -252,12 +408,15 @@ export class Controller extends EventEmitter {
         const email = this.#currentEmail();
         // signed out elsewhere, or expired: signing in again brings it back (or another account)
         this.#switchTo = null; // it didn't take: no "switched" when it's signed in to again
+        const net = err.errno === 110 || err instanceof GuardianBlocked ? null : await this.#netOff();
+        if (gen !== this.#gen) continue;
         if (err.errno === 110) this.#auth = { stage: "expired", email, id: a.current };
         else if (err instanceof GuardianBlocked) this.#auth = { stage: "offline", email, blocked: err.host }; // the window offers a relay
-        else this.#auth = { stage: "offline", email, error: `Couldn't get the VPN's token: ${err.message}` }; // tried again in a while
+        else this.#auth = { stage: "offline", email, error: `Couldn't get the VPN's token: ${err.message}`, net }; // tried again in a while, or once the internet's back
         this.#changed();
+        this.#followNet();
         const since = Date.now();
-        await this.#until(() => this.#auth.stage === "offline" && Date.now() - since > 20_000, gen);
+        await this.#until(() => this.#auth.stage === "offline" && !this.#auth.net && Date.now() - since > 20_000, gen);
       }
     }
     return null;
@@ -279,12 +438,15 @@ export class Controller extends EventEmitter {
           // fine, so try again in a while rather than the Browser Console (Firefox couldn't reach Mozilla either)
           if (err instanceof GuardianBlocked || ["TypeError", "TimeoutError", "AbortError"].includes(err.name)) {
             const cause = err.cause?.code ?? err.cause?.message;
+            const net = err instanceof GuardianBlocked ? null : await this.#netOff();
+            if (gen !== this.#gen) continue;
             this.#auth = err instanceof GuardianBlocked
               ? { stage: "offline", email: account.email, blocked: err.host }
-              : { stage: "offline", email: account.email, error: `Couldn't get the VPN's token: ${err.message}${cause ? ` (${cause})` : ""}` };
+              : { stage: "offline", email: account.email, error: `Couldn't get the VPN's token: ${err.message}${cause ? ` (${cause})` : ""}`, net };
             this.#changed();
+            this.#followNet();
             const since = Date.now();
-            await this.#until(() => Date.now() - since > 20_000, gen);
+            await this.#until(() => !this.#auth.net && Date.now() - since > 20_000, gen);
             continue;
           }
           errors.push(`Couldn't get a token from your Firefox login: ${err.message}`);
@@ -328,6 +490,12 @@ export class Controller extends EventEmitter {
     }
     saveToken(token);
     return new StaticAuth(token);
+  }
+
+  /** Why Mozilla couldn't be reached, when it's the internet: "offline", "cut" (only Iran's own sites open), else null. */
+  async #netOff() {
+    const r = await reach();
+    return r === "offline" || r === "cut" ? r : null;
   }
 
   /** Resolves once `ok()` holds (checked every second), or the account choice changes (`gen` given). */
@@ -768,7 +936,12 @@ export class Controller extends EventEmitter {
     return { email: this.#email, left: gb(u.remaining) };
   }
 
-  async reloadList() {
+  /** The locations, loaded again (one load at a time: the window's Try again, the internet back, a connect that needs them). */
+  reloadList() {
+    return (this.#listing ??= this.#loadList().finally(() => (this.#listing = null)));
+  }
+
+  async #loadList() {
     this.#listError = null;
     this.#changed();
     try {
@@ -831,8 +1004,20 @@ export class Controller extends EventEmitter {
     this.#conn?.refreshUsage().then(() => this.#changed(), (err) => !this.#blockedTold && this.#saysBlocked(err) && this.#changed());
   }
 
-  async connect(code = this.#selected) {
-    const country = this.#rows().find((c) => c.code === code);
+  /**
+   * Connects to `code`. `how.again`: how this connect is asked for once more (pick(), the phone's): with it, a connect
+   * while off looks at the network first, and with no internet waits for it (the window says so), then connects by
+   * `again`; `how.quiet`: the window isn't brought up meanwhile (a start at login).
+   */
+  async connect(code = this.#selected, how = null) {
+    if (this.#busy || !this.#conn) return;
+    const again = typeof how?.again === "function" ? how.again : null;
+    const quiet = how?.quiet === true;
+    const looked = !!again && !this.#skipLook && !this.#active;
+    this.#skipLook = false;
+    if (looked && !(await this.#online(code, again, quiet))) return;
+    if (this.#listError && !this.#rows().some((c) => c.code === code)) await this.reloadList(); // the start found no internet: the locations come now
+    const country = this.#rows().find((c) => c.code === (code ?? this.#selected));
     if (!country || this.#busy || !this.#conn) return;
     const relay = country === RELAY_ROW ? this.#relay() : null;
     this.#busy = true;
@@ -855,6 +1040,8 @@ export class Controller extends EventEmitter {
       this.#active = country;
       if (this.#global) this.#globalCountry = country;
       saveLastCountry(country.code);
+      this.#offline = this.#again = null; // a wait for the internet, made by another way meanwhile (the tray's)
+      this.#followNet();
       this.#say("ok", relay ? "connected through your relay" : "connected");
       if (relay) void this.#askTrust();
       else this.#refreshUsage();
@@ -874,7 +1061,13 @@ export class Controller extends EventEmitter {
         const hint = this.#rows()[0] === RELAY_ROW ? " · or pick Relay, first in Locations" : "";
         this.#say("error", `connect failed: ${err.message}${cause ? ` (${cause.code ?? cause.message})` : ""}${hint}`);
         const id = this.#message.id;
-        if (!blocked) void netState().then((said) => said && this.#message.id === id && this.#say("error", said)); // why, when it's the network (nothing said since)
+        // why, when it's the network (nothing said since): a connect that looked first waits for it, as one found offline does
+        if (!blocked)
+          void netState().then((said) => {
+            if (!said || this.#message?.id !== id) return;
+            if (looked && !this.#active && !this.#busy && !this.#offline) return this.#wait(country.code, said === NET_CUT ? "cut" : "offline", again, quiet);
+            this.#say("error", said);
+          });
       }
       if (this.#proxy && !this.#active) {
         await this.#proxy.close();
@@ -902,12 +1095,15 @@ export class Controller extends EventEmitter {
   async disconnect() {
     if (this.#busy) return;
     this.#netPaused = null;
+    this.cancelOffline(); // a connect waiting for the internet doesn't
     if (this.#global) await this.#disableGlobal();
     if (!this.#proxy) return;
     await this.#proxy.close();
     this.#proxy = null;
     this.#proxyStale = false;
     this.#active = null;
+    this.#lost = null;
+    this.#followNet();
     this.#say("info", "disconnected");
     this.#refreshUsage();
     this.#refreshNet();
@@ -922,7 +1118,7 @@ export class Controller extends EventEmitter {
   async pick(code) {
     this.#netPaused = null; // the user's choice from now on
     const off = !this.#active;
-    await this.connect(code);
+    await this.connect(code, { again: () => this.pick(code) }); // with no internet, once it's back
     if (!off || !this.#active || this.#settings.proxyOnly || this.#global) return;
     // relay mode's certificate first: its question and the password's would come up together
     if (this.#conn?.relay && !(await this.#caTrusted())) return;
@@ -1036,6 +1232,7 @@ export class Controller extends EventEmitter {
         // tun2socks died: tear down the routes so the system keeps working.
         this.#global = null;
         this.#globalCountry = null;
+        this.#globalDown = false;
         const stopped = `${this.#android ? "Android's VPN" : "tun2socks"} stopped (${code})`;
         this.#say("error", `${stopped} — restoring networking…`);
         void session?.stop().finally(() => {
@@ -1045,7 +1242,11 @@ export class Controller extends EventEmitter {
         });
       });
       session.onNetworkChange((event, detail) => {
+        // no network at all: the orb says so till it's back (#lose); the internet too, once the network is (a look)
+        if (event === "lost" && detail.startsWith("network down")) return void ((this.#globalDown = true), this.#lose("offline"));
         if (event === "lost") return this.#say("warn", `global: ${detail}`);
+        this.#globalDown = false;
+        if (this.#lost) return void this.#netWatch?.now();
         this.#say("ok", `global ON · rerouted ${detail}`);
         this.#refreshNet();
       });
@@ -1079,6 +1280,7 @@ export class Controller extends EventEmitter {
     this.#changed();
     const session = this.#global;
     this.#global = null;
+    this.#globalDown = false;
     try {
       await session.stop();
       this.#say("info", "global off (SOCKS proxy still on)");
@@ -1659,6 +1861,8 @@ export class Controller extends EventEmitter {
       globalOn: !!this.#global || this.#leavingGlobal,
       busy: this.#busy,
       connecting: this.#connecting,
+      offline: this.#offline && { ...this.#offline, checking: this.#offlineLook }, // a connect waiting for the internet
+      lost: this.#active ? this.#lost : null, // connected, and the internet's gone ("offline") or abroad's cut off ("cut")
       message: this.#message,
       usage: usageView(u),
       accounts: this.#accountList(),

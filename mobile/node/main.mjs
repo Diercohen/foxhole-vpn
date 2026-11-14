@@ -56,7 +56,7 @@ if (typeof WebAssembly === "undefined")
 // What the window may ask for, as gui/main.js (less the desktop's own: relaunch, an update to install by hand)
 const ACTIONS = new Set([
   "update", "restartToUpdate",
-  "state", "power", "connect", "disconnect", "toggleGlobal",
+  "state", "power", "connect", "disconnect", "toggleGlobal", "retryOffline", "cancelOffline", "connectAnyway",
   "setShare", "setLang", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "appIcons", "traffic", "hideSite", "setSplitDefault", "setSmart", "checkSite", "shareOpen", "importCheck", "importSettings", "newsShown", "setNetRule", "addRule", "toggleRule", "removeRule",
   "logs", "copy", "copyLogs", "reloadList",
   "addAccount", "useAccount", "removeAccount", "refreshAccounts", "dismissLow", "retrySignIn", "checkEntitled", "tvWait", "tvFind", "tvSend", "showWifiName",
@@ -204,9 +204,12 @@ function saveMode(global) {
 /** Whole-system mode wanted: the mode last picked, and always on a TV. */
 const global = () => wantGlobal || !!device.tv;
 
-/** The power button or a country picked while off: connects in the mode last picked. A TV left in proxy mode (Android's VPN refused) disconnects. */
+/**
+ * The power button or a country picked while off: connects in the mode last picked. A TV left in proxy mode (Android's
+ * VPN refused) disconnects. With no internet it waits for it, then connects (controller.js #wait).
+ */
 async function connect(code) {
-  await controller.connect(code);
+  await controller.connect(code, { again: () => connect(code) });
   const s = controller.state();
   if (global() && s.active && !s.globalOn) await controller.toggleGlobal();
   if (device.tv && controller.state().active && !controller.state().globalOn) await controller.disconnect();
@@ -247,8 +250,19 @@ function push() {
   const t = foxholeWords(s.settings?.lang);
   // in the language Settings has (no Intl here for country names: fa.js and ru.js have them); the relay's row is "Relay"
   const place = (code) => foxholeCountry(s.settings?.lang, code) || (s.countries.find((c) => c.code === code)?.name ?? "");
+  // with no internet: connected, it carries on by itself once it's back (s.lost); a connect waits for it (s.offline),
+  // kept running meanwhile, its Resume a Try again and its Disconnect a Cancel
   const note = s.active
-    ? JSON.stringify({ title: `${s.globalOn ? t`Whole system` : t`Proxy`} · ${place(s.global ?? s.active)}`, text: s.proxy ? `${s.proxy.addr} · SOCKS5 + HTTP` : "" })
+    ? JSON.stringify({
+        title: `${s.globalOn ? t`Whole system` : t`Proxy`} · ${place(s.global ?? s.active)}`,
+        text: s.lost === "cut" ? t`International internet cut off · reconnects by itself once it's back` : s.lost ? t`Offline · reconnects by itself once you're back online` : s.proxy ? `${s.proxy.addr} · SOCKS5 + HTTP` : "",
+      })
+    : s.offline
+      ? JSON.stringify({
+          title: s.offline.code ? `${t`Waiting for the internet`} · ${place(s.offline.code)}` : t`Waiting for the internet`,
+          text: s.offline.why === "cut" ? t`International internet cut off · connects by itself once it's back` : t`Offline · connects by itself once you're back online`,
+          paused: true,
+        })
     : paused
       ? JSON.stringify({
           title: `${s.connecting ? t`Connecting…` : t`Paused`} · ${place(paused.code)}`,
@@ -260,9 +274,9 @@ function push() {
     const u = s.usage;
     const status = JSON.stringify({
       on: !!s.active,
-      busy: !!s.connecting,
+      busy: !!s.connecting || !!s.offline, // waiting for the internet to connect: a tap cancels it
       paused: !!paused,
-      where: place(s.active ? (s.global ?? s.active) : (s.connecting ?? paused?.code)),
+      where: place(s.active ? (s.global ?? s.active) : (s.connecting ?? s.offline?.code ?? paused?.code)),
       left: !u ? "" : u.unlimited ? t`Unlimited` : t`${u.left} left`,
       fraction: !u ? -1 : u.unlimited ? 1 : u.fraction,
       signedIn: s.auth?.stage === "ready",
@@ -294,7 +308,7 @@ async function pause(net) {
 async function resume(code) {
   const was = paused;
   if (!was) return;
-  await controller.connect(code ?? was.code);
+  await controller.connect(code ?? was.code, { again: () => resume(code) });
   if (was.global && controller.state().active) await controller.toggleGlobal();
 }
 controller.on("change", () => (timer ??= setTimeout(push, 50)));
@@ -344,8 +358,8 @@ function handle(msg) {
     // the notification's buttons (FoxholeService)
     case "pause":
       return void pause();
-    case "resume":
-      return void resume();
+    case "resume": // waiting for the internet: a look at once
+      return void (controller.state().offline ? controller.retryOffline() : resume());
     case "tile": // Quick Settings' tile (FoxholeTile.kt), maybe as it started the core: once it's ready, as the power button
       return void started
         .then(() => (paused ? resume() : connect()))

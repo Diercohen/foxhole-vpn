@@ -38,7 +38,7 @@ const LINKS = {
 };
 // What the window may ask for: the Controller's actions, nothing else of it
 const ACTIONS = new Set([
-  "state", "power", "connect", "disconnect", "toggleGlobal", "submitPassword", "cancelPassword",
+  "state", "power", "connect", "disconnect", "toggleGlobal", "submitPassword", "cancelPassword", "retryOffline", "cancelOffline", "connectAnyway",
   "setShare", "setLang", "setSmartDns", "allowRouter", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "appIcons", "traffic", "hideSite", "setSplitDefault", "setSmart", "checkSite", "shareOpen", "importCheck", "importSettings", "newsShown", "setNetRule", "addRule", "toggleRule", "removeRule",
   "logs", "copy", "copyLogs", "openFirefox", "copySnippet", "reloadList",
   "addAccount", "useAccount", "removeAccount", "refreshAccounts", "dismissLow", "retrySignIn", "checkEntitled", "tvWait", "tvFind", "tvSend", "showWifiName",
@@ -161,6 +161,8 @@ app.whenReady().then(() => {
     {
       connect: (code) => controller.pick(code),
       disconnect: () => controller.disconnect(),
+      cancel: () => controller.cancelOffline(), // a connect waiting for the internet
+      retry: () => controller.retryOffline(),
       toggleGlobal: () => controller.setMode(),
       show,
       update: restartToUpdate,
@@ -175,6 +177,7 @@ app.whenReady().then(() => {
 
   // State goes to the window and the tray at most every 50 ms, and each second anyway (split tunneling's counts climb as sites load).
   let timer = null;
+  let offlineShown = 0; // the connect waiting for the internet the window was brought up for: once, not on each state
   controller.on("change", () => {
     timer ??= setTimeout(() => {
       timer = null;
@@ -185,6 +188,12 @@ app.whenReady().then(() => {
       badge.update(state);
       // The password popup or a sign-in, asked for from the tray: they're in the window
       if ((state.pw || !["checking", "ready"].includes(state.auth.stage)) && !win.isVisible()) show();
+      // Connect from the tray with no internet: the window says so, once (a start at login waits without it)
+      const off = state.offline;
+      if (off && !off.quiet && off.id !== offlineShown) {
+        offlineShown = off.id;
+        if (!win.isVisible()) show();
+      }
       // signed in with the sign-in window's session: it's done
       if (state.auth.stage === "ready") closeSignIn();
     }, 50);

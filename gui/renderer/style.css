@@ -64,6 +64,11 @@ body[data-phase="global"] { --a1: #ff8a2a; --a2: #ff3d6e; }
 /* relay mode (the user's own Apps Script, not Firefox VPN): purple */
 body[data-relay][data-phase="on"] { --a1: #b76bff; --a2: #ff6bd6; --on-ink: #1a0326; }
 body[data-relay][data-phase="global"] { --a1: #d35cff; --a2: #7c5cff; }
+/* connected, but the internet's gone (app.js data-lost): amber, the dial's ticks sweeping slowly as it waits, no ripples */
+body[data-lost][data-phase] { --a1: #ffc247; --a2: #ff9f1a; --on-ink: #1d1200; }
+body[data-lost] .ripple { animation: none; }
+body[data-lost] .halo { opacity: 0.45; animation-duration: 3.2s; }
+body[data-lost] .ticks line { --T: 2.6s; animation: tick var(--T) linear infinite; animation-delay: calc(var(--i) * var(--T) / 72 - var(--T)); }
 /* the account hasn't turned on Firefox's VPN (app.js renderEntitled): everything in dark red */
 body[data-unentitled][data-phase] { --a1: #c0182f; --a2: #7a0f1f; --on-ink: #fff;
   --fox: #c0182f; --fox-2: #8e1024; --mint: #e0384f; --sky: #a3142a; --violet: #8e1024; --amber: #d9364a; --rose: #e0384f; --bg: #0c0507; }
@@ -832,6 +837,12 @@ body:not(.ios) #blocked-modal .lock-orb, #notice-modal.relay .lock-orb { backgro
 #relay-more { margin-top: 2px; }
 body[data-relay] #g-ring stop:first-child { stop-color: #b76bff; }
 body[data-relay] #g-ring stop:last-child { stop-color: #ff6bd6; }
+/* Connect with no internet: an amber Wi-Fi struck through, the wait beside its spinner, the way past a wrong look */
+#offline-modal .lock-orb { background: linear-gradient(135deg, #ffe08a, var(--amber) 48%, #ff9f1a); box-shadow: 0 18px 44px -12px var(--amber), inset 0 1px 0 rgba(255, 255, 255, 0.5); }
+#offline-modal .waiting { align-self: center; justify-content: center; margin: 0; text-align: start; }
+#offline-modal .waiting .spin { flex: none; border-top-color: var(--amber); }
+#offline-anyway { align-self: center; margin-top: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+#offline-anyway:hover { color: var(--ink-2); }
 .shake { animation: shake 0.45s; }
 @keyframes shake { 20%, 60% { transform: translateX(-9px); } 40%, 80% { transform: translateX(9px); } }
 
