@@ -439,6 +439,7 @@ globalThis.RU = {
   "Set up the VPN relay": "Настройка ретранслятора VPN",
   "Proxy only": "Только прокси",
   "Tap to change": "Нажмите, чтобы изменить",
+  "Click to change": "Нажмите, чтобы изменить",
   "Network": "Сеть",
   "Public IP": "Публичный IP",
   "Choose sites and apps that skip the VPN": "Выберите сайты и приложения в обход VPN",

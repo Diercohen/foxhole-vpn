@@ -919,8 +919,9 @@ kbd { font-family: var(--mono); font-size: 12px; padding: 1px 6px; border-radius
 .waiting .spin { border-color: rgba(255, 255, 255, 0.14); border-top-color: var(--fox); }
 .buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 6px; }
 
-/* A short window (a 1366×768 laptop, the taskbar taken off): a smaller orb, so the cards still fit */
-@media (max-height: 730px) {
+/* A short window (a 1366×768 laptop, the taskbar taken off): a smaller orb, so the cards still fit; a narrow one (below)
+   has a row of cards more */
+@media (max-height: 730px), (min-width: 761px) and (max-width: 999px) and (max-height: 880px) {
   .orb-wrap { --orb: 168px; margin: 40px 0 30px; }
   .hero { padding: 20px 24px 18px; }
   .mode { margin-top: 10px; }
@@ -934,8 +935,53 @@ kbd { font-family: var(--mono); font-size: 12px; padding: 1px 6px; border-radius
   .status h1 { font-size: 27px; }
 }
 
+/* A narrow window (a tiling window manager's half a screen and less, or one made so): up to 1100 px, the Locations a
+   little narrower, so the cards keep their room. */
+@media (min-width: 761px) and (max-width: 1100px) {
+  .stage { grid-template-columns: minmax(0, 1fr) clamp(300px, calc(74vw - 440px), 388px); } /* 34vw again at 1100 */
+}
+/* 761 to 999 px (two columns would cut the Proxy card's address): one column, the cards two by two under the orb. Tall,
+   the Locations below, in two columns; short, a sheet from the side that the Location card opens (as a phone's). Shorter
+   than all of it: the column scrolls. */
+@media (min-width: 761px) and (max-width: 999px) {
+  .ver { display: none; }
+  .account .name { max-width: 150px; }
+  .titlebar:has(#update:not([hidden])) .account .name { display: none; } /* room for the Update button */
+  .stage { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(min-content, 1fr); overflow-y: auto; }
+  .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 761px) and (max-width: 999px) and (min-height: 1000px) {
+  .stage { grid-template-rows: auto minmax(260px, 1fr); }
+  .list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 8px; align-content: start; }
+  .list > :not(.row) { grid-column: 1 / -1; }
+}
+@media (min-width: 761px) and (max-width: 999px) and (max-height: 999px) {
+  #c-loc { display: flex; grid-column: 1 / -1; }
+  #c-loc .flag { width: 40px; height: 40px; }
+  .locations { position: fixed; z-index: 50; top: 14px; right: 14px; bottom: 14px; width: min(420px, calc(100% - 28px)); animation: none;
+    background: linear-gradient(160deg, rgba(34, 27, 50, 0.86), rgba(16, 13, 26, 0.9)); -webkit-backdrop-filter: blur(40px) saturate(160%); backdrop-filter: blur(40px) saturate(160%);
+    box-shadow: -30px 0 90px -30px rgba(0, 0, 0, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+    transform: translateX(calc(100% + 40px)) scale(0.98); opacity: 0; visibility: hidden; transition: transform 0.65s var(--out), opacity 0.45s, visibility 0s 0.65s; }
+  .locations.on { transform: none; opacity: 1; visibility: visible; transition-delay: 0s; }
+  [dir="rtl"] .locations { right: auto; left: 14px; transform: translateX(calc(-100% - 40px)) scale(0.98);
+    box-shadow: 30px 0 90px -30px rgba(0, 0, 0, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 0 0 1px rgba(255, 255, 255, 0.06); }
+  [dir="rtl"] .locations.on { transform: none; }
+  .loc-head { align-items: center; gap: 10px; }
+  #loc-count { margin-inline-start: auto; }
+  .loc-head .close { display: inline-flex; }
+}
+/* and with the smaller orb (above), a little less room around it: the three rows of cards fit in a 740 px window */
+@media (min-width: 761px) and (max-width: 999px) and (max-height: 880px) {
+  .hero { padding: 16px 24px 14px; }
+  .orb-wrap { margin: 34px 0 26px; }
+}
+/* Two columns too short for the orb and its cards: they scroll, the Locations beside them as tall */
+@media (min-width: 1000px) and (max-height: 660px) {
+  .stage { grid-template-rows: minmax(min-content, 1fr); overflow-y: auto; }
+}
+
 /* A phone (the Android app, mobile/): one column that scrolls, panels from the bottom. Also a phone on its side or a
-   small tablet (short, by touch): the desktop window is never this narrow nor this short (main.js), a TV has no touch.
+   small tablet (short, by touch), and a desktop window this narrow (main.js's minWidth is a phone's); a TV has no touch.
    --safe-*: the room the system's bars and a camera's cutout take, as the app passes it (App.tsx). */
 @media (max-width: 760px), (max-height: 600px) and (pointer: coarse) {
   html, body { height: auto; min-height: 100%; }
@@ -996,6 +1042,11 @@ kbd { font-family: var(--mono); font-size: 12px; padding: 1px 6px; border-radius
   .overlay { padding: calc(var(--safe-top, 0px) + 16px) 12px calc(var(--safe-bottom, 0px) + 12px); }
   .overlay .box { padding: 30px 20px 26px; }
   .overlay h2 { font-size: 23px; }
+}
+/* wide enough (a narrow window, a small tablet, a phone on its side): the cards two by two, the Location's across */
+@media (min-width: 560px) and (max-width: 760px) {
+  .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #c-loc { grid-column: 1 / -1; }
 }
 /* a finger: no hover look that stays after a tap */
 @media (hover: none) {

@@ -124,8 +124,10 @@ app.whenReady().then(() => {
   win = new BrowserWindow({
     width: 1120,
     height: 740,
-    minWidth: 980,
-    minHeight: 660,
+    // small: a tiling window manager (Hyprland, sway, i3) sizes the window regardless of these, and Electron then lays the
+    // page out at them and crops it; style.css has a layout for any size down to a phone's
+    minWidth: 360,
+    minHeight: 480,
     show: false,
     title: "Foxhole",
     backgroundColor: "#07060c",

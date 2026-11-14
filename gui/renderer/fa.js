@@ -440,6 +440,7 @@ globalThis.FA = {
   "Set up the VPN relay": "راه‌اندازی رلهٔ VPN",
   "Proxy only": "فقط پراکسی",
   "Tap to change": "برای تغییر بزنید",
+  "Click to change": "برای تغییر بزنید",
   "Network": "شبکه",
   "Public IP": "IP عمومی",
   "Choose sites and apps that skip the VPN": "سایت‌ها و برنامه‌هایی را انتخاب کنید که از VPN نروند",

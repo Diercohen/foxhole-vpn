@@ -2143,9 +2143,14 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.key === "/" && !/^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName ?? "")) {
     e.preventDefault();
+    if (locationsSheet() && openSheet !== "locations") showSheet("locations"); // a narrow window's: the search is in the sheet
     $("#search").focus();
   }
 });
+/** The Locations are a sheet the Location card opens (a phone, a narrow and short window: style.css), not a panel always shown. */
+const locationsSheet = () => getComputedStyle($("#sheet-locations")).position === "fixed";
+// a window widened while they're open as a sheet: they're a panel again, so the scrim over the rest goes
+addEventListener("resize", () => openSheet === "locations" && !locationsSheet() && closeSheet());
 
 // The soft light on the panels, and the orb tilting toward the pointer
 document.addEventListener("pointermove", (e) => {
@@ -2197,6 +2202,7 @@ window.addEventListener("focus", () => document.body.classList.remove("idle"));
     embers.append(e);
   }
   if (fh.platform === "darwin") document.body.classList.add("mac");
+  if (!PHONE) $("#c-loc .s").textContent = t`Click to change`; // a narrow window's Location card (style.css)
   if (PHONE) {
     document.body.classList.add("phone", fh.platform); // .ios: no whole-system mode (style.css)
     if (IOS) $("#blocked-later").textContent = t`OK`; // the blocked dialog's only button there: no relay on an iPhone (controller.js NO_RELAY)
