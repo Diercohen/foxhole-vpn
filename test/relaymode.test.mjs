@@ -20,7 +20,7 @@ import { X509Certificate } from "node:crypto";
 const { startProxy } = await import("../dist/proxy.js");
 const { caFiles, loadCa } = await import("../dist/mitm.js");
 loadCa(); // made (and trusted) before relay mode starts, as the app does
-const { relayCheck, relayVerdict, onRelayNotice, onRelaySplit, setDirectDial, fakeName, splitCookies, fronted, untranslated, dnsAnswer, relayProblem } = await import("../dist/relaymode.js");
+const { relayCheck, relayVerdict, relayTest, onRelayNotice, onRelaySplit, setDirectDial, fakeName, splitCookies, fronted, untranslated, dnsAnswer, relayProblem } = await import("../dist/relaymode.js");
 const { useSplit } = await import("../dist/split.js");
 const { answerAddrs } = await import("../dist/dns.js");
 
@@ -343,6 +343,29 @@ script = "other";
 const unsure = await relayVerdict(conn);
 assert.ok(unsure.tone === "ok" && !/up to date/.test(unsure.text), "an answer that doesn't show the code's age: no word on it");
 script = "current";
+// the test a relay gets as it's turned on: each step as it's done, then how it went
+const seen = [];
+const tested = await relayTest(conn, (r) => seen.push(r));
+assert.equal(tested.tone, "ok", JSON.stringify(tested));
+assert.equal(tested.title, "Your relay works");
+assert.deepEqual(tested.steps.map((x) => [x.key, x.tone]), [["key", "ok"], ["steady", "ok"], ["mozilla", "ok"], ["code", "ok"]]);
+assert.match(tested.steps[1].text, /^Steady: it answered 4 of 4 tries, in [\d.]+ s on average$/);
+assert.ok(seen.length >= 3 && seen[0].tone === null && seen[0].steps.every((x) => x.tone === null), "progress: nothing done, at first");
+assert.ok(seen.some((r) => r.steps[0].tone === "ok" && r.steps[1].tone === null), "then step by step");
+assert.equal(tested.old, false);
+script = "old";
+const oldOne = await relayTest(conn);
+assert.deepEqual([oldOne.tone, oldOne.old, oldOne.steps.at(-1).tone], ["warn", true, "warn"], "an older Code.gs: works, update it");
+assert.match(oldOne.text, /Update the script step by step/);
+script = "current";
+const wrongKey = await relayTest({ ...conn, relay: { ...conn.relay, key: "wrong-key-0123456789abcdef" } });
+assert.equal(wrongKey.tone, "error");
+assert.deepEqual(wrongKey.steps.map((x) => [x.key, x.tone]), [["key", "error"]], "a wrong key: nothing more tried");
+assert.equal(wrongKey.steps[0].text, relayProblem("relay: unauthorized"));
+const far = await relayTest({ relay: conn.relay, server: { hostname: "127.0.0.1", ip: "127.0.0.1", port: 1 } });
+assert.match(far.steps[0].text, /^Couldn't reach Google: /);
+assert.equal(far.title, "Couldn't check your relay", "Google out of reach: not the relay's fault");
+assert.equal(wrongKey.title, "Your relay doesn't work");
 const away = await relayVerdict({ relay: conn.relay, server: { hostname: "127.0.0.1", ip: "127.0.0.1", port: 1 } });
 assert.match(away.text, /^Couldn't reach Google: /, "Google out of reach: not the keys' fault");
 conn.relay = { ...conn.relay, key: "wrong-key-0123456789abcdef" };

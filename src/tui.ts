@@ -20,7 +20,7 @@ import { deviceLines, deviceName, waitProblem } from "./devicelogin.js";
 import { fetchUsage, type Usage } from "./guardian.js";
 import { startProxy, onProxyWarning, checkSite, netState, onNetState, reach, watchReach, NET_CUT, type ProxyHandle, type Reach } from "./proxy.js";
 import { startSmartDns, smartDnsHost, smartDnsProblem, type SmartDns } from "./smartdns.js";
-import { logLines, onLog } from "./log.js";
+import { log, logLines, onLog } from "./log.js";
 import { useSplit, splitOn, splitSummary, parseRule, parseSite, appOf, wayOf, hits, recentSites, SMART, type Split, type Via } from "./split.js";
 import { listApps } from "./apps.js";
 import { helperFor, helperInstalled, helperReady } from "./helper.js";
@@ -33,7 +33,7 @@ import { fox, FOX_W, FOX_H, type Mood } from "./fox.js";
 import { loadRelay } from "./httprelay.js";
 import { newAuthKey } from "./relaysetup.js";
 import { RelayWizard, GRAPHICS, CELL_QUERY, cellSize, pictureAt, wrap } from "./relaywizard.js";
-import { relayCheck, relayVerdict, relayStats, onRelayNotice, onRelaySplit } from "./relaymode.js";
+import { relayCheck, relayTest, relayStats, onRelayNotice, onRelaySplit, type RelayReport } from "./relaymode.js";
 import { caTrusted, setCaTrust } from "./catrust.js";
 import { startGateway } from "./gateway.js";
 import { TV_PORT, findTvs, normalizeCode, sendToTv, waitForSignIn, type TvAccount, type TvRelay, type TvSignIn } from "./tvpair.js";
@@ -239,6 +239,10 @@ export class Tui {
   #trustAsk = false; // the popup asking to trust foxhole's certificate (relay mode)
   #caOk: boolean | undefined; // whether this computer trusts it; undefined: not checked yet
   #relayCheck: { tone: "ok" | "warn" | "error" | "busy"; text: string } | null = null; // Settings' last check of the relay
+  /** The test of the relay just turned on, or Checked (relaymode.ts relayTest); `open`: its popup's on screen. */
+  #relayTest: (RelayReport & { via: string; from: string | null; open: boolean }) | null = null;
+  #relayTests = 0;
+  #relayOld = false; // its script's code is older (the test, or a site through it, found it): its setup's offered again, to update it
   #splitOpen = false; // the Split tunneling popup is open
   #splitSel = 0; // 0: "Everything else", then the rules, then "+ add a site"
   #splitStart = 0; // the first row shown, when the list scrolls
@@ -311,7 +315,7 @@ export class Tui {
       const n = relayStats.relayed + relayStats.fronted;
       if (this.#splitOpen || (this.#relayOn() && n !== seen && !this.#wizard)) (seen = n), this.#render();
     }, 1000).unref();
-    onRelayNotice((msg) => ((this.#message = yellow(msg)), this.#render()));
+    onRelayNotice((msg) => (/older code/.test(msg) && (this.#relayOld = true), (this.#message = yellow(msg)), this.#render()));
     onRelaySplit((split) => this.#saveSplit(split)); // a bot-check page's "Open it directly"
     onHot(() => this.#render()); // a new notice, under the buttons
     setInterval(() => this.#animate(), 100).unref();
@@ -831,6 +835,7 @@ export class Tui {
       if (relay) {
         await this.#changeSetting({ relay }); // Mozilla's reached through it at once, where it's blocked
         if (this.#settings.relay !== relay) throw new Refused("couldn't save the relay", "the relay couldn't be saved on this computer."); // as the desktop app says it
+        void this.#testRelay("device", from || null); // first, whether it works: its popup, step by step
       }
       if (!account) return void ((d.note = [...came, dim("Still waiting for the sign-in…")]), this.#render());
       const took = await takeSent(this.#accounts, account);
@@ -987,6 +992,7 @@ export class Tui {
           return;
         }
         if (this.#wizard) return this.#wizardKey(s, key);
+        if (this.#relayTest?.open) return this.#relayTestKey(key);
         if (this.#blocked || this.#relayIntro) {
           if (key.name === "return") this.#wizard = new RelayWizard(() => this.#render());
           if (key.name === "return" || key.name === "escape") (this.#blocked = this.#relayIntro = false), this.#render();
@@ -1077,7 +1083,7 @@ export class Tui {
    */
   #mouse(b: number, x: number, y: number, press: (name: string) => void): void {
     if (b === 64 || b === 65) return press(b === 64 ? "up" : "down");
-    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#dataOpen || this.#restoring || this.#wizard || this.#blocked || this.#relayIntro || this.#trustAsk || this.#offline || this.#acctOpen || this.#lowOpen || this.#notesOpen) return;
+    if (b !== 0 || this.#pwMode || this.#logsOpen || this.#dataOpen || this.#restoring || this.#wizard || this.#relayTest?.open || this.#blocked || this.#relayIntro || this.#trustAsk || this.#offline || this.#acctOpen || this.#lowOpen || this.#notesOpen) return;
     const h = this.#hit;
     const fx = x - h.left, fy = y - h.top;
     if (this.#settingsOpen && !this.#tgOpen && !this.#give) {
@@ -1464,6 +1470,14 @@ export class Tui {
         } else {
           this.#edit = null;
           if (e.key === "relayId" || e.key === "relayKey") this.#relayCheck = null; // it was of the old ones
+          const was = this.#settings.relay;
+          const tested = () => {
+            // turned on, or another one: first, whether it works, on the Check row
+            const r = this.#settings.relay;
+            if (!r?.deploymentId || !r.authKey || (r.deploymentId === was?.deploymentId && r.authKey === was?.authKey)) return;
+            this.#setSel = SETTINGS.findIndex((it) => it.key === "relayCheck");
+            void this.#checkRelay();
+          };
           return void this.#changeSetting(
             e.key === "port"
               ? { port: Number(e.text) }
@@ -1472,7 +1486,7 @@ export class Tui {
                 : e.key === "password"
                   ? { password: e.text }
                   : { relay: relayWith(this.#settings.relay, e.key === "relayId" ? { deploymentId: e.text.trim() } : { authKey: e.text.trim() }) },
-          );
+          ).then(tested);
         }
       } else if (e.key === "relayKey" && key.name === "tab") {
         e.text = newAuthKey(); // a strong key, to paste into Code.gs's AUTH_KEY
@@ -1510,7 +1524,8 @@ export class Tui {
         if (item === "share") return void this.#changeSetting({ share: !this.#settings.share });
         if (item === "smartDns")
           return void this.#changeSetting({ smartDns: !this.#settings.smartDns || undefined }).then(() => this.#smartDnsTurn).then(() => this.#askRouter());
-        if (item === "relaySetup") return void ((this.#wizard = new RelayWizard(() => this.#render())), this.#render());
+        // with a relay on, its setup isn't needed: only to update a script found old
+        if (item === "relaySetup") return void (this.#settings.relay && !this.#relayOld ? null : ((this.#wizard = new RelayWizard(() => this.#render())), this.#render()));
         if (item === "relayCert") return void this.#trust(!this.#caOk);
         if (item === "relayCheck") return void this.#checkRelay();
         if (item === "telegram") return void ((this.#tgOpen = true), this.#render());
@@ -1650,6 +1665,7 @@ export class Tui {
     const plan = importPlan(this.#settings, shared);
     if (plan.split) this.#saveSplit(plan.split);
     if (plan.relay) await this.#changeSetting({ relay: plan.relay });
+    if (plan.relay && this.#settings.relay === plan.relay) void this.#testRelay("import");
     const saved = (!plan.split || this.#settings.split === plan.split) && (!plan.relay || this.#settings.relay === plan.relay);
     this.#settingsNote = saved ? green("✓ Imported: foxhole uses them from now on.") : this.#settingsNote || red("Couldn't save the settings file.");
     this.#render();
@@ -1667,10 +1683,71 @@ export class Tui {
     }
     this.#relayCheck = { tone: "busy", text: "" };
     this.#render();
-    const v = (this.#relayCheck = await relayVerdict({ relay, server: null }));
-    if (env.length) v.text += ` Checked with ${env.join(" and ")} from your environment, which foxhole uses over Settings.`;
-    this.#message = v.tone === "ok" ? purple("✓ Relay works") : v.tone === "warn" ? yellow("Relay works, but its script is old") : red(v.text); // in full in Settings
+    const r = await this.#testRelay("check");
+    if (!r) return;
+    const fail = r.steps.find((x) => x.tone === "error" || x.tone === "warn");
+    if (env.length && this.#relayCheck) this.#relayCheck.text += ` Checked with ${env.join(" and ")} from your environment, which foxhole uses over Settings.`;
+    this.#message = r.tone === "ok" ? purple("✓ Relay works") : r.tone === "warn" ? yellow(`Relay works, with a problem: ${fail?.text ?? r.text}`) : red(fail?.text ?? r.text); // in full in Settings
     this.#render();
+  }
+
+  /** Settings' Check row, of a test done (Check's, or the popup's): how it went, and what's wrong. */
+  #checkLine(r: RelayReport): { tone: "ok" | "warn" | "error"; text: string } {
+    if (r.tone === "ok") return { tone: "ok", text: `${r.title}: ${r.steps.map((x) => x.text.charAt(0).toLowerCase() + x.text.slice(1)).join(", ")}.` };
+    return { tone: r.tone ?? "error", text: [`${r.title}.`, ...r.steps.filter((x) => x.tone !== "ok").map((x) => `${x.text}.`), r.text].join(" ") };
+  }
+
+  /**
+   * Tests the relay in use (relaymode.ts relayTest): it answers with its ID and key, steadily and how fast, it reaches
+   * Mozilla, and its script's current. `via`: check (Settings' Check: its row says how it went), or what turned it on
+   * (wizard, device, import: a popup, step by step). A newer test leaves this one's answer unshown.
+   */
+  async #testRelay(via: string, from: string | null = null): Promise<RelayReport | null> {
+    const relay = loadRelay(this.#settings);
+    if (!relay) return null;
+    const id = ++this.#relayTests;
+    const open = via !== "check";
+    const put = (r: RelayReport) => {
+      if (id !== this.#relayTests) return;
+      this.#relayTest = { ...r, via, from, open: open && (this.#relayTest?.open ?? true) };
+      if (r.tone) (this.#relayOld = r.old), (this.#relayCheck = this.#checkLine(r));
+      this.#render();
+    };
+    this.#relayTest = null;
+    const spin = setInterval(() => this.#relayTest?.open && this.#render(), 120); // its spinner turns
+    const r = await relayTest({ relay, server: null }, put).finally(() => clearInterval(spin));
+    put(r);
+    log(`relay test (${via}): ${r.title}${r.steps.map((x) => `; ${x.tone}: ${x.text}`).join("")}`);
+    return id === this.#relayTests ? r : null;
+  }
+
+  /** Keys while the relay's test popup is open: enter or esc closes it (the test goes on), r tests again, u updates an old script. */
+  #relayTestKey(key: readline.Key): void {
+    const r = this.#relayTest!;
+    if (key.name === "return" || key.name === "escape") r.open = false;
+    else if (key.name === "r" && r.tone && r.tone !== "ok") void this.#testRelay(r.via, r.from);
+    else if (key.name === "u" && r.old) (r.open = false), (this.#wizard = new RelayWizard(() => this.#render()));
+    this.#render();
+  }
+
+  /** The relay just turned on, tested step by step: ✓, ! or ✕ once each is done. */
+  #relayTestPopup(): string[] {
+    const r = this.#relayTest!;
+    const now = r.tone ? -1 : r.steps.findIndex((x) => !x.tone);
+    const spin = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[Math.floor(Date.now() / 100) % 10];
+    const mark = (x: RelayReport["steps"][number], i: number) =>
+      x.tone === "ok" ? green("✓") : x.tone === "warn" ? yellow("!") : x.tone === "error" ? red("✕") : i === now ? purple(spin) : dim("·");
+    const steps = r.steps.flatMap((x, i) => wrap(x.text, 52).map((l, j) => `${j ? " " : mark(x, i)} ${x.tone === null && i !== now ? dim(l) : l}`));
+    const came =
+      r.via === "device" ? `Your VPN relay came from ${r.from || "another device"}.`
+      : r.via === "import" ? "Your VPN relay came with the settings you imported."
+      : "Your VPN relay is set up.";
+    const keys = !r.tone ? dim("checking… · esc close") : [r.tone !== "ok" && "r check again", r.old && "u update the script", "enter done"].filter(Boolean).join(" · ");
+    const color = r.tone === "ok" ? purple : r.tone === "warn" ? yellow : r.tone === "error" ? red : purple;
+    return box(
+      ["", bold(color(r.tone ? r.title : "Checking your relay…")), "", ...wrap(`${came} First, foxhole checks that it works, and how steadily.`, 54).map(dim), "", ...steps, ...(r.tone ? ["", ...wrap(r.text, 54)] : []), "", r.tone ? dim(keys) : keys, ""],
+      { title: bold(purple(emoji("🟣 ") + "Relay")) },
+    );
   }
 
   /** Keystrokes while the relay's setup is open; it finishes by saving the relay, back in Settings. */
@@ -1680,11 +1757,12 @@ export class Tui {
     if (done && done !== "close") {
       return void this.#changeSetting({ relay: done }).then(() => {
         if (!this.#settings.relay) return this.#render();
-        // whether it works, at once: Settings, on the check's row (from the blocked popup too)
+        // whether it works, at once, step by step (from the blocked popup too); then Settings, on the check's row
         this.#message = purple("✓ Relay set up");
         this.#settingsOpen = true;
         this.#setSel = SETTINGS.findIndex((it) => it.key === "relayCheck");
-        void this.#checkRelay();
+        this.#relayCheck = null;
+        void this.#testRelay("wizard");
       });
     }
     this.#render();
@@ -1886,6 +1964,8 @@ export class Tui {
     this.#settings = next;
     this.#settingsNote = "";
     if ("relay" in patch) {
+      this.#relayOld = false; // another relay, or none: what's known of the old one's script is no more
+      if (!next.relay) (this.#relayTests++, (this.#relayTest = null));
       useRelay(loadRelay(next)); // takes effect at once, no restart
       this.#setList(this.#list);
       // relay mode follows: through the new relay, or off without one
@@ -2030,7 +2110,7 @@ export class Tui {
       e?.key === "tv" ? e.text + cursor : dim("⏎ type its code"),
       dim("⏎ QR code and link"),
       e?.key === "take" ? (e.text.length > 23 ? "…" + e.text.slice(-22) : e.text) + cursor : this.#take ? yellow("⏎ import") : dim("⏎ paste a link"),
-      (s.relay ? green("on") : dim("off")) + dim("  ⏎ step by step"),
+      s.relay ? green("on") + (this.#relayOld ? yellow("  ⏎ update the script") : "") : dim("off") + dim("  ⏎ step by step"),
       relayVal(e?.key === "relayId" ? e.text : s.relay?.deploymentId ?? "", e?.key === "relayId", false),
       relayVal(e?.key === "relayKey" ? e.text : s.relay?.authKey ?? "", e?.key === "relayKey", true),
       !rc ? dim("⏎ check") : rc.tone === "busy" ? dim("checking…") : { ok: purple("✓ works"), warn: yellow("old script"), error: red("✗ not working") }[rc.tone] + dim("  ⏎ again"),
@@ -2405,6 +2485,8 @@ export class Tui {
         ? this.#passwordPopup()
         : this.#wizard
           ? this.#wizard.render(cols, frame.length - 2)
+          : this.#relayTest?.open
+          ? this.#relayTestPopup()
           : this.#blocked
           ? this.#blockedPopup()
           : this.#relayIntro

@@ -227,6 +227,7 @@ function render() {
   renderToast(ph);
   renderOffline();
   renderNotice();
+  renderRelayTest();
   renderNews();
   renderEntitled();
   renderSplit();
@@ -468,12 +469,61 @@ function renderNews() {
 
 function noticeClose() {
   $("#notice-modal").classList.remove("on");
+  if (S) renderRelayTest(); // a relay's test waited behind the alert
   if (newsOpen) void act("newsShown", newsOpen);
   newsOpen = null;
   if (!accountNotice) return;
   // an account signed in to: the newest state asked for, and all of the window drawn from it
   accountNotice = false;
   void act("state").then((state) => ((S = localize(state)), redraw()), redraw);
+}
+
+// ── A relay's test (controller.js #testRelay): as it's turned on, a dialog; in Settings, under Check ─────────────────
+
+let relayHidden = 0; // the test whose answer the relay's fields were typed over since (Settings shows it no more)
+let relayInline = null; // Settings' Check's own answer, where there was nothing to test: {tone, text}
+const STEP_TONE = { ok: "ok", warn: "warn", error: "error" };
+
+/** A test's steps as a list: done (✓, ! or ✕), the one under way (a spinner), and those still to come. */
+function relaySteps(r) {
+  const now = r.tone ? -1 : r.steps.findIndex((x) => !x.tone);
+  return r.steps.map((x, i) => `<li data-tone="${STEP_TONE[x.tone] ?? (i === now ? "busy" : "wait")}"><span class="mark"></span><span>${esc(tr(x.text))}</span></li>`).join("");
+}
+
+function renderRelayTest() {
+  const r = S.relayTest;
+  const open = !!r && !r.closed && ["wizard", "device", "import"].includes(r.via) && !$("#notice-modal").classList.contains("on");
+  section("relaytest", [r, open, relayHidden, relayInline], () => {
+    // Settings: the latest answer under Check, till the fields are typed over
+    const out = $("#relay-check-state");
+    if (relayInline) (out.dataset.tone = relayInline.tone), (out.textContent = tr(relayInline.text));
+    else if (r && r.id !== relayHidden) {
+      out.dataset.tone = r.tone ?? "";
+      const head = r.tone ? `<b>${esc(tr(r.title))}</b>${r.unsaved && r.tone !== "error" ? " " + t`Not saved yet.` : ""}` : esc(t`Checking your relay…`);
+      out.innerHTML = `${head}<ul class="relay-steps">${relaySteps(r)}</ul>${r.tone ? `<div>${esc(tr(r.text))}</div>` : ""}`;
+    } else (out.dataset.tone = ""), (out.textContent = "");
+    const modal = $("#relaytest-modal");
+    const was = modal.classList.contains("on");
+    modal.classList.toggle("on", open);
+    if (!open) return;
+    modal.dataset.tone = r.tone ?? "busy";
+    $("#relaytest-title").textContent = r.tone ? tr(r.title) : t`Checking your relay…`;
+    $("#relaytest-from").textContent =
+      r.via === "device" ? (r.from ? t`Your VPN relay came from ${r.from}. First, Foxhole checks that it works, and how steadily.` : t`Your VPN relay came from another device. First, Foxhole checks that it works, and how steadily.`)
+      : r.via === "import" ? t`Your VPN relay came with the settings you imported. First, Foxhole checks that it works, and how steadily.`
+      : t`Your VPN relay is set up. First, Foxhole checks that it works, and how steadily.`;
+    $("#relaytest-steps").innerHTML = relaySteps(r);
+    // a phone or TV can't run the setup: it's updated on a computer, and sent here again
+    $("#relaytest-text").textContent = !r.tone ? "" : r.old && PHONE ? t`Update the script on a computer (Settings → VPN relay → Update the script step by step), then send the relay here again.` : tr(r.text);
+    // an old script: its update's the way on (a check again would find it as old)
+    $("#relaytest-again").hidden = !r.tone || r.tone === "ok" || r.old;
+    $("#relaytest-update").hidden = !r.old;
+    const update = r.old && !PHONE; // a phone or TV has no setup: Done's its button
+    $("#relaytest-update").classList.toggle("primary", update);
+    $("#relaytest-ok").classList.toggle("primary", !update);
+    $("#relaytest-ok").textContent = r.tone ? t`Done` : t`Close`;
+    if (!was || update) (update ? $("#relaytest-update") : $("#relaytest-ok")).focus(); // a TV's remote, a keyboard: on its button
+  });
 }
 
 /** The account in use hasn't turned on Firefox's VPN: everything in dark red, the fox sad (fox3d.js), and how to turn it on. */
@@ -832,7 +882,7 @@ const tgShare = () => S.shareTg ? t`<div class="tg-share"><svg class="tg-qr" vie
            <div><b>${icon("telegram")}Telegram on ${PHONE ? t`another phone` : t`your phone`}</b><span>Scan this with its camera: Telegram asks to use this proxy, with its sign-in.</span><button class="mini" data-copy="${esc(S.shareTg.link)}" title="Copy the link">${icon("copy")}</button></div></div>` : "";
 
 function renderSettings() {
-  section("settings", [S.settings.share, S.settings.port, S.settings.username, S.settings.password, S.settings.relay, S.lanIp, S.fwHint, S.caOk, S.shareTg?.link, S.settings.smartDns, S.smartDns, S.smartRouter, !!S.active], () => {
+  section("settings", [S.settings.share, S.settings.port, S.settings.username, S.settings.password, S.settings.relay, S.relayOld, S.lanIp, S.fwHint, S.caOk, S.shareTg?.link, S.settings.smartDns, S.smartDns, S.smartRouter, !!S.active], () => {
     const s = S.settings;
     const share = $("#share");
     share.classList.toggle("on", s.share);
@@ -874,6 +924,10 @@ function renderSettings() {
         ? t`<strong>On:</strong> Firefox VPN goes through it when Mozilla can't be reached or refuses your country.`
         : t`<strong>On:</strong> Firefox VPN goes through it when Mozilla can't be reached or refuses your country, and <b>Relay</b> is first in Locations.`;
     $("#relay-get span").textContent = TV ? t`Get it from your phone or computer` : t`Get it from your computer`;
+    // with a relay on, its setup isn't needed: offered again only to update a script found old (controller.js relayOld)
+    $("#relay-wizard").hidden = !!r && !S.relayOld;
+    $("#relay-wizard").innerHTML = icon("spark") + (r ? t`Update the script step by step` : t`Set up step by step`);
+    $("#relay-get").hidden = !!r;
     $("#relay-check").hidden = TV && !r; // nothing to check: a TV has no fields to type one in
     $("#relay-more").hidden = !r; // Send to a TV or phone (a TV's: Remove)
     $("#cert-group").hidden = !r && !S.caOk;
@@ -1225,7 +1279,7 @@ function tvModal(on) {
 function renderTv() {
   section("tvsendnet", [S.net, S.lanIp], () => $("#tvsend-modal").classList.contains("on") && drawSendNet());
   const relayOpen = $("#relaywait-modal").classList.contains("on");
-  if (relayOpen && S.relayGot > relayGotSeen) relayWait(false); // it came: the alert says from where
+  if (relayOpen && S.relayGot > relayGotSeen) relayWait(false); // it came: the test's dialog says from where
   else section("relaywait", [S.tvWait, S.net], () => relayOpen && ($("#relaywait-body").innerHTML = relayPanel()));
   relayGotSeen = S.relayGot;
   section("tvwait", [S.tvWait, S.net], () => $("#tvwait-modal").classList.contains("on") && ($("#tvwait-body").innerHTML = tvPanel()));
@@ -1724,11 +1778,8 @@ async function wizardNext() {
   if (wz.step < wz.setup.steps.length - 1) return void (wz.step++, (wz.shot = 0), drawWizard());
   const id = deploymentId(wz.id);
   if (!id) return note(wz.id.trim() ? t`That isn't a Deployment ID or web app URL: copy it again from Google.` : t`Paste the Deployment ID first.`);
-  if (await act("setRelay", id, wz.key)) {
-    closeWizard();
-    flash($("#relay-wizard"), t`${icon("check")}Relay set up`);
-    void checkRelay(id, wz.key); // whether it works, at once (the form's fields may not show them yet)
-  } else note(t`Couldn't save it: see the note in Settings.`);
+  if (await act("setRelay", id, wz.key, "wizard")) closeWizard(); // the controller tests it at once: its dialog says how it went
+  else note(t`Couldn't save it: see the note in Settings.`);
 }
 
 /** Previous: the line before in a step of several clicks, else the step before (on its last line). */
@@ -1862,12 +1913,18 @@ document.addEventListener("click", async (e) => {
     case "relaywait-close": return relayWait(false);
     case "relay-send": return tvSendOpen(null, "relay");
     case "relay-remove":
-      if (TV) $("#relay-get").focus(); // Remove goes with the relay: the remote carries on from Get it, not Connect behind the sheet
+      // Remove goes with the relay: the remote carries on from Get it (shown again), not Connect behind the sheet
+      if (TV) ($("#relay-get").hidden = false), $("#relay-get").focus();
       return act("setRelay", "", "");
     case "tvsend-relay":
       sendRelay = !sendRelay;
       return drawRelayToo();
     case "relay-check": return checkRelay();
+    case "relaytest-ok": return act("closeRelayTest");
+    case "relaytest-again": return checkRelay(S.settings.relay?.deploymentId ?? "", "", S.relayTest?.via);
+    case "relaytest-update":
+      void act("closeRelayTest");
+      return openWizard();
     case "wz-close": return closeWizard();
     case "wz-prev": return wizardPrev();
     case "wz-next": return wizardNext();
@@ -2000,7 +2057,6 @@ $("#login-form").addEventListener("submit", async (e) => {
 // one: the window never gets that); the ID field left empty turns the relay off.
 let relayTimer = null;
 let keySaved = false; // the key field still shows the key it saved, having had focus: emptied once it's left
-let checks = 0; // an answer is shown only from the latest check, and only if the fields weren't typed over since
 
 /** Saves the relay's fields, then checks them. */
 async function saveRelay() {
@@ -2012,13 +2068,15 @@ async function saveRelay() {
   if (!(await act("setRelay", id, key))) return;
   if (document.activeElement === field) keySaved = field.value === key;
   else if (field.value === key) field.value = ""; // the key isn't kept in the window
-  if (id.trim()) void checkRelay(id, key); // whether they're right
+  // a new relay's tested by the controller as it's saved (controller.js setRelay): its answer comes under Check
+  relayInline = null;
 }
 
 for (const f of ["#relay-id", "#relay-key"])
   $(f).addEventListener("input", () => {
-    checks++;
-    $("#relay-check-state").textContent = "";
+    relayHidden = S.relayTest?.id ?? 0;
+    relayInline = null;
+    renderRelayTest();
     keySaved = false;
     clearTimeout(relayTimer);
     const ready = deploymentId($("#relay-id").value) && ($("#relay-key").value.trim() || S.settings.relay?.set);
@@ -2036,15 +2094,12 @@ $("#relay-key").addEventListener("blur", (e) => {
 });
 
 /** The relay's Check (relaymode.ts relayVerdict) of the ID and key in its fields, the answer beside the button. */
-async function checkRelay(id = $("#relay-id").value, key = $("#relay-key").value) {
-  const n = ++checks;
-  const out = $("#relay-check-state");
-  out.dataset.tone = "";
-  out.textContent = t`Checking your relay…`;
-  const v = await act("checkRelay", id, key).catch((err) => ({ tone: "error", text: why(err) }));
-  if (n !== checks) return;
-  out.dataset.tone = v.tone;
-  out.textContent = tr(v.text);
+async function checkRelay(id = $("#relay-id").value, key = $("#relay-key").value, via) {
+  relayInline = null;
+  relayHidden = 0;
+  const v = await act("checkRelay", id, key, via).catch((err) => ({ tone: "error", text: why(err) }));
+  if (!v?.steps) relayInline = v; // nothing to test: the ID or key missing
+  renderRelayTest();
 }
 
 $("#pw-form").addEventListener("submit", (e) => {
@@ -2068,6 +2123,7 @@ document.addEventListener("keydown", (e) => {
     if ($("#relay-modal").classList.contains("on")) return $("#relay-modal").classList.remove("on");
     if ($("#manual-modal").classList.contains("on")) return $("#manual-modal").classList.remove("on");
     if ($("#notice-modal").classList.contains("on")) return noticeClose();
+    if ($("#relaytest-modal").classList.contains("on")) return void act("closeRelayTest");
     if ($("#wifi-modal").classList.contains("on")) return $("#wifi-modal").classList.remove("on");
     if ($("#tvsend-modal").classList.contains("on")) return tvSendClose();
     if ($("#take-modal").classList.contains("on")) return takeClose();

@@ -32,7 +32,7 @@ import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUse
 import { VERSION } from "./dist/update.js";
 import { countryName, gb, shortDate } from "./dist/ui.js";
 import { order, loadLastCountry, saveLastCountry } from "./dist/tui.js";
-import { relayCheck, relayVerdict, relayStats, onRelayNotice, onRelaySplit } from "./dist/relaymode.js";
+import { relayCheck, relayTest, relayStats, onRelayNotice, onRelaySplit } from "./dist/relaymode.js";
 import { updateWays } from "./dist/ways.js";
 import { caTrusted, setCaTrust, envLines } from "./dist/catrust.js";
 import { loadCa } from "./dist/mitm.js";
@@ -141,6 +141,9 @@ export class Controller extends EventEmitter {
   #unentitledAsk = 0; // counts the times it's found not to: each shows the window's how-to again
   #tvIn = null; // this device's wait for a sign-in from another one (tvpair.ts: a TV's sign-in screen; a phone's or computer's, where picked), or a TV's or phone's for a relay: a promise of it
   #tvWant = "signin"; // what it waits for: "signin", or "relay" alone
+  #relayTest = null; // the test of the relay just turned on, or Checked (relaymode.ts relayTest): {id, via, from, unsaved, ...its report}
+  #relayTests = 0;
+  #relayOld = false; // its script's code is older (the test, or a site through it, found it): its setup's offered again, to update it
   #relayGot = 0; // counts the relays that came from another device: the window closes its dialog on each
   #tvHandle = null; // ...and the wait itself, once it's started
   #tvError = null; // why it couldn't wait
@@ -189,7 +192,7 @@ export class Controller extends EventEmitter {
       if (!said && this.#lost) return this.#back();
       if (said || !this.#active) this.#say(said ? "error" : "ok", said ?? "the internet is back");
     });
-    onRelayNotice((msg) => this.#say("warn", msg));
+    onRelayNotice((msg) => (/older code/.test(msg) && (this.#relayOld = true), this.#say("warn", msg)));
     onRelaySplit((split) => this.#saveSplit(split)); // a bot-check page's "Open it directly"
     onHot(() => this.#changed()); // its notice, for the window to show
     void refreshHot(); // the network's newest fixes (hot.ts), before Mozilla's hosts are needed
@@ -614,11 +617,12 @@ export class Controller extends EventEmitter {
       throw err;
     }
     if (relay) this.#relayGot++;
+    if (relay) void this.#testRelay(relay, "device", { from: from || null }); // first, whether it works: the window shows it
     if (!account) {
       // a TV's sign-in screen goes on waiting, for the sign-in
       if (this.#tvWant === "relay") setTimeout(() => void this.tvWait(false)); // once the sender has its answer
       log(`relay: from ${from || "another device"}`);
-      return this.#alert(came, "Relay added", "relay");
+      return; // the test's dialog says it came
     }
     const { uid, email } = account;
     await this.disconnect(); // as a switch of accounts does
@@ -700,6 +704,7 @@ export class Controller extends EventEmitter {
     const plan = importPlan(this.#settings, this.#shared(text));
     if (plan.split && !this.#saveSplit(plan.split)) throw new Error(this.#splitNote?.text ?? "Couldn't save.");
     if (plan.relay && (await this.#changeSetting({ relay: plan.relay })) !== true) throw new Error(this.#settingsNote?.text ?? "Couldn't save.");
+    if (plan.relay) void this.#testRelay(plan.relay, "import");
     log(`settings imported: ${plan.what.join("; ")}`);
     return plan.what;
   }
@@ -1431,28 +1436,59 @@ export class Controller extends EventEmitter {
     return this.#changeSetting({ username, password });
   }
   /** The Apps Script relay for a blocked vpn.mozilla.org (httprelay.ts): both parts set it, both empty clear it. The ID may be the web app's URL. */
-  setRelay(id, authKey) {
+  async setRelay(id, authKey, via = "settings") {
     const text = String(id ?? "").trim();
     // an empty key field keeps the saved key ("type to replace"): the window never has it
     const key = String(authKey ?? "").trim() || (text ? (this.#settings.relay?.authKey ?? "") : "");
     if (Boolean(text) !== Boolean(key)) return void this.#note("settings", "error", "Enter both the deployment ID and the auth key, or clear both to turn the relay off.");
     if (text && !deploymentId(text)) return void this.#note("settings", "error", "That isn't a Deployment ID or web app URL: copy it again from Google.");
-    return this.#changeSetting({ relay: text ? { deploymentId: deploymentId(text), authKey: key } : undefined });
+    const was = this.#settings.relay;
+    const relay = text ? { deploymentId: deploymentId(text), authKey: key } : undefined;
+    const ok = await this.#changeSetting({ relay });
+    // turned on, or another one: first, whether it works (the setup's at once; the fields' as they save themselves)
+    if (ok === true && relay && (via === "wizard" || relay.deploymentId !== was?.deploymentId || relay.authKey !== was?.authKey)) void this.#testRelay(relay, via);
+    return ok;
   }
   /**
    * Settings' Check (relaymode.ts relayVerdict) of the relay as its fields have it, saved or not: the deployment ID typed
    * there, and the auth key typed there or else the saved one (the window never gets that, so its field shows empty).
    */
-  async checkRelay(id, authKey) {
+  async checkRelay(id, authKey, via = "check") {
     const saved = this.#settings.relay;
     const text = String(id ?? "").trim();
     const did = deploymentId(text);
     const key = String(authKey ?? "").trim() || saved?.authKey;
     if (!did) return { tone: "error", text: text ? "That isn't a Deployment ID or web app URL: copy it again from Google." : "Type the Deployment ID first." };
     if (!key) return { tone: "error", text: "Type the auth key first." };
-    const v = await relayVerdict({ relay: { url: relayUrl(did), key }, server: null });
     const unsaved = did !== saved?.deploymentId || key !== saved?.authKey;
-    return unsaved && v.tone !== "error" ? { ...v, text: `${v.text} Not saved yet.` } : v;
+    // the dialog's Check again keeps its dialog (via: what turned the relay on)
+    return this.#testRelay({ deploymentId: did, authKey: key }, ["wizard", "device", "import"].includes(via) ? via : "check", { unsaved });
+  }
+
+  /**
+   * Tests a relay (relaymode.ts relayTest): it answers with its ID and key, steadily and how fast, it reaches Mozilla,
+   * and its script's current; each step in state() as it's done (relayTest), for the window's dialog or Settings.
+   * `via`: settings (its fields saved), wizard, device (sent from another; `from`), import, or check (Settings' Check).
+   * A newer test, or the relay turned off, leaves this one's answer unshown.
+   */
+  async #testRelay({ deploymentId: did, authKey }, via, extra = {}) {
+    const id = ++this.#relayTests;
+    const put = (r) => {
+      if (id !== this.#relayTests) return;
+      this.#relayTest = { id, via, from: null, unsaved: false, ...extra, ...r };
+      if (r.tone && !extra.unsaved) this.#relayOld = r.old;
+      this.#changed();
+    };
+    const r = await relayTest({ relay: { url: relayUrl(did), key: authKey }, server: null }, put);
+    put(r);
+    log(`relay test (${via}): ${r.title}${r.steps.map((x) => `; ${x.tone}: ${x.text}`).join("")}`);
+    return this.#relayTest;
+  }
+
+  /** The window's relay dialog, closed: Settings still shows the test's answer. */
+  closeRelayTest() {
+    if (this.#relayTest) this.#relayTest = { ...this.#relayTest, closed: true };
+    this.#changed();
   }
   /** The setup wizard's content (relaysetup.ts): its steps, and the script as highlighted tokens with the key's placeholder. */
   relaySetup() {
@@ -1470,6 +1506,8 @@ export class Controller extends EventEmitter {
     this.#settings = next;
     this.#settingsNote = null;
     if ("relay" in patch) {
+      if (!next.relay) (this.#relayTests++, (this.#relayTest = null));
+      this.#relayOld = false; // another relay, or none: what's known of the old one's script is no more
       useRelay(this.#relay()); // takes effect at once, no restart
       this.#followRelay();
       // what a blocked Mozilla held up comes through it now: the sign-in's token, and the server list
@@ -1916,6 +1954,8 @@ export class Controller extends EventEmitter {
       blockedRegion: this.#blockedRegion,
       blockedHost: this.#blockedHost,
       relayGot: this.#relayGot,
+      relayTest: this.#relayTest,
+      relayOld: this.#relayOld,
     };
   }
 }

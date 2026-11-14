@@ -468,6 +468,22 @@
   </div>
 </div>
 
+<!-- A relay just turned on (set up, sent from another device, imported): first, whether it works (controller.js #testRelay, app.js renderRelayTest) -->
+<div class="modal backdrop" id="relaytest-modal" role="dialog" aria-modal="true" aria-labelledby="relaytest-title">
+  <div class="box glass">
+    <div class="lock-orb relay"><svg class="i"><use href="#i-relay"/></svg></div>
+    <h2 id="relaytest-title"></h2>
+    <p id="relaytest-from"></p>
+    <ul class="relay-steps" id="relaytest-steps"></ul>
+    <p id="relaytest-text"></p>
+    <div class="actions">
+      <button class="btn" type="button" id="relaytest-again"><svg class="i"><use href="#i-refresh"/></svg>Check again</button>
+      <button class="btn primary" type="button" id="relaytest-ok">Done</button>
+      <button class="btn desktop-only" type="button" id="relaytest-update"><svg class="i"><use href="#i-spark"/></svg>Update the script</button>
+    </div>
+  </div>
+</div>
+
 <!-- Connect with no internet (controller.js #wait): said so, and it connects by itself once the internet's back (app.js renderOffline) -->
 <div class="modal backdrop" id="offline-modal" role="alertdialog" aria-modal="true" aria-labelledby="offline-title" aria-describedby="offline-why">
   <div class="box glass">

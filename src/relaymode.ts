@@ -18,6 +18,7 @@ import { DOH_HOST, question, answerAddrs } from "./dns.js";
 import { viaOf, currentSplit, type Split } from "./split.js";
 import { log } from "./log.js";
 import { hot } from "./hot.js";
+import { SERVERLIST_URL } from "./serverlist.js";
 
 /** The TLS name every connection to Google uses: what a censor sees. */
 export const FRONT = "www.google.com";
@@ -77,7 +78,7 @@ export function relayProblem(msg: string): string | null {
   if (/HTTP (302|401|403)/.test(msg)) return "Relay: the deployment isn't open to everyone. In Apps Script deploy it with Who has access: Anyone.";
   if (/function not found|doPost/i.test(msg)) return "Relay: the script isn't foxhole's. Paste the relay code into Apps Script again (Settings → set up).";
   // older Code.gs sent what sites' headers hold (Link: <…>) as HTML, which Apps Script refuses as malformed (in any language)
-  if (/Exception:.*HTML/.test(msg)) return "Relay: your Apps Script has older code that fails on many sites. Update it: Settings → VPN relay → Set up step by step.";
+  if (/Exception:.*HTML/.test(msg)) return "Relay: your Apps Script has older code that fails on many sites. Update it: Settings → VPN relay → Update the script step by step.";
   return null;
 }
 
@@ -757,4 +758,92 @@ export async function relayVerdict(conn: Conn): Promise<{ tone: "ok" | "warn" | 
   } catch (err) {
     return { tone: "error", text: (err as Error).message };
   }
+}
+
+// ── The test a relay gets as it's turned on (and Settings' Check): that it works, and how steadily ──────────────────
+
+/** One of its checks: tone null while it runs. */
+export interface RelayStep {
+  key: "key" | "steady" | "mozilla" | "code";
+  tone: "ok" | "warn" | "error" | null;
+  text: string;
+}
+/** How the test went (tone null while it runs); old: its script's code is older, and the setup should update it. */
+export interface RelayReport {
+  tone: "ok" | "warn" | "error" | null;
+  title: string;
+  text: string;
+  steps: RelayStep[];
+  old: boolean;
+}
+
+const TRIES = 4; // the first with the key, then three more, one at a time: steady, and how fast
+const SLOW_S = 4; // seconds on average beyond which pages feel slow through it
+
+/**
+ * Tests a relay as it's turned on: it answers with its deployment ID and auth key (relayCheck), steadily and how
+ * fast over TRIES tries, it reaches Mozilla (the server list, as Firefox VPN does through it), and its script is
+ * current. `progress` gets the report after each step.
+ */
+export async function relayTest(conn: Conn, progress: (r: RelayReport) => void = () => {}): Promise<RelayReport> {
+  const steps: RelayStep[] = [
+    { key: "key", tone: null, text: "Google answers with your deployment ID and auth key" },
+    { key: "steady", tone: null, text: "Steady and fast enough" },
+    { key: "mozilla", tone: null, text: "Reaches Mozilla, for Firefox VPN" },
+  ];
+  const report = (tone: RelayReport["tone"], title: string, text: string, old = false): RelayReport => ({ tone, title, text, steps: steps.map((x) => ({ ...x })), old });
+  const set = (key: RelayStep["key"], tone: RelayStep["tone"], text: string) => {
+    const step = steps.find((x) => x.key === key)!;
+    [step.tone, step.text] = [tone, text];
+    progress(report(null, "Checking your relay…", ""));
+  };
+  progress(report(null, "Checking your relay…", ""));
+  const timed = async () => {
+    const t = Date.now();
+    await relayCheck(conn);
+    return (Date.now() - t) / 1000;
+  };
+  // the script's code, meanwhile: only the current one answers an address it can't fetch with its error naming it
+  const code = relayFetch(conn, { m: "GET", u: "https://<foxhole>/", h: {}, r: false }, false).then(
+    () => "",
+    (err: Error) => (/Exception:.*HTML/.test(err.message) ? "old" : err.message.includes("<foxhole>") ? "current" : ""),
+  );
+  const times: number[] = [];
+  try {
+    times.push(await timed());
+  } catch (err) {
+    const msg = (err as Error).message;
+    const google = !/^relay:/i.test(msg); // Google out of reach: not the relay's fault
+    set("key", "error", google ? `Couldn't reach Google: ${msg}` : msg);
+    steps.splice(1); // the rest can't be tried
+    return google
+      ? report("error", "Couldn't check your relay", "Google can't be reached from this network right now. Check your internet, then check again.")
+      : report("error", "Your relay doesn't work", "Check the deployment ID and auth key, or set it up again.");
+  }
+  set("key", "ok", "Google answers with your deployment ID and auth key");
+  for (let i = 1; i < TRIES; i++) await timed().then((s) => times.push(s), () => {});
+  const avg = (times.reduce((a, b) => a + b, 0) / times.length).toFixed(1);
+  if (times.length < TRIES) set("steady", "warn", `Unsteady: it answered ${times.length} of ${TRIES} tries, in ${avg} s on average`);
+  else if (+avg > SLOW_S) set("steady", "warn", `Slow: it answered ${TRIES} of ${TRIES} tries, but in ${avg} s on average`);
+  else set("steady", "ok", `Steady: it answered ${TRIES} of ${TRIES} tries, in ${avg} s on average`);
+  try {
+    await relayFetch(conn, { m: "GET", u: SERVERLIST_URL, h: {}, r: false }, false);
+    set("mozilla", "ok", "Reaches Mozilla, for Firefox VPN");
+  } catch (err) {
+    set("mozilla", "warn", `Couldn't reach Mozilla through it: ${(err as Error).message.replace(/^relay: (Exception: )?/, "")}`);
+  }
+  const c = await code;
+  if (c === "old") steps.push({ key: "code", tone: "warn", text: "Your Apps Script has older code that fails on many sites: update it" });
+  else if (c === "current") steps.push({ key: "code", tone: "ok", text: "The script is up to date" });
+  const warned = steps.some((x) => x.tone === "warn");
+  return report(
+    warned ? "warn" : "ok",
+    warned ? "Your relay works, with a problem" : "Your relay works",
+    c === "old"
+      ? "Update the script step by step, so sites open through it."
+      : warned
+        ? "Foxhole uses it, but it may fail now and then, or be slow."
+        : "Foxhole reaches Mozilla through it where Mozilla is blocked, and Relay is first in Locations.",
+    c === "old",
+  );
 }

@@ -2,7 +2,7 @@
 // needs no authentication. Same collection Firefox reads (IPProtectionServerlist).
 import { mozillaFetch } from "./guardian.js";
 
-const SERVERLIST_URL =
+export const SERVERLIST_URL =
   "https://firefox.settings.services.mozilla.com/v1/buckets/main/collections/vpn-serverlist/records";
 
 // Reserved code for the anycast "recommended" entry; not a real country.

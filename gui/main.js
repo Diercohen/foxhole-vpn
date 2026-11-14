@@ -39,7 +39,7 @@ const LINKS = {
 // What the window may ask for: the Controller's actions, nothing else of it
 const ACTIONS = new Set([
   "state", "power", "connect", "disconnect", "toggleGlobal", "submitPassword", "cancelPassword", "retryOffline", "cancelOffline", "connectAnyway",
-  "setShare", "setLang", "setSmartDns", "allowRouter", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "appIcons", "traffic", "hideSite", "setSplitDefault", "setSmart", "checkSite", "shareOpen", "importCheck", "importSettings", "newsShown", "setNetRule", "addRule", "toggleRule", "removeRule",
+  "setShare", "setLang", "setSmartDns", "allowRouter", "setPort", "setLogin", "setRelay", "checkRelay", "closeRelayTest", "relaySetup", "openSettings", "openSplit", "appIcons", "traffic", "hideSite", "setSplitDefault", "setSmart", "checkSite", "shareOpen", "importCheck", "importSettings", "newsShown", "setNetRule", "addRule", "toggleRule", "removeRule",
   "logs", "copy", "copyLogs", "openFirefox", "copySnippet", "reloadList",
   "addAccount", "useAccount", "removeAccount", "refreshAccounts", "dismissLow", "retrySignIn", "checkEntitled", "tvWait", "tvFind", "tvSend", "showWifiName",
   "trustCa", "untrustCa", "dismissTrust", "copyEnv",

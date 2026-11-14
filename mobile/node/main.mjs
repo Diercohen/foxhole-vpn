@@ -57,7 +57,7 @@ if (typeof WebAssembly === "undefined")
 const ACTIONS = new Set([
   "update", "restartToUpdate",
   "state", "power", "connect", "disconnect", "toggleGlobal", "retryOffline", "cancelOffline", "connectAnyway",
-  "setShare", "setLang", "setPort", "setLogin", "setRelay", "checkRelay", "relaySetup", "openSettings", "openSplit", "appIcons", "traffic", "hideSite", "setSplitDefault", "setSmart", "checkSite", "shareOpen", "importCheck", "importSettings", "newsShown", "setNetRule", "addRule", "toggleRule", "removeRule",
+  "setShare", "setLang", "setPort", "setLogin", "setRelay", "checkRelay", "closeRelayTest", "relaySetup", "openSettings", "openSplit", "appIcons", "traffic", "hideSite", "setSplitDefault", "setSmart", "checkSite", "shareOpen", "importCheck", "importSettings", "newsShown", "setNetRule", "addRule", "toggleRule", "removeRule",
   "logs", "copy", "copyLogs", "reloadList",
   "addAccount", "useAccount", "removeAccount", "refreshAccounts", "dismissLow", "retrySignIn", "checkEntitled", "tvWait", "tvFind", "tvSend", "showWifiName",
   "trustCa", "untrustCa", "dismissTrust",
