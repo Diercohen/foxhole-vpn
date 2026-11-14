@@ -85,7 +85,7 @@ const startHidden = process.argv.includes(AUTOSTART_FLAG);
 // a restart (an update, Full Disk Access) is one the user asked for: with the window
 const restartArgs = () => process.argv.slice(1).filter((a) => a !== AUTOSTART_FLAG && a !== "--whole-system" && a !== "--reconnect");
 
-const updater = new Updater({ dir: join(app.getPath("userData"), "update"), downloads: app.getPath("downloads"), target: updateTarget(), via: () => controller.via(), changed: () => controller.emit("change") });
+const updater = new Updater({ dir: join(app.getPath("userData"), "update"), downloads: app.getPath("downloads"), target: updateTarget(), ways: () => controller.updateWays(), changed: () => controller.emit("change") });
 const controller = new Controller({
   copy: (text) => clipboard.writeText(text),
   updates: updater,

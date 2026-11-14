@@ -262,7 +262,10 @@ function renderHeader() {
     pill.hidden = !up;
     pill.classList.toggle("busy", !!up?.phase);
     pill.style.setProperty("--p", `${up?.progress ?? 0}%`);
-    pill.title = !up ? "" : up.error ? t`Couldn't update: ${up.error}` : up.ready ? t`Foxhole ${up.version} is ready: restart to switch to it` : t`Foxhole ${up.version} is out`;
+    // the way the download goes (updater.js): directly, else through Firefox VPN, else the relay
+    const via = up?.via === "vpn" ? t`through Firefox VPN` : up?.via === "relay" ? t`through your relay` : up?.via === "direct" ? t`directly` : "";
+    pill.title = !up ? "" : up.error ? t`Couldn't update: ${up.error}` : up.ready ? t`Foxhole ${up.version} is ready: restart to switch to it`
+      : up.phase === "downloading" && via ? t`Downloading Foxhole ${up.version} ${via}` : t`Foxhole ${up.version} is out`;
     $("#update span").textContent = !up ? ""
       : up.phase === "downloading" ? t`Downloading ${up.progress ?? 0}%`
       : up.phase === "installing" ? t`Installing…`
@@ -276,6 +279,7 @@ function renderHeader() {
       : !up.auto ? t`Version ${esc(up.version)} is out. <span class="link" id="get-update">Download it</span>`
       : up.ready && PHONE ? t`Version ${esc(up.version)} is downloaded${up.error ? t`, but couldn't be installed: ${esc(up.error)}` : ""}. <span class="link" id="get-update">${up.error ? t`Try again` : t`Install it`}</span>`
       : up.ready ? t`Version ${esc(up.version)} is ready: restart Foxhole to switch to it. <span class="link" id="get-update">Restart now</span>`
+      : up.phase === "downloading" && via ? t`Downloading version ${esc(up.version)} ${via} · ${up.progress ?? 0}%…`
       : up.phase === "downloading" ? t`Downloading version ${esc(up.version)} · ${up.progress ?? 0}%…`
       : up.phase === "installing" ? t`Installing version ${esc(up.version)}…`
       : up.error && up.file ? t`Couldn't update to ${esc(up.version)} by itself: ${esc(up.error)}. <span class="link" id="get-update">Install it yourself</span>`

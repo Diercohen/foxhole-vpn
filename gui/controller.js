@@ -33,6 +33,7 @@ import { VERSION } from "./dist/update.js";
 import { countryName, gb, shortDate } from "./dist/ui.js";
 import { order, loadLastCountry, saveLastCountry } from "./dist/tui.js";
 import { relayCheck, relayVerdict, relayStats, onRelayNotice, onRelaySplit } from "./dist/relaymode.js";
+import { updateWays } from "./dist/ways.js";
 import { caTrusted, setCaTrust, envLines } from "./dist/catrust.js";
 import { loadCa } from "./dist/mitm.js";
 
@@ -809,6 +810,20 @@ export class Controller extends EventEmitter {
   /** The proxy into the VPN, once connected: for downloads (GitHub can be slow or blocked where the user is). */
   via() {
     return this.#proxy && this.#active ? { host: dialHost(this.#host), port: this.#proxy.port } : undefined;
+  }
+
+  /**
+   * The ways an update comes (updater.js, ways.ts updateWays): through Firefox VPN while it's on; else directly, then
+   * Firefox VPN opened for it (signed in), then the relay. Relay mode isn't Firefox VPN: its proxy opens HTTPS with
+   * foxhole's own certificate, which Node doesn't trust, so there the relay is called itself, last.
+   */
+  updateWays() {
+    const relay = this.#relay();
+    return updateWays({
+      vpn: this.#active && this.#active !== RELAY_ROW ? this.via() : null,
+      conn: this.#auth.stage === "ready" ? this.#conn : null,
+      relay: this.#relayOn() ? this.#conn : relay && { relay, server: null },
+    });
   }
 
   /** Re-reads the data used, quietly: a failed check keeps what's shown. */

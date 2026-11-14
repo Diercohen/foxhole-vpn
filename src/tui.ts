@@ -1,6 +1,6 @@
 import readline from "node:readline";
 import { PassThrough } from "node:stream";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { hostname } from "node:os";
 import { userHome, findAccount } from "./profile.js";
@@ -26,7 +26,8 @@ import { listApps } from "./apps.js";
 import { helperFor, helperInstalled, helperReady } from "./helper.js";
 import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost, type Priv } from "./global.js";
 import { hot, onHot } from "./hot.js";
-import { checkUpdate, canUpdate, runUpdate, restart, versionLines, latestVersion, fetchNotes, UPDATE_COMMAND, VERSION, type Notes, type Block, type Span } from "./update.js";
+import { checkUpdate, canUpdate, canDownload, downloadUpdate, runUpdate, restart, versionLines, latestVersion, fetchNotes, updateHint, UPDATE_COMMAND, VERSION, type Notes, type Block, type Span } from "./update.js";
+import { updateWays, wayName, triedText, type Way } from "./ways.js";
 import { bold, dim, under, italic, strike, green, red, yellow, cyan, lit, unlit, purple, litPurple, flag, EMOJI, emoji, countryName, gb, shortDate, vw, fit, box, grid, centerIn, draw, overlay, repoLink, REPO_URL, linkAt, openUrl, copyText } from "./ui.js";
 import { fox, FOX_W, FOX_H, type Mood } from "./fox.js";
 import { loadRelay } from "./httprelay.js";
@@ -276,8 +277,10 @@ export class Tui {
   #notesOpen = false; // the popup with what's new in the update ('u'), whose Enter updates
   #notes: Notes | null | undefined; // what's new, from GitHub: undefined while it's asked, null when it didn't answer
   #notesTop = 0; // the first line shown: ↑↓ scroll a long one
+  #updating: { stop: AbortController; way: Way | null; progress: number } | null = null; // its Enter's download, till npm installs it
+  #updateError = ""; // why the last one didn't come
   #lowSeen = ""; // the account and month it was shown for
-  #quit: (action?: "update" | "logout") => Promise<void> = async () => {};
+  #quit: (action?: "update" | "logout", file?: string) => Promise<void> = async () => {};
   readonly #firefoxEmail = this.#accounts.firefox ? findAccount()?.email ?? null : peekFirefox(); // read at the start: cli.ts may just have
 
   readonly #startBlocked: GuardianBlocked | null;
@@ -333,7 +336,7 @@ export class Tui {
         if (this.#net !== undefined && (n !== this.#net || lan !== was)) this.#refreshNet();
       });
     }, 5000).unref();
-    void checkUpdate().then(() => this.#render()); // show the update notice once npm answers
+    void checkUpdate(this.#updateWays()).then(() => this.#render()); // show the update notice once npm answers (by another way if not directly)
     this.#render();
     return (await this.#loop()) === "logout" ? "logout" : undefined;
   }
@@ -502,7 +505,10 @@ export class Tui {
         ...(notes.length > 1 ? [...(i ? [""] : []), bold(n.version)] : []),
         ...n.blocks.flatMap((b) => noteLines(b, inner)),
       ]);
-    const room = Math.max(3, frameHeight - 10); // the box's border, the blank lines, the buttons, the command, the margin
+    // under the buttons: what Enter does; once it's been pressed, how far its download got, or why it didn't come
+    const up = this.#updating;
+    const below = up ? [] : this.#updateError ? wrap(this.#updateError, inner).slice(0, 2).map(red) : [dim(updateHint())];
+    const room = Math.max(3, frameHeight - 9 - below.length); // the box's border, the blank lines, the buttons, what's below them, the margin
     this.#notesTop = Math.min(this.#notesTop, Math.max(0, body.length - room));
     const shown = body.slice(this.#notesTop, this.#notesTop + room);
     const more = body.length > room ? dim(`  ↑↓ ${this.#notesTop + shown.length} of ${body.length} lines`) : "";
@@ -511,8 +517,10 @@ export class Tui {
         "",
         ...shown,
         "",
-        `${bold(green("[⏎ Update and restart]"))}   ${dim("[esc Not now]")}${more}`,
-        dim(`runs ${UPDATE_COMMAND}`),
+        up
+          ? `${yellow(`Downloading ${up.progress}%${up.way ? ` ${wayName(up.way)}` : ""}…`)}   ${dim("[esc Cancel]")}${more}`
+          : `${bold(green(this.#updateError ? "[⏎ Try again]" : "[⏎ Update and restart]"))}   ${dim("[esc Not now]")}${more}`,
+        ...below,
       ],
       { title: bold(green(`Foxhole ${latestVersion()} is out`)), width: inner },
     );
@@ -790,12 +798,13 @@ export class Tui {
       process.stdin.once("end", onSignal);
 
       let quitting = false;
-      const quit = (this.#quit = async (action?: "update" | "logout") => {
+      const quit = (this.#quit = async (action?: "update" | "logout", file?: string) => {
         // Once: a signal or the terminal's end can follow the first. The listeners stay, as without
         // any a late signal would kill the process midway through putting the routes back.
         if (quitting) return;
         quitting = true;
         input.removeListener("keypress", onKey); // keys now do nothing
+        this.#updating?.stop.abort(); // an update's download under way: stopped, and its folder goes (downloadUpdate)
         if (this.#global) {
           // Stay on our screen with a popup until everything is closed: stdin is still read raw
           // and swallowed, so keys and clicks pressed meanwhile aren't echoed as ^[[<0;… junk.
@@ -818,8 +827,8 @@ export class Tui {
         process.stdin.pause();
         leaveScreen();
         if (action === "update") {
-          // runs npm in this terminal (asks for sudo if needed), then the new version in its place
-          if (runUpdate() === 0) restart();
+          // runs npm in this terminal on the package downloaded (asks for sudo if needed), then the new version in its place
+          if (runUpdate(file) === 0) restart();
           console.log(red(`\nNot updated (see above). To try again: ${UPDATE_COMMAND}`));
         }
         resolve(action);
@@ -848,8 +857,8 @@ export class Tui {
         }
         if (this.#lowOpen) return this.#lowKey(key);
         if (this.#notesOpen) {
-          if (key.name === "return") return void quit("update");
-          if (key.name === "escape" || key.name === "u") this.#notesOpen = false;
+          if (key.name === "return") return void this.#startUpdate();
+          if (key.name === "escape" || key.name === "u") (this.#notesOpen = false), this.#updating?.stop.abort(); // and its download, if it's under way
           else if (key.name === "up" || key.name === "k") this.#notesTop = Math.max(0, this.#notesTop - 1);
           else if (key.name === "down" || key.name === "j") this.#notesTop++; // #notesPopup keeps it in range
           return this.#render();
@@ -902,7 +911,7 @@ export class Tui {
           case "u":
             // what's new first: its Enter updates
             if (!canUpdate()) break;
-            [this.#notesOpen, this.#notesTop] = [true, 0];
+            [this.#notesOpen, this.#notesTop, this.#updateError] = [true, 0, ""];
             if (this.#notes === undefined) void fetchNotes(latestVersion()!).then((n) => ((this.#notes = n), this.#render()));
             break;
           case "a":
@@ -2391,6 +2400,44 @@ export class Tui {
   /** Connected through the relay (relaymode.ts), not Firefox VPN. */
   #relayOn(): boolean {
     return this.#active === RELAY_ROW && !!this.#conn.relay;
+  }
+
+  /**
+   * The ways an update comes (ways.ts): through Firefox VPN while it's on; else directly, then Firefox VPN opened for it,
+   * then the relay. Relay mode isn't Firefox VPN: its proxy opens HTTPS with foxhole's own certificate, which Node
+   * doesn't trust, so there the relay is called itself, last.
+   */
+  #updateWays(): Way[] {
+    const relay = loadRelay(this.#settings);
+    const vpn = this.#proxy && this.#active && this.#active !== RELAY_ROW ? { host: dialHost(this.#host), port: this.#proxy.port } : null;
+    return updateWays({ vpn, conn: this.#conn, relay: this.#relayOn() ? this.#conn : relay && { relay, server: null } });
+  }
+
+  /** The update popup's Enter: the new version's package, downloaded here by the update's ways; then npm installs it, as the TUI quits. */
+  async #startUpdate(): Promise<void> {
+    if (this.#updating) return;
+    if (!canDownload()) return void this.#quit("update"); // npm didn't say where it is: npm gets it itself
+    const stop = new AbortController();
+    const up = (this.#updating = { stop, way: null as Way | null, progress: 0 });
+    this.#updateError = "";
+    this.#render();
+    try {
+      const file = await downloadUpdate(this.#updateWays(), {
+        onWay: (way) => ((up.way = way), this.#render()),
+        progress: (p) => p !== up.progress && ((up.progress = p), this.#render()),
+        signal: stop.signal,
+      });
+      this.#updating = null;
+      // esc (or a quit) as its last piece was written: not installed after all
+      if (stop.signal.aborted) return void rmSync(dirname(file), { recursive: true, force: true });
+      void this.#quit("update", file);
+    } catch (err) {
+      this.#updating = null;
+      if (stop.signal.aborted) return; // esc: the popup's closed
+      const tried = triedText((err as { tried?: Way[] }).tried);
+      this.#updateError = tried ? `Couldn't download it ${tried}: ${(err as Error).message}` : `Couldn't download it: ${(err as Error).message}`;
+      this.#render();
+    }
   }
 
   /** After a failure Firefox VPN can't get past: where a relay is set up, how to browse through it instead. */

@@ -13,6 +13,9 @@ import { FRONT_AT } from "./relaymode.js";
 /** The Relay "location": where the location list, the saved last location and the tray name it. */
 export const RELAY_CODE = "RELAY";
 
+/** Recommended/anycast: the shared catch-all host Firefox falls back to. A new one each time: global mode pins its IP on it. */
+const anycast = (): Server => ({ hostname: "p.m1.fastly-masque.net", port: 2499, quarantined: false });
+
 /**
  * Owns the live VPN session: the chosen upstream server and a proxy pass that
  * it refreshes before expiry. The proxy asks it for a valid pass per dial.
@@ -73,13 +76,19 @@ export class Connection {
     if (country) {
       server = pickServer(country);
       if (!server) throw new Error(`No usable server in ${country.name}`);
-    } else {
-      // Recommended/anycast: use the shared catch-all host Firefox falls back to.
-      server = { hostname: "p.m1.fastly-masque.net", port: 2499, quarantined: false };
-    }
+    } else server = anycast();
     await prepare?.(server);
     this.#server = server;
     this.#relay = null;
+    return server;
+  }
+
+  /**
+   * Where Firefox VPN is reached while it's off (an update's download, proxy.ts vpnTunnel): the server last picked, else
+   * the catch-all; by its name, looked up anew (an address pinned for global mode was this network's then).
+   */
+  get anyServer(): Server {
+    const { ip: _, ...server } = (!this.#relay && this.#server) || anycast();
     return server;
   }
 

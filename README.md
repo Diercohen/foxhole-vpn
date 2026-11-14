@@ -47,6 +47,11 @@ routing**, on Linux, macOS and Windows. A desktop app or a terminal app.
 
 It updates itself and lives in the tray / menu bar. It opens disconnected; connecting goes on to whole-system mode unless you last picked **Proxy only**. **Settings → Start when you log in** starts it there, connected to your last location (in whole-system mode only if that needs no password or prompt).
 
+Updates (the **Update** button on computers and Android; `u` in the terminal UI) download through Firefox VPN while
+it's on, else directly. With it off they go directly first, then through Firefox VPN opened just for the download;
+your [relay](#where-firefox-vpn-is-blocked-eg-iran) last. Each takes over when the one before can't get through or
+crawls (under 1 MB in 30 seconds), carrying on from where it stopped.
+
 **Terminal app** (Node.js 18.18+):
 
 ![foxhole in the terminal: connecting the proxy, then whole-system mode](docs/tui-demo.gif)

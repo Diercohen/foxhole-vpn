@@ -30,7 +30,7 @@ export class Controller extends EventEmitter {
     void moment().then(() => ((this.#auth = { stage: "ready" }), this.#changed()));
   }
   async start() {}
-  via() {}
+  updateWays() { return [{ via: "direct" }]; }
   reloadList(url, method) { return fetch(url, { method, body: method === "POST" ? "hi" : undefined }).then((r) => r.text()); }
   openSettings() {}
   #changed() { this.emit("change"); }

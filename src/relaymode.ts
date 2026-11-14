@@ -715,6 +715,19 @@ export function relayServe(conn: Conn, client: net.Socket, first: Buffer, to: { 
   server.emit("connection", sock);
 }
 
+/**
+ * A GET of foxhole's own through the script (an update's file, ways.ts): the target's status, its headers by lowercase
+ * name, and its body, all in memory (a script call carries at most ~50 MB: big files come by Range). Redirects come back.
+ */
+export async function relayGet(conn: Conn, url: string, headers: Record<string, string> = {}): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> {
+  const r = await relayFetch(conn, { m: "GET", u: url, h: headers, r: false }, false).catch((err: Error) => {
+    throw new Error(relayProblem(err.message) ?? err.message.replace(/^relay: (Exception: )?/, "relay: "));
+  });
+  const h: Record<string, string> = {};
+  for (const [k, v] of Object.entries(r.h ?? {})) h[k.toLowerCase()] = (Array.isArray(v) ? v : [v]).map(String).join(", ");
+  return { status: r.s ?? 200, headers: h, body: bodyOf(r) };
+}
+
 /** Checks the relay answers and fetches: Google's own connectivity check, so no other site's outage fails it. */
 export async function relayCheck(conn: Conn): Promise<void> {
   const r = await relayFetch(conn, { m: "GET", u: "http://www.google.com/generate_204", h: {}, r: false }, false).catch((err: Error) => {

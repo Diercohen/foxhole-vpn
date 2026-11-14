@@ -145,7 +145,7 @@ function openSignIn() {
 // what this device is: a TV (Android TV) signs in from another device (tvpair.ts); its name is shown on both
 const device = {};
 const deviceKnown = process.platform === "android" ? ask("device").then((d) => (Object.assign(device, d), controller.emit("change")), () => {}) : Promise.resolve();
-const updater = new Updater({ dir: join(homedir(), "update"), downloads: join(homedir(), "apk"), target: apk || null, via: () => controller.via(), changed: () => controller.emit("change") });
+const updater = new Updater({ dir: join(homedir(), "update"), downloads: join(homedir(), "apk"), target: apk || null, ways: () => controller.updateWays(), changed: () => controller.emit("change") });
 const controller = new Controller({
   copy: (text) => void ask("copy", { text }).catch(() => {}),
   updates: updater,

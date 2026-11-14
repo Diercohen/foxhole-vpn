@@ -1,14 +1,24 @@
-// The installed version, whether npm has a newer one, and updating to it.
+// The installed version, whether npm has a newer one, and updating to it: the TUI downloads its package by ways.ts's ways
+// (through Firefox VPN while it's on; else directly, then Firefox VPN opened for it, then the relay), checks it against
+// npm's checksum, then npm installs that file, needing no network itself.
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { accessSync, constants, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { cyan, dim, green, under, yellow, REPO_URL } from "./ui.js";
+import { download, get, httpError, throughWays, type Way } from "./ways.js";
 
 export const VERSION: string = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 ).version;
+// FOXHOLE_REGISTRY: a server laid out like npm's registry, for testing
+const LATEST = `${process.env.FOXHOLE_REGISTRY ?? "https://registry.npmjs.org"}/foxhole-vpn/latest`;
 let latest: string | null = null; // newer version on npm, once known
+let pkg: { url: string; algo: string; digest: string } | null = null; // its package file, and the checksum npm has for it
 let upToDate = false; // npm answered, and has nothing newer
 let check: Promise<void> | undefined;
+let wayCheck: Promise<void> | undefined;
 
 // numeric x.y.z compare; parseInt drops a prerelease suffix ("0-beta" → 0)
 export function newer(a: string, b: string): boolean {
@@ -104,17 +114,69 @@ export function fetchNotes(to: string): Promise<Notes | null> {
     .then((atom) => releaseNotes(atom, VERSION, to), () => null);
 }
 
-/** Asks npm once; later calls share that request. Best effort: offline or registry down just means no notice. */
-export function checkUpdate(): Promise<void> {
-  check ??= fetch("https://registry.npmjs.org/foxhole-vpn/latest", { signal: AbortSignal.timeout(3000) })
-    .then((r) => r.json() as Promise<{ version?: string }>)
-    .then(({ version }) => {
-      if (version && newer(version, VERSION)) latest = version;
-      else upToDate = Boolean(version);
-    })
-    .catch(() => {});
-  return check;
+/** What npm's latest says of the package: its version, and its file with the checksum it's published with. */
+type Manifest = { version?: string; dist?: { tarball?: string; integrity?: string } };
+
+/** Takes npm's answer: a newer version, with its file and checksum (the strongest npm gives), or none newer. */
+function take({ version, dist }: Manifest): void {
+  if (!version) return;
+  if (!newer(version, VERSION)) return void (upToDate = true);
+  latest = version;
+  const sri = dist?.integrity?.split(/\s+/).map((s) => /^(sha512|sha384|sha256)-(.+)$/.exec(s)).find(Boolean);
+  pkg = dist?.tarball && sri ? { url: dist.tarball, algo: sri[1], digest: sri[2] } : null;
 }
+
+/** npm's latest by `way`. */
+async function manifest(way: Way): Promise<Manifest> {
+  const res = await get(LATEST, way, { accept: "application/json" });
+  if (res.statusCode !== 200) {
+    res.resume();
+    throw httpError(res.statusCode ?? 0);
+  }
+  let text = "";
+  res.setEncoding("utf8");
+  for await (const c of res) text += c;
+  return JSON.parse(text) as Manifest;
+}
+
+/**
+ * Asks npm once, directly within 3 s; later calls share that request. `ways` (the TUI's, ways.ts): when that got no
+ * answer, npm is asked by them in turn. Best effort: offline or registry down just means no notice.
+ */
+export function checkUpdate(ways?: Way[]): Promise<void> {
+  check ??= fetch(LATEST, { signal: AbortSignal.timeout(3000) })
+    .then((r) => r.json() as Promise<Manifest>)
+    .then(take)
+    .catch(() => {});
+  if (!ways) return check;
+  return (wayCheck ??= check.then(() => (latest || upToDate ? undefined : throughWays(ways, manifest).then(take, () => {}))));
+}
+
+/**
+ * The newer version's package, downloaded by `ways` in turn (each carrying on from where the one before stopped) to a
+ * folder of its own, and checked against npm's checksum: its file, for runUpdate. `onWay` hears each way as it's
+ * tried, `progress(percent)` how far it got.
+ */
+export async function downloadUpdate(ways: Way[], { onWay = () => {}, progress = () => {}, signal }: { onWay?: (way: Way) => void; progress?: (percent: number) => void; signal?: AbortSignal } = {}): Promise<string> {
+  if (!pkg) throw new Error("npm didn't say where the new version's package is");
+  const { url, algo, digest } = pkg;
+  const dir = mkdtempSync(join(tmpdir(), "foxhole-update-"));
+  const file = join(dir, `foxhole-vpn-${latest}.tgz`);
+  try {
+    await throughWays(ways, (way, last) => (onWay(way), download(url, file, way, progress, { last, signal })), signal);
+    if (createHash(algo).update(readFileSync(file)).digest("base64") !== digest) throw new Error("the download doesn't match npm's checksum");
+    return file;
+  } catch (err) {
+    rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
+}
+
+/** The newer version's package can be downloaded first (downloadUpdate): npm said where it is, and its checksum. */
+export const canDownload = (): boolean => pkg !== null;
+
+/** What the TUI's update does, under its buttons. */
+export const updateHint = (): string => (canDownload() ? `downloads it, then runs ${sudo ? "sudo " : ""}npm install -g on it` : `runs ${UPDATE_COMMAND}`);
 
 // run through npx: nothing is installed to update, the next npx foxhole-vpn@latest fetches it
 export const viaNpx = () => process.env.npm_command === "exec";
@@ -140,18 +202,26 @@ export const latestVersion = () => latest;
 /** A newer version is out, and npm can install it (under npx there's nothing installed to update). */
 export const canUpdate = () => latest !== null && !viaNpx();
 
-/** Runs the update in this terminal (sudo asks for the password here); returns npm's exit status. */
-export function runUpdate(): number {
-  console.log(cyan(UPDATE_COMMAND));
+/**
+ * Runs the update in this terminal (sudo asks for the password here): npm installs `file`, the package downloadUpdate
+ * got, then the folder it's in goes; without one, npm gets the package itself. Returns npm's exit status.
+ */
+export function runUpdate(file?: string): number {
+  // in the shell's double quotes: no character it would read otherwise
+  const quotable = file && !(process.platform === "win32" ? /["%!]/ : /["$`\\]/).test(file);
+  // the package has no dependencies: npm needs nothing from the network for it, not even its audit
+  const install = quotable ? `npm install -g --offline --no-audit --no-fund "${file}"` : INSTALL;
+  console.log(cyan((sudo ? "sudo " : "") + install));
   const NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ""} ${NODE_FIX}`.trim();
   // sudo clears the environment, so env sets NODE_OPTIONS on its side
-  return (
-    spawnSync(sudo ? `sudo env NODE_OPTIONS="${NODE_FIX}" ${INSTALL}` : INSTALL, {
+  const status =
+    spawnSync(sudo ? `sudo env NODE_OPTIONS="${NODE_FIX}" ${install}` : install, {
       shell: true,
       stdio: "inherit",
       env: { ...process.env, NODE_OPTIONS },
-    }).status ?? 1
-  );
+    }).status ?? 1;
+  if (file) rmSync(dirname(file), { recursive: true, force: true });
+  return status;
 }
 
 /**

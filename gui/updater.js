@@ -1,5 +1,7 @@
 // New versions from GitHub's releases: looked for at launch (again a minute in if nothing turned up), then every 6 hours; the window's Update button
-// downloads the one for this system (through the VPN when connected), with its progress, and gets it ready to go in:
+// downloads the one for this system, with its progress, and gets it ready to go in. Both go by ways.ts's ways: through
+// Firefox VPN while it's on; else directly, then through Firefox VPN opened for it, then the relay; each when the one
+// before can't (a download that breaks off, or is too slow, carries on by the next from where it stopped). Then:
 // - macOS: the .dmg for this architecture, unpacked and checked, then swapped in for the app on the restart or quit;
 // - Windows: the installer, run silently once the app has quit (and put its routes back) on "Restart now";
 // - Linux, an AppImage: the new AppImage, put over the old file on the restart or quit;
@@ -10,12 +12,11 @@
 // once the Update button is pressed (macOS asks the user for it the first time).
 // A copy that can't update itself (run from the disk image, a development copy, Linux on Arm) links to the download.
 import { execFile, spawn } from "node:child_process";
-import { chmodSync, copyFileSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, statfsSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
-import { httpsGet } from "./dist/global.js";
+import { download, get, httpError, throughWays, triedText } from "./dist/ways.js";
 import { log } from "./dist/log.js";
 import { newer, releaseNotes, VERSION } from "./dist/update.js";
 import { REPO_URL } from "./dist/ui.js";
@@ -24,18 +25,17 @@ const exec = promisify(execFile);
 // FOXHOLE_RELEASES: a server laid out like GitHub's releases, for testing
 const RELEASES = process.env.FOXHOLE_RELEASES ?? `${REPO_URL}/releases`;
 const SEMVER = /^\d+\.\d+\.\d+$/;
-const httpError = (status) => Object.assign(new Error(`HTTP ${status}`), { status });
 
-/** The latest release's version, from where /releases/latest redirects (GitHub's API allows few requests per IP, and NAT and VPN exits share one). */
-export async function latest(proxy) {
-  const res = await httpsGet(`${RELEASES}/latest`, proxy);
+/** The latest release's version, from where /releases/latest redirects (GitHub's API allows few requests per IP, and NAT and VPN exits share one). `way`: ways.ts's. */
+export async function latest(way) {
+  const res = await get(`${RELEASES}/latest`, way);
   res.resume();
   return /\/releases\/tag\/v?(\d+\.\d+\.\d+)$/.exec(res.headers.location ?? "")?.[1] ?? null;
 }
 
 /** What's new in the releases after this one, up to `to`, from the releases' feed (update.ts releaseNotes). */
-export async function notes(proxy, to) {
-  const res = await httpsGet(`${RELEASES}.atom`, proxy);
+export async function notes(way, to) {
+  const res = await get(`${RELEASES}.atom`, way);
   if (res.statusCode !== 200) {
     res.resume();
     throw httpError(res.statusCode);
@@ -44,47 +44,6 @@ export async function notes(proxy, to) {
   res.setEncoding("utf8");
   for await (const c of res) atom += c;
   return releaseNotes(atom, VERSION, to);
-}
-
-/** Downloads `url` to `file`, carrying on from what an earlier try left there; `progress(percent)` as it goes. */
-export async function download(url, file, proxy, progress) {
-  for (let hops = 0; hops < 6; hops++) {
-    const have = existsSync(file) ? statSync(file).size : 0;
-    const res = await httpsGet(url, proxy, have ? { range: `bytes=${have}-` } : {});
-    const { statusCode, headers } = res;
-    if (statusCode >= 300 && statusCode < 400 && headers.location) {
-      res.resume();
-      url = new URL(headers.location, url).href;
-      continue;
-    }
-    if (statusCode === 416 && have) {
-      res.resume();
-      if (Number(/\/(\d+)$/.exec(headers["content-range"] ?? "")?.[1]) === have) return; // it's all there already
-      rmSync(file); // what's there doesn't fit: from the start
-      continue;
-    }
-    if (statusCode !== 200 && statusCode !== 206) {
-      res.resume();
-      throw httpError(statusCode);
-    }
-    const from = statusCode === 206 ? have : 0; // a 200 is the whole file again
-    const total = statusCode === 206 ? Number(/\/(\d+)$/.exec(headers["content-range"] ?? "")?.[1]) : Number(headers["content-length"]);
-    if (!(total > 0)) throw new Error("the server didn't say the file's size");
-    let got = from;
-    await pipeline(
-      res,
-      async function* (chunks) {
-        for await (const c of chunks) {
-          progress(Math.floor(((got += c.length) / total) * 100));
-          yield c;
-        }
-      },
-      createWriteStream(file, { flags: from ? "a" : "w" }),
-    );
-    if (statSync(file).size !== total) throw new Error("download cut short");
-    return;
-  }
-  throw new Error("too many redirects");
 }
 
 /** Copies Foxhole.app out of the disk image to `app` once it checks out: intact, signed, this app and the version expected. */
@@ -144,20 +103,21 @@ export class Updater {
   // | { kind: "apk", check(file, version), open(file) } (the phone's: promises);
   // null: it can't, and the window links to the download instead
   #target;
-  #via; // () => the VPN's proxy when connected
+  #ways; // () => the ways to GitHub, in the order they're tried (ways.ts updateWays)
   #changed;
   #version = null; // a newer release
   #notes = null; // what's new in it (and any between), once GitHub's answered: update.ts Notes
   #phase = null; // null, "downloading" or "installing"
   #progress = null; // the download, in percent
+  #via = null; // the way it's downloading by: "direct", "vpn" or "relay"
   #ready = null; // the new version, waiting to go in: the app (macOS) or the file (Windows, AppImage); true once installed (.deb)
   #error = null; // why the last try failed
 
-  constructor({ dir, downloads, target, via, changed }) {
+  constructor({ dir, downloads, target, ways, changed }) {
     this.#dir = dir;
     this.#downloads = downloads;
     this.#target = target;
-    this.#via = via;
+    this.#ways = ways;
     this.#changed = changed;
   }
 
@@ -186,8 +146,8 @@ export class Updater {
     this.#schedule();
   }
 
-  // At once (directly, or through the VPN if it's up already); if that found nothing (GitHub blocked, or no answer yet),
-  // again a minute in, after the connect at launch, so through the VPN; then every 6 hours.
+  // At once (by the ways there are yet: the account may not be signed in); if that found nothing (GitHub blocked, or no
+  // answer yet), again a minute in, after the connect at launch, so through the VPN; then every 6 hours.
   #schedule() {
     const next = (ms) => setTimeout(() => void this.check().then(() => next(6 * 3600_000)), ms).unref();
     void this.check().then(() => next(this.#version ? 6 * 3600_000 : 60_000));
@@ -209,14 +169,14 @@ export class Updater {
   state() {
     return this.#version && {
       version: this.#version, auto: !!this.#target, kind: this.#target?.kind ?? null,
-      phase: this.#phase, progress: this.#progress, ready: !!this.#ready, error: this.#error, file: this.file(), notes: this.#notes,
+      phase: this.#phase, progress: this.#progress, via: this.#via, ready: !!this.#ready, error: this.#error, file: this.file(), notes: this.#notes,
     };
   }
 
   /** Looks for a newer release. */
   async check() {
     try {
-      const v = await this.#try((proxy) => latest(proxy));
+      const v = await this.#try((way) => latest(way));
       if (v && newer(v, VERSION) && v !== this.#version && !this.#phase) {
         [this.#version, this.#ready, this.#error, this.#notes] = [v, null, null, null];
         this.#changed();
@@ -224,7 +184,7 @@ export class Updater {
       // the update dialog's changelog: asked again at the next look if GitHub didn't answer
       const to = this.#version;
       if (to && !this.#notes) {
-        const n = await this.#try((proxy) => notes(proxy, to));
+        const n = await this.#try((way) => notes(way, to));
         if (to === this.#version) {
           this.#notes = n;
           this.#changed();
@@ -235,17 +195,9 @@ export class Updater {
     }
   }
 
-  /** Through the VPN when connected, else (or when that fails short of an answer) directly. */
-  async #try(fn) {
-    const proxy = this.#via();
-    if (proxy) {
-      try {
-        return await fn(proxy);
-      } catch (err) {
-        if (err.status) throw err; // the server answered: asking again directly won't change that
-      }
-    }
-    return fn(undefined);
+  /** By each way in turn till one gets GitHub's answer (ways.ts throughWays): `fn(way, last)`. */
+  #try(fn) {
+    return throughWays(this.#ways(), fn);
   }
 
   /** The Update button: downloads the new version for this system and gets it ready to go in. True once it's ready. */
@@ -265,14 +217,16 @@ export class Updater {
         const { bavail, bsize } = statfsSync(this.#downloads);
         const need = t.kind === "mac" ? 1e9 : 4e8; // the download (and on a Mac the app in it, and the one it replaces)
         if (bavail * bsize < need) throw new Error(`it needs ${need / 1e9} GB free on the disk`);
-        // into .part, carried on from there after a break (download() resumes), then renamed: a file by its own name is whole
-        await this.#try((proxy) =>
-          download(`${RELEASES}/download/v${v}/${basename(file)}`, `${file}.part`, proxy, (p) => {
+        // into .part, carried on from there after a break (download() resumes, by any way), then renamed: a file by its own name is whole
+        await this.#try((way, last) => {
+          this.#via = way.via;
+          this.#changed();
+          return download(`${RELEASES}/download/v${v}/${basename(file)}`, `${file}.part`, way, (p) => {
             if (p === this.#progress) return;
             this.#progress = p;
             this.#changed();
-          }),
-        );
+          }, { last });
+        });
         renameSync(`${file}.part`, file);
       }
       writeFileSync(join(this.#dir, `got-${v}`), "");
@@ -307,13 +261,16 @@ export class Updater {
     } catch (err) {
       // a full disk: give the space back rather than keep a part of the download
       if (err.code === "ENOSPC") rmSync(`${file}.part`, { force: true });
+      // no way got it: what came (by any) is kept for the next try; with nothing, which ways didn't get through
+      const some = existsSync(`${file}.part`) && statSync(`${file}.part`).size > 0;
+      const tried = triedText(err.tried);
       this.#error = err.status === 404 ? "this release has no download for your system yet"
         : err.code === "ENOSPC" ? "the disk is full"
-        : this.#phase === "downloading" && !err.status ? "the download broke off; try again and it carries on where it stopped"
+        : this.#phase === "downloading" && !err.status ? (some || !tried ? "the download broke off; try again and it carries on where it stopped" : `couldn't download it ${tried}`)
         : err.message;
       log(`update: ${err.message}`);
     }
-    [this.#phase, this.#progress] = [null, null];
+    [this.#phase, this.#progress, this.#via] = [null, null, null];
     this.#changed();
     return !!this.#ready;
   }

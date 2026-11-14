@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import https from "node:https";
 import tls from "node:tls";
-import type { Socket } from "node:net";
+import type { Duplex } from "node:stream";
 import type { IncomingMessage } from "node:http";
 import { promisify } from "node:util";
 import { lookup } from "node:dns/promises";
@@ -199,11 +199,14 @@ export interface DownloadVia {
   say?: (msg: string) => void; // progress for the TUI's status line; without it the CLI prints one line
 }
 
-/** GETs `url` over https through `proxy`'s HTTP CONNECT when given; resolves with the response, redirects not followed. */
-export function httpsGet(url: string, proxy?: DownloadVia["proxy"], headers: Record<string, string> = {}): Promise<IncomingMessage> {
+/** Opens a connection to host:port that isn't the local proxy's: Firefox VPN's own, while it's off (proxy.ts vpnTunnel). */
+export type Tunnel = (host: string, port: number) => Promise<Duplex>;
+
+/** GETs `url` over https through `proxy`'s HTTP CONNECT, or a tunnel it opens, when given; resolves with the response, redirects not followed. */
+export function httpsGet(url: string, proxy?: DownloadVia["proxy"] | Tunnel, headers: Record<string, string> = {}): Promise<IncomingMessage> {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
-    const request = (socket?: Socket) => {
+    const request = (socket?: Duplex) => {
       // No `agent` option: with one (even `false`), Node ignores createConnection and dials directly. Without
       // an agent it can't tell https's port either, so say it, or the Host header gets ":80" (a redirect loop).
       const opts = { timeout: 30_000, defaultPort: 443, headers, ...(socket && { createConnection: () => tls.connect({ socket, servername: u.hostname }) }) };
@@ -211,6 +214,7 @@ export function httpsGet(url: string, proxy?: DownloadVia["proxy"], headers: Rec
       req.on("timeout", () => req.destroy(new Error("timed out"))).on("error", reject); // idle 30 s: a stalled download fails
     };
     if (!proxy) return request();
+    if (typeof proxy === "function") return void proxy(u.hostname, Number(u.port || 443)).then(request, reject);
     const tunnel = http.request({ host: proxy.host, port: proxy.port, method: "CONNECT", path: `${u.hostname}:${u.port || 443}`, timeout: 30_000 });
     tunnel.on("connect", (res, socket) => {
       if (res.statusCode === 200) return request(socket);

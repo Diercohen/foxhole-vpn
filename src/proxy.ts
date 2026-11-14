@@ -286,16 +286,17 @@ function openUpstream(server: Upstream, passToken: string, target: Target): Prom
   });
 }
 
-/** Opens the upstream, retrying transient failures (not proxy rejections). */
+/** Opens the upstream, retrying transient failures (not proxy rejections); `open`: how each try opens it. */
 async function openUpstreamWithRetry(
   server: Upstream,
   passToken: string,
   target: Target,
+  open = openUpstream,
 ): Promise<tls.TLSSocket> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= UPSTREAM_ATTEMPTS; attempt++) {
     try {
-      return await openUpstream(server, passToken, target);
+      return await open(server, passToken, target);
     } catch (err) {
       lastErr = err;
       // A 4xx (bad pass, refused target) or a refused port won't change on retry.
@@ -354,6 +355,20 @@ async function dial(conn: Connection, target: Target): Promise<tls.TLSSocket | n
 function ownTunnel(conn: Connection, target: Target): Promise<tls.TLSSocket | null> {
   const server = conn.server, pass = conn.passInHand;
   return !server || conn.relay || !pass ? Promise.resolve(null) : openUpstream(server, pass.token, target);
+}
+
+/**
+ * A tunnel to `target` through Firefox VPN while it's off (an update's download, ways.ts): to the server last picked or
+ * the catch-all, on a pass got for it, and a connection of its own (the ready ones are the proxy's). Its failure says
+ * "Firefox VPN: …" and has no status, which is the site's answer alone.
+ */
+export async function vpnTunnel(conn: Pick<Connection, "anyServer" | "currentPass">, target: Target): Promise<tls.TLSSocket> {
+  try {
+    const pass = await conn.currentPass();
+    return await openUpstreamWithRetry(conn.anyServer, pass.token, target, (s, token, t) => connectTls(s).then((up) => connectThrough(up, token, t)));
+  } catch (err) {
+    throw new Error(`Firefox VPN: ${describe(err)}`);
+  }
 }
 
 // ── Split tunneling: each connection goes through the VPN or direct, as the rules say (split.ts).
