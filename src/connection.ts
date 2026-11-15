@@ -1,5 +1,6 @@
 import type { Authenticator } from "./auth.js";
 import {
+  GuardianError,
   fetchPass,
   fetchUsage,
   shouldRotate,
@@ -28,9 +29,32 @@ export class Connection {
   #server: Server | null = null;
   #relay: RelayConfig | null = null;
   #passPromise: Promise<ProxyPass> | null = null;
+  #ended: ((err: Error) => void) | null = null;
+  #endedTold: Authenticator | null = null; // the account it was told for: once each
 
   constructor(auth: Authenticator) {
     this.#auth = auth;
+  }
+
+  /**
+   * Told once per account when its sign-in turns out to have ended (FxA errno 110: signed out elsewhere, or expired) as a
+   * token's asked for, on connecting or while connected: nothing gets through it till it's signed in to again.
+   */
+  onSignInEnded(fn: (err: Error) => void): void {
+    this.#ended = fn;
+  }
+
+  /** The account's token; an ended sign-in told (onSignInEnded). */
+  async #token(auth: Authenticator, signal?: AbortSignal): Promise<string> {
+    try {
+      return await auth.getAccessToken(signal);
+    } catch (err) {
+      if ((err as { errno?: number }).errno === 110 && auth === this.#auth && this.#endedTold !== auth) {
+        this.#endedTold = auth;
+        this.#ended?.(err as Error);
+      }
+      throw err;
+    }
   }
 
   /**
@@ -103,8 +127,16 @@ export class Connection {
     if (this.#passPromise) return this.#passPromise;
     const auth = this.#auth;
     const fetching = (this.#passPromise = (async () => {
-      const token = await auth.getAccessToken(signal);
-      const { pass, usage } = await fetchPass(token, signal);
+      let got: Awaited<ReturnType<typeof fetchPass>>;
+      try {
+        got = await fetchPass(await this.#token(auth, signal), signal);
+      } catch (err) {
+        // Guardian refused the token kept from before (its sign-in may have ended since): a new one, once, which says why
+        if (!(err instanceof GuardianError && err.status === 401 && auth.forget)) throw err;
+        auth.forget();
+        got = await fetchPass(await this.#token(auth, signal), signal);
+      }
+      const { pass, usage } = got;
       if (this.#auth !== auth) return pass; // switched meanwhile: it's for this caller only
       this.#pass = pass;
       if (usage) this.#usage = usage;
@@ -120,7 +152,7 @@ export class Connection {
   /** Refreshes just the usage figure (cheap). An answer without it keeps the last one. */
   async refreshUsage(signal?: AbortSignal): Promise<Usage | null> {
     const auth = this.#auth;
-    const usage = await fetchUsage(await auth.getAccessToken(signal), signal);
+    const usage = await fetchUsage(await this.#token(auth, signal), signal);
     if (this.#auth === auth) this.#usage = usage ?? this.#usage;
     return this.#usage;
   }

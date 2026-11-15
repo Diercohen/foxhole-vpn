@@ -31,6 +31,10 @@ const en0 = { gw: "192.168.0.1", dev: "en0" };
 assert.ok(!macConflictingVpn("default  192.168.0.1  UGScg  en0\n", en0), "plain uplink ok");
 assert.ok(macConflictingVpn("0/1  10.8.0.1  UGSc  utun4\n128.0/1  10.8.0.1  UGSc  utun4\n", en0), "split routes");
 assert.ok(macConflictingVpn("", { gw: null, dev: "utun3" }), "default on utun");
+assert.equal(macConflictingVpn("0/1  10.8.0.1  UGSc  utun4\n128.0/1  10.8.0.1  UGSc  utun4\n", en0), "utun4", "its device");
+assert.equal(macConflictingVpn("0/1  10.8.0.1  UGSc  3  0  utun4\n", en0), "utun4", "past Refs and Use (older macOS)");
+assert.equal(macConflictingVpn("0/1  link#12  UCS  utun2\n", en0), "utun2", "on-link");
+assert.equal(macConflictingVpn("", { gw: null, dev: "utun3" }), "utun3");
 
 // After a Wi-Fi change: the primary default from netstat, past our utun's 0/1 routes.
 const netstat = [

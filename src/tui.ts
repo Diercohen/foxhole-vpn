@@ -18,13 +18,13 @@ import { AlreadySignedIn, FIREFOX, LOW_DATA, authFor, loadAccounts, peekFirefox,
 import { desktopApp, signInWindow, type FxaLogin } from "./fxalogin.js";
 import { deviceLines, deviceName, waitProblem } from "./devicelogin.js";
 import { fetchUsage, type Usage } from "./guardian.js";
-import { startProxy, onProxyWarning, checkSite, netState, onNetState, reach, watchReach, NET_CUT, type ProxyHandle, type Reach } from "./proxy.js";
+import { startProxy, onProxyWarning, checkSite, checkVpn, netState, onNetState, reach, watchReach, NET_CUT, type ProxyHandle, type Reach } from "./proxy.js";
 import { startSmartDns, smartDnsHost, smartDnsProblem, type SmartDns } from "./smartdns.js";
 import { log, logLines, onLog } from "./log.js";
 import { useSplit, splitOn, splitSummary, parseRule, parseSite, appOf, wayOf, hits, recentSites, SMART, type Split, type Via } from "./split.js";
 import { listApps } from "./apps.js";
 import { helperFor, helperInstalled, helperReady } from "./helper.js";
-import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost, type Priv } from "./global.js";
+import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost, otherVpn, type Priv } from "./global.js";
 import { hot, onHot } from "./hot.js";
 import { checkUpdate, canUpdate, canDownload, downloadUpdate, runUpdate, restart, versionLines, latestVersion, fetchNotes, updateHint, UPDATE_COMMAND, VERSION, type Notes, type Block, type Span } from "./update.js";
 import { updateWays, wayName, triedText, type Way } from "./ways.js";
@@ -324,6 +324,7 @@ export class Tui {
       this.#message = red(`proxy: ${msg}`);
       this.#render();
     });
+    this.#conn.onSignInEnded((err) => void this.#signInEnded(err));
     // the VPN's connections fail for the network (cut off, offline): connected, the status says so till it's back (#lose)
     onNetState((said) => {
       if (said && this.#active) return this.#lose(said === NET_CUT ? "cut" : "offline");
@@ -1135,7 +1136,13 @@ export class Tui {
         await this.#conn.selectRelay(relay, session ? (s) => session.addServer(s) : undefined);
       } else {
         await this.#conn.currentPass(); // warm the pass; surfaces auth/quota errors now, while the relay (if on) still works
-        await this.#conn.selectServer(country.locked ? country : country.available ? country : null, session ? (s) => session.addServer(s) : undefined);
+        // the internet through the server picked, before anything moves to it: a pass is no proof (a network that blocks
+        // the VPN's servers), and it would say connected with nothing getting through. Failing, the one in use stays.
+        const conn = this.#conn;
+        await conn.selectServer(country.locked ? country : country.available ? country : null, async (s) => {
+          await session?.addServer(s);
+          await checkVpn(conn, s);
+        });
       }
       if (!this.#proxy) this.#proxy = await this.#startProxy();
       else if (switching) this.#proxy.reset();
@@ -1155,7 +1162,8 @@ export class Tui {
         const blocked = this.#saysBlocked(err);
         // fetch's own message is just "fetch failed"; the network reason is in its cause
         const cause = (err as Error).cause as { code?: string; message?: string } | undefined;
-        this.#message = red(`connect failed: ${(err as Error).message}${cause ? ` (${cause.code ?? cause.message})` : ""}`) + this.#relayHint();
+        const ended = (err as { errno?: number }).errno === 110; // the sign-in's gone (onSignInEnded)
+        this.#message = red(`connect failed: ${(err as Error).message}${cause ? ` (${cause.code ?? cause.message})` : ""}`) + (ended ? dim(" · a: Accounts, to sign in again") : this.#relayHint());
         const failed = this.#message;
         // why, when it's the network (nothing said since): after a look first, it waits for it, as one found offline does
         if (!blocked)
@@ -1232,6 +1240,12 @@ export class Tui {
   /** Toggle whole-system routing for the selected country (asks for sudo). */
   async #toggleGlobal(): Promise<void> {
     if (this.#global) return void this.#disableGlobal();
+    // another VPN taking all the traffic (Windscribe's routes, say): said now, not after a password (start() refuses it)
+    const other = await otherVpn();
+    if (other) {
+      this.#message = red(`global failed: ${other.message}`);
+      return void this.#render();
+    }
     // Global needs a live proxy + chosen server; connect first if needed.
     if (!this.#proxy || !this.#active) {
       await this.#connect();
@@ -1311,6 +1325,7 @@ export class Tui {
     this.#message = dim("preparing tun2socks…");
     this.#render();
     let session: GlobalSession | null = null;
+    let drop: Error | null = null; // why the connection goes too: nothing gets through the VPN (or the relay) either
     try {
       // a download goes through the VPN (GitHub can be slow or blocked), its progress in the status line
       const tun2socks = () => this.#tun2socks();
@@ -1362,10 +1377,10 @@ export class Tui {
       this.#globalCountry = this.#active;
       this.#message = dim("verifying…");
       this.#render();
-      const ip = await session.verifyExitIp(this.#relayOn());
-      this.#message = ip
-        ? (this.#relayOn() ? purple : green)(`global ON · exit IP ${ip}`)
-        : yellow(`global on, but internet check failed — DNS or ${this.#relayOn() ? "relay" : "VPN"} issue`);
+      const relay = this.#relayOn();
+      const ip = await session.verifyExitIp(relay);
+      if (ip) this.#message = (relay ? purple : green)(`global ON · exit IP ${ip}`);
+      else drop = await this.#globalNoInternet(session, relay);
     } catch (err) {
       this.#message = red(`global failed: ${(err as Error).message}`);
       await session?.stop().catch(() => {});
@@ -1376,6 +1391,41 @@ export class Tui {
       this.#refreshNet();
       this.#render();
     }
+    if (!drop) return;
+    const hint = this.#relayHint(); // while still on: none when it's the relay that failed
+    await this.#disconnect(); // rather than say connected with nothing getting through
+    this.#message = red(`global failed: ${drop.message} — disconnected`) + hint;
+    this.#render();
+  }
+
+  /**
+   * As the desktop app's (controller.js): whole-system mode the internet didn't open through doesn't stay on. The VPN (or
+   * the relay) carrying nothing either is returned, for the connection to go too; carrying, it's DNS or the tun, and the
+   * proxy stays on, as it was before whole-system mode.
+   */
+  async #globalNoInternet(session: GlobalSession, relay: boolean): Promise<Error | null> {
+    this.#message = dim("restoring networking…");
+    this.#render();
+    this.#global = null;
+    this.#globalCountry = null;
+    this.#globalDown = false;
+    await session.stop().catch(() => {});
+    this.#smartDnsBack();
+    const conn = this.#conn;
+    const why = await (relay ? relayCheck({ relay: conn.relay!, server: null }) : checkVpn(conn, conn.server!)).then(() => null, (err: Error) => err);
+    if (!why) this.#message = red(`global failed: no internet through it, though the ${relay ? "relay" : "VPN"} works (a DNS problem?) — global off, SOCKS proxy still on`);
+    return why;
+  }
+
+  /** The account's sign-in has ended (Connection onSignInEnded): connected, it disconnects rather than say it's on; Accounts signs in again. */
+  async #signInEnded(err: Error): Promise<void> {
+    // once a connect or a switch under way is over: a switch's failure leaves the connection there was
+    const busy = this.#busy;
+    for (let i = 0; this.#busy && i < 600; i++) await new Promise((r) => setTimeout(r, 100));
+    if (this.#active) await this.#disconnect();
+    else if (busy) return; // the connect's failure said so
+    this.#message = red(err.message) + dim(" · a: Accounts, to sign in again");
+    this.#render();
   }
 
   /** tun2socks, downloaded once: through the VPN while connected (GitHub can be slow or blocked), its progress in the status line. */

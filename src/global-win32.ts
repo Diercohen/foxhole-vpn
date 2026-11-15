@@ -17,7 +17,7 @@ import { randomBytes } from "node:crypto";
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startDnsForwarder, type DnsForwarder } from "./dns.js";
-import { PRIVATE_CIDRS, DOH_HOST, stopProcess, directPriv, type GlobalSessionOptions, type Priv, type Rerouter } from "./global.js";
+import { PRIVATE_CIDRS, DOH_HOST, stopProcess, directPriv, OtherVpnError, runningVpnApps, SPLIT_ROUTES, type GlobalSessionOptions, type Priv, type Rerouter } from "./global.js";
 import { GUARDIAN_HOST, pinGuardian } from "./guardian.js";
 import { logStream } from "./log.js";
 
@@ -328,7 +328,8 @@ export class WindowsRouting implements Rerouter<WinWatch> {
     const up = parseWinUplink(await psOut(UPLINK_PS).catch(() => ""));
     if (!up) throw new Error("No default route found; are you online?");
     if (winConflictingVpn(up) && !force) {
-      throw new Error(`Another VPN looks active (uplink ${up.alias}, or 0/1 split routes). Stop it, or force.`);
+      const dev = isWinVpnAdapter(up.alias, up.desc) ? up.alias : SPLIT_ROUTES;
+      throw new OtherVpnError(dev, await runningVpnApps(dev));
     }
     await restoreWindows(priv); // a crashed earlier run must not stack on top of this one
 

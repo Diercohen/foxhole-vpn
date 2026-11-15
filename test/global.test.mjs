@@ -1,6 +1,6 @@
 // Pure-function checks for the global-routing planner. No root, no network.
 import assert from "node:assert";
-import { parseDefaultRoute, isVpnDev, planSetup, planTeardown, planStaleCleanup, staleCleanupScript, planDirect, planDirectTeardown, conflictingVpn, needsRepin, pinCmd, dialHost } from "../dist/global.js";
+import { parseDefaultRoute, isVpnDev, planSetup, planTeardown, planStaleCleanup, staleCleanupScript, planDirect, planDirectTeardown, conflictingVpn, vpnAppsIn, OtherVpnError, needsRepin, pinCmd, dialHost } from "../dist/global.js";
 import { Connection } from "../dist/connection.js";
 
 // Real-world `ip route` with a DHCP default plus extra routes.
@@ -81,15 +81,45 @@ assert.ok(teardown.some((c) => c.join(" ") === "ip route del 151.101.1.1"), "ser
 assert.ok(teardown.some((c) => c.join(" ") === "ip route del 8.8.8.8"), "DNS pin removed");
 assert.ok(teardown.some((c) => c.join(" ") === "ip -6 route del blackhole default metric 1"), "IPv6 restored");
 
-// A VPN on the default device, or 0/1 split routes, is detected as conflicting.
+// A VPN on the default device, or 0/1 split routes, is detected as conflicting: its device.
 const wlo1 = { gw: "192.168.0.1", dev: "wlo1" };
-assert.equal(conflictingVpn("default via 192.168.0.1 dev wlo1\n", wlo1), false, "plain uplink is fine");
-assert.equal(conflictingVpn("default via 10.0.0.1 dev tun0\n", { gw: "10.0.0.1", dev: "tun0" }), true, "vpn dev conflicts");
+assert.equal(conflictingVpn("default via 192.168.0.1 dev wlo1\n", wlo1), null, "plain uplink is fine");
+assert.equal(conflictingVpn("default via 10.0.0.1 dev tun0\n", { gw: "10.0.0.1", dev: "tun0" }), "tun0", "vpn dev conflicts");
 assert.equal(
   conflictingVpn("0.0.0.0/1 via 10.136.12.1 dev tun0\ndefault via 192.168.0.1 dev wlo1\n", wlo1),
-  true,
+  "tun0",
   "0/1 split route conflicts even when default looks normal",
 );
+// Windscribe connected (Stealth over OpenVPN), as `ip route` has it: its routes beat the tun's default
+const windscribe = [
+  "0.0.0.0/1 via 10.146.52.1 dev tun0 ",
+  "default via 192.168.0.1 dev wlo1 proto dhcp src 192.168.0.103 metric 20600 ",
+  "10.146.52.0/22 dev tun0 proto kernel scope link src 10.146.52.6 ",
+  "128.0.0.0/1 via 10.146.52.1 dev tun0 ",
+  "152.233.50.147 via 192.168.0.1 dev wlo1 metric 200 ",
+].join("\n");
+assert.deepEqual(parseDefaultRoute(windscribe, "foxhole0"), wlo1);
+assert.equal(conflictingVpn(windscribe, wlo1), "tun0");
+// Which app: its device's name, else a process only its tunnel runs (ps cuts names to 15 letters); an app's always-on
+// parts (Windscribe's window and helper, Clash Verge's service) say nothing
+const ps = ["systemd", "helper", "Windscribe", "windscribewstun", "windscribeopenv", "clash-verge-ser", "zsh"];
+assert.deepEqual(vpnAppsIn("tun0", ps), ["Windscribe"]);
+assert.deepEqual(vpnAppsIn("tun0", ["helper", "Windscribe", "clash-verge-ser", "verge-mihomo"]), [], "Windscribe off, Clash a proxy: none named");
+assert.deepEqual(vpnAppsIn("Mihomo", ps), ["Clash"], "Clash Verge's TUN mode, by its device");
+assert.deepEqual(vpnAppsIn("wg0-mullvad", []), ["Mullvad VPN"]);
+assert.deepEqual(vpnAppsIn("nordlynx", []), ["NordVPN"]);
+assert.deepEqual(vpnAppsIn("wg0", []), ["WireGuard"]);
+assert.deepEqual(vpnAppsIn("tun0", ["/usr/bin/openvpn", "openconnect"]), ["OpenVPN", "OpenConnect"]);
+assert.deepEqual(vpnAppsIn("Windscribe IKEv2", []), ["Windscribe"], "Windows's adapter");
+assert.deepEqual(vpnAppsIn("tun0", ["C:\\Program Files\\OpenVPN\\bin\\openvpn.exe"]), ["OpenVPN"]);
+assert.deepEqual(vpnAppsIn("tun0", ["/Applications/Windscribe.app/Contents/Helpers/windscribeopenvpn"]), ["Windscribe"], "not OpenVPN too");
+// what it says
+const said = (dev, apps) => new OtherVpnError(dev, apps).message.replace(/ and takes all the traffic: .*/, "");
+assert.equal(new OtherVpnError("tun0", ["Windscribe"]).message, "Another VPN is on (Windscribe, on tun0) and takes all the traffic: turn it off for whole-system mode; the proxy works alongside it");
+assert.equal(said("tun0", []), "Another VPN is on (on tun0)");
+assert.equal(said("0/1 split routes", ["OpenVPN"]), "Another VPN is on (OpenVPN)");
+assert.equal(said("0/1 split routes", []), "Another VPN is on (0/1 split routes)");
+assert.equal(said("tun0", ["OpenVPN", "OpenConnect"]), "Another VPN is on (OpenVPN or OpenConnect, on tun0)");
 
 // After a Wi-Fi change: find the real uplink past our own tun default (metric 1, listed first).
 assert.deepEqual(

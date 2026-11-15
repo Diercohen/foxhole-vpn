@@ -372,6 +372,81 @@ export async function vpnTunnel(conn: Pick<Connection, "anyServer" | "currentPas
   }
 }
 
+// ── Whether Firefox VPN carries anything: a connect looks through the server it picked before it's said to be on, and
+// whole-system mode the internet didn't open through looks at why (controller.js, tui.ts). A pass and a server are no
+// proof: a network that blocks the VPN's servers leaves them carrying nothing, while the window would say connected.
+const VPN_CHECKS = [
+  { host: IP_HOST, port: 80, path: "/" },
+  { host: TRACE_HOST, port: 80, path: "/cdn-cgi/trace" },
+];
+const VPN_CHECK_MS = 12_000;
+
+/** Why Firefox VPN carries nothing (checkVpn). `answered`: its server answers on this network, but refused, or let nothing back. */
+export class VpnCheckError extends Error {
+  constructor(message: string, readonly answered: boolean) {
+    super(message);
+  }
+}
+
+type Tried = Error & { code?: string; reached?: boolean };
+
+/** A page asked for through `server` on a pass, plain HTTP in the tunnel: resolves as its answer comes; rejects saying whether the server was reached. */
+function askThrough(server: Upstream, token: string, site: (typeof VPN_CHECKS)[number], ms: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let up: tls.TLSSocket | null = null;
+    let reached = false; // its TLS handshake done: the server answers on this network
+    let done = false;
+    const end = (err?: Tried) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      up?.destroy();
+      if (!err) return resolve();
+      err.reached = reached;
+      reject(err);
+    };
+    const timer = setTimeout(() => end(new Error("timed out")), ms);
+    connectTls(server)
+      .then((s) => {
+        if (done) return void s.destroy();
+        up = s;
+        reached = true;
+        return connectThrough(s, token, { host: site.host, port: site.port }).then((t) => {
+          if (done) return;
+          // any bytes back: inside the server's TLS, nothing on the way could have made them up
+          t.once("data", () => end());
+          t.once("close", () => end(new Error("upstream closed the connection")));
+          t.on("error", (e) => end(e));
+          t.write(`GET ${site.path} HTTP/1.1\r\nHost: ${site.host}\r\nUser-Agent: foxhole\r\nAccept: */*\r\nConnection: close\r\n\r\n`);
+        });
+      })
+      .catch((err: Tried) => end(err));
+  });
+}
+
+/**
+ * The internet through Firefox VPN now: through `server` (the one picked, before it's in use: in global mode its address
+ * pinned first) on `conn`'s pass, a page asked of ipify and of Cloudflare at once, for one being down; the first answer
+ * does. Throws VpnCheckError when neither comes within `ms`; the pass's own errors (the sign-in, Guardian) as they are.
+ */
+export async function checkVpn(conn: Pick<Connection, "currentPass">, server: Upstream, ms = VPN_CHECK_MS): Promise<void> {
+  const { token } = await conn.currentPass();
+  try {
+    await Promise.any(VPN_CHECKS.map((site) => askThrough(server, token, site, ms)));
+  } catch (err) {
+    const tried = (err as AggregateError).errors as Tried[];
+    const refused = tried.find((e) => e instanceof UpstreamStatusError);
+    const reached = tried.find((e) => e.reached);
+    const why = refused
+      ? new VpnCheckError(`Firefox VPN's server refused it: ${refused.message}`, true)
+      : reached
+        ? new VpnCheckError(`Firefox VPN's server took the connection, but nothing came back through it (${reached.code ?? reached.message})`, true)
+        : new VpnCheckError(`Firefox VPN's server doesn't answer on this network (${tried[0].code ?? tried[0].message}): it seems blocked here`, false);
+    log(`vpn check: ${server.hostname}${server.ip ? ` (${server.ip})` : ""}:${server.port}: ${why.message}`);
+    throw why;
+  }
+}
+
 // ── Split tunneling: each connection goes through the VPN or direct, as the rules say (split.ts).
 
 // foxhole's own lookups and exit-IP check always use the VPN: global mode's DNS rides on the one,

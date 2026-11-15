@@ -213,7 +213,9 @@ near-root on your computer). In Iran, add
   QUIC stays on TCP, which is faster through it.
 - The VPN may refuse non-web ports (e.g. SSH `:22`); git over SSH to GitHub
   still works via `ssh.github.com:443`.
-- Whole-system mode refuses to start next to another full-tunnel VPN (`--force` overrides).
+- Whole-system mode refuses to start next to another full-tunnel VPN, and says which (Windscribe on `tun0`, say)
+  before any password: its routes would take all the traffic, and its kill switch what goes around it. The proxy
+  works alongside it. `foxhole global --force` goes ahead anyway.
 - Without systemd-resolved (Linux), DNS falls back to your own resolvers, which leaks; foxhole says so.
 
 ## How it works
@@ -222,6 +224,10 @@ foxhole reads your Firefox Account login from your Firefox profile, exchanges it
 for a short-lived proxy pass from Mozilla's Guardian API (see [AUTH.md](AUTH.md)),
 and runs a local SOCKS5 + HTTP proxy that tunnels through Firefox VPN's Fastly
 servers. Whole-system mode adds a TUN device (tun2socks) and routes everything into it.
+It says connected only once a page opens through the server it picked (ipify's, or Cloudflare's), so a network
+that blocks Firefox VPN's servers says so rather than looking connected; whole-system mode the internet doesn't
+open through goes back off at once, the proxy staying on if the VPN works, and a sign-in that's ended (signed out
+elsewhere) disconnects and asks to sign in again.
 
 ## Building
 

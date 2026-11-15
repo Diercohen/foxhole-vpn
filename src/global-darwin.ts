@@ -6,7 +6,7 @@ import { execFile, type spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { lookup } from "node:dns/promises";
 import { connect } from "node:net";
-import { PRIVATE_CIDRS, DOH_HOST, isVpnDev, stopProcess, type GlobalSessionOptions, type Rerouter } from "./global.js";
+import { PRIVATE_CIDRS, DOH_HOST, isVpnDev, stopProcess, OtherVpnError, runningVpnApps, SPLIT_ROUTES, type GlobalSessionOptions, type Rerouter } from "./global.js";
 import { GUARDIAN_HOST, pinGuardian } from "./guardian.js";
 import { currentSplit } from "./split.js";
 
@@ -103,9 +103,18 @@ export function macNeedsRepin(pinnedTo: MacRoute, uplink: MacRoute, serverRouteG
   return parseRouteGet(serverRouteGet)?.dev === UTUN;
 }
 
-/** Another full-tunnel VPN: default on a utun, or 0/1 + 128.0/1 split routes in `netstat -rn -f inet`. Pure. */
-export function macConflictingVpn(netstat: string, orig: MacRoute): boolean {
-  return isVpnDev(orig.dev) || /^(0|128\.0)\/1\s/m.test(netstat);
+/** Another full-tunnel VPN's device, or null: default on a utun, or 0/1 + 128.0/1 split routes in `netstat -rn -f inet`. Pure. */
+export function macConflictingVpn(netstat: string, orig: MacRoute): string | null {
+  if (isVpnDev(orig.dev)) return orig.dev;
+  const split = /^(?:0|128\.0)\/1\s(.*)$/m.exec(netstat);
+  // its Netif: the gateway's an address or link#N, the flags have no digit, Refs and Use no letter
+  return split ? (split[1].trim().split(/\s+/).slice(1).find((t) => /^[a-z]+\d+$/i.test(t)) ?? SPLIT_ROUTES) : null;
+}
+
+/** Another full-tunnel VPN's device now (macConflictingVpn), or null: the routes are read without root. */
+export async function macOtherVpn(): Promise<string | null> {
+  const orig = parseRouteGet((await exec("route", ["-n", "get", "default"])).stdout);
+  return orig && macConflictingVpn((await exec("netstat", ["-rn", "-f", "inet"])).stdout, orig);
 }
 
 export async function waitFor(what: string, probe: () => Promise<unknown>, ms = 5000): Promise<void> {
@@ -151,9 +160,8 @@ export class DarwinRouting implements Rerouter<MacRoute> {
     const orig = parseRouteGet((await exec("route", ["-n", "get", "default"])).stdout);
     if (!orig) throw new Error("No default route found; are you online?");
     const { stdout: netstat } = await exec("netstat", ["-rn", "-f", "inet"]);
-    if (macConflictingVpn(netstat, orig) && !force) {
-      throw new Error(`Another VPN looks active (default on ${orig.dev}, or 0/1 split routes). Stop it, or force.`);
-    }
+    const other = macConflictingVpn(netstat, orig);
+    if (other && !force) throw new OtherVpnError(other, await runningVpnApps(other));
     const serverIp = (await lookup(server.hostname, { family: 4 })).address;
     server.ip = serverIp;
     // Guardian too, while DNS still works: renewing the pass must not need the tunnel.

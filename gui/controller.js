@@ -20,7 +20,7 @@ import { network, publicIp, lanIp, firewallHint } from "./dist/netinfo.js";
 import { helperFor, helperInstalled, helperReady } from "./dist/helper.js";
 import { loadSettings, saveSettings, proxyHost, validPort, loginFor, telegramLink, onJoin, ruleable, withNetRule, withHidden } from "./dist/settings.js";
 import { startTokenReceiver, loadSavedToken, saveToken, forgetToken, tokenProblem } from "./dist/tokenserver.js";
-import { startProxy, onProxyWarning, checkSite, netState, onNetState, reach, watchReach, NET_CUT } from "./dist/proxy.js";
+import { startProxy, onProxyWarning, checkSite, checkVpn, netState, onNetState, reach, watchReach, NET_CUT } from "./dist/proxy.js";
 import { startSmartDns, smartDnsHost, smartDnsProblem } from "./dist/smartdns.js";
 import { startGateway } from "./dist/gateway.js";
 import { log, logLines, onLog } from "./dist/log.js";
@@ -28,7 +28,7 @@ import { useSplit, splitSummary, parseRule, parseSite, appOf, wayOf, hits, recen
 import { traffic, runsOut, sizeOf } from "./dist/traffic.js";
 import { knownBlocked, sanctioned, verdictOf, verdictText, tryText, wantOf } from "./dist/smart.js";
 import { listApps } from "./dist/apps.js";
-import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost } from "./dist/global.js";
+import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost, otherVpn } from "./dist/global.js";
 import { VERSION } from "./dist/update.js";
 import { countryName, gb, shortDate } from "./dist/ui.js";
 import { order, loadLastCountry, saveLastCountry } from "./dist/tui.js";
@@ -353,6 +353,18 @@ export class Controller extends EventEmitter {
     this.#refreshUsage();
   }
 
+  /**
+   * The account's sign-in has ended (Connection onSignInEnded: signed out elsewhere, or expired), connecting or while
+   * connected: nothing gets through it, so it disconnects rather than say it's on (once a connect or a switch under way
+   * is over: a switch's failure leaves the connection there was), and the window asks to sign in again (#ensureAuth's "expired").
+   */
+  async #signInEnded() {
+    log("sign-in: it has ended (signed out elsewhere, or expired) — nothing gets through it till it's signed in to again");
+    for (let i = 0; this.#busy && i < 600; i++) await new Promise((r) => setTimeout(r, 100));
+    if (this.#active) await this.disconnect();
+    void this.#resignIn();
+  }
+
   /** Signs in (again) with the account in use, ending a sign-in still waiting for the one before. */
   #resignIn() {
     this.#gen++;
@@ -369,7 +381,10 @@ export class Controller extends EventEmitter {
       const auth = await this.#ensureAuth(gen);
       if (gen !== this.#gen) continue; // another account picked meanwhile
       if (this.#conn) this.#conn.setAuth(auth);
-      else this.#conn = new Connection(auth);
+      else {
+        this.#conn = new Connection(auth);
+        this.#conn.onSignInEnded(() => void this.#signInEnded());
+      }
       this.#email = this.#currentEmail();
       this.#auth = { stage: "ready" };
       this.#followSmartDns();
@@ -1038,7 +1053,13 @@ export class Controller extends EventEmitter {
         await this.#conn.selectRelay(relay, session ? (s) => session.addServer(s) : undefined);
       } else {
         await this.#conn.currentPass(); // warm the pass; surfaces auth/quota errors now, while the relay (if on) still works
-        await this.#conn.selectServer(country.locked ? country : country.available ? country : null, session ? (s) => session.addServer(s) : undefined);
+        // the internet through the server picked, before anything moves to it: a pass is no proof (a network that blocks
+        // the VPN's servers), and the window would say connected with nothing getting through. Failing, the one in use stays.
+        const conn = this.#conn;
+        await conn.selectServer(country.locked ? country : country.available ? country : null, async (s) => {
+          await session?.addServer(s);
+          await checkVpn(conn, s);
+        });
       }
       if (!this.#proxy) this.#proxy = await this.#startProxy();
       else if (switching) this.#proxy.reset();
@@ -1151,6 +1172,9 @@ export class Controller extends EventEmitter {
   async toggleGlobal() {
     if (this.#busy) return;
     if (this.#global) return this.#disableGlobal();
+    // another VPN taking all the traffic (Windscribe's routes, say): said now, not after a password (start() refuses it)
+    const other = this.#android ? null : await otherVpn();
+    if (other) return this.#say("error", `global failed: ${other.message}`);
     // Global needs a live proxy + chosen server; connect first if needed.
     if (!this.#proxy || !this.#active) {
       await this.connect();
@@ -1213,6 +1237,7 @@ export class Controller extends EventEmitter {
     if (!server || !this.#proxy) return;
     this.#busy = true;
     let session = null;
+    let drop = null; // why the connection goes too: nothing gets through the VPN (or the relay) either
     try {
       if (this.#android) {
         this.#say("info", "going global… if Android asks, allow Foxhole's VPN");
@@ -1263,9 +1288,10 @@ export class Controller extends EventEmitter {
       this.#global = session;
       this.#globalCountry = this.#active;
       this.#say("info", "verifying…");
-      const ip = await session.verifyExitIp(this.#relayOn());
+      const relay = this.#relayOn();
+      const ip = await session.verifyExitIp(relay);
       if (ip) this.#say("ok", `global ON · exit IP ${ip}`);
-      else this.#say("warn", `global on, but internet check failed — DNS or ${this.#relayOn() ? "relay" : "VPN"} issue`);
+      else drop = await this.#globalNoInternet(session, relay);
     } catch (err) {
       this.#say("error", `global failed: ${err.message}`);
       await session?.stop().catch(() => {});
@@ -1275,6 +1301,27 @@ export class Controller extends EventEmitter {
       this.#busy = false;
       this.#refreshNet();
     }
+    if (!drop) return;
+    await this.disconnect(); // rather than say connected with nothing getting through
+    this.#say("error", `global failed: ${drop.message} — disconnected`);
+  }
+
+  /**
+   * Whole-system mode came up, but the internet didn't open through it: it doesn't stay on, or the window would say Whole
+   * system with nothing getting through. Then why: the VPN (or the relay) carrying nothing either is returned, for the
+   * connection to go too; carrying, it's DNS or the tun, and the proxy stays on, as it was before whole-system mode.
+   */
+  async #globalNoInternet(session, relay) {
+    this.#say("info", "restoring networking…");
+    this.#global = null;
+    this.#globalCountry = null;
+    this.#globalDown = false;
+    await session.stop().catch(() => {});
+    this.#smartDnsBack();
+    const conn = this.#conn;
+    const why = await (relay ? relayCheck({ relay: conn.relay, server: null }) : checkVpn(conn, conn.server)).then(() => null, (err) => err);
+    if (!why) this.#say("error", `global failed: no internet through it, though the ${relay ? "relay" : "VPN"} works (a DNS problem?) — global off, SOCKS proxy still on`);
+    return why;
   }
 
   async #disableGlobal() {

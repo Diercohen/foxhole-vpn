@@ -15,12 +15,12 @@ import { createHash } from "node:crypto";
 import { join, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import type { Connection } from "./connection.js";
-import { startProxy, setDirectFrom, holdDirect, directReady, setPinDirect, type ProxyLogin } from "./proxy.js";
+import { startProxy, checkVpn, setDirectFrom, holdDirect, directReady, setPinDirect, type ProxyLogin } from "./proxy.js";
 import { startDnsForwarder, DOH_HOST, type DnsForwarder } from "./dns.js";
 import { GUARDIAN_HOST, pinGuardian } from "./guardian.js";
 import { publicIp, ipv4Of } from "./netinfo.js";
 import { dim, green, red, yellow, bold, verbose } from "./ui.js";
-import { DarwinRouting } from "./global-darwin.js";
+import { DarwinRouting, macOtherVpn } from "./global-darwin.js";
 import { WindowsRouting, isWindowsAdmin, uacPriv } from "./global-win32.js";
 import { logStream } from "./log.js";
 import { userHome } from "./profile.js";
@@ -170,13 +170,85 @@ export function staleCleanupScript(orig?: DefaultRoute | null): string {
 }
 
 /**
- * Detects another full-tunnel VPN that would beat foxhole-vpn's default route.
+ * Detects another full-tunnel VPN that would beat foxhole-vpn's default route: its device, or null.
  * Besides a VPN device on the default, many VPNs install 0.0.0.0/1 + 128.0.0.0/1
  * (more specific than 0.0.0.0/0), which win regardless of metric. Pure.
  */
-export function conflictingVpn(ipRoute: string, orig: DefaultRoute): boolean {
-  if (isVpnDev(orig.dev)) return true;
-  return /^(0\.0\.0\.0|128\.0\.0\.0)\/1\s/m.test(ipRoute);
+export function conflictingVpn(ipRoute: string, orig: DefaultRoute): string | null {
+  if (isVpnDev(orig.dev)) return orig.dev;
+  const split = /^(?:0\.0\.0\.0|128\.0\.0\.0)\/1\s(.*)$/m.exec(ipRoute);
+  return split ? (/\bdev\s+(\S+)/.exec(split[1])?.[1] ?? SPLIT_ROUTES) : null;
+}
+
+// Which VPN is on, where its device (tun0) says little: by its device's name, else by a process that runs only while its
+// tunnel's up. An app's always-on parts (its window, a service: Windscribe's, Clash Verge's) say nothing, so aren't here.
+const VPN_DEVS: [RegExp, string][] = [
+  [/mullvad/i, "Mullvad VPN"],
+  [/^windscribe/i, "Windscribe"], // Windows names adapters for their apps
+  [/^nordlynx/i, "NordVPN"],
+  [/^(proton|pvpn)/i, "Proton VPN"],
+  [/^(meta|mihomo|clash)/i, "Clash"],
+  [/^cscotun/i, "Cisco AnyConnect"],
+  [/^gpd/i, "GlobalProtect"],
+  [/^tailscale/i, "Tailscale"],
+  [/^wg/i, "WireGuard"],
+];
+const VPN_TUNNELS: [RegExp, string][] = [
+  [/windscribe(openv|wire|wstun|ikev)/i, "Windscribe"], // its OpenVPN, WireGuard, Stealth (ps cuts names to 15 letters)
+  [/(^|[\\/])openconnect(\.exe)?$/i, "OpenConnect"],
+  [/(^|[\\/])openvpn(\.exe)?$/i, "OpenVPN"],
+];
+export const SPLIT_ROUTES = "0/1 split routes"; // another VPN's, on a device not known
+
+/** Which VPN apps these are, by `dev`'s name, else the tunnels among these processes' names, each once. Pure. */
+export function vpnAppsIn(dev: string | null, processes: string[]): string[] {
+  const byDev = dev && VPN_DEVS.find(([re]) => re.test(dev))?.[1];
+  if (byDev) return [byDev];
+  return [...new Set(processes.map((p) => VPN_TUNNELS.find(([re]) => re.test(p.trim()))?.[1]).filter((n): n is string => !!n))];
+}
+
+/** The VPN apps on `dev` now, for OtherVpnError: [] when none's known, or the processes can't be listed. */
+export async function runningVpnApps(dev: string | null): Promise<string[]> {
+  try {
+    if (IS_WIN) return vpnAppsIn(dev, (await exec("tasklist", ["/fo", "csv", "/nh"], { windowsHide: true })).stdout.split(/\r?\n/).map((l) => l.split('","')[0].replace(/^"/, "")));
+    return vpnAppsIn(dev, (await exec("ps", ["-A", "-o", "comm="])).stdout.split("\n"));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Another VPN takes all the traffic (`dev`: its device, where it's known; `apps`: the VPN apps running): whole-system
+ * mode's routes would lose to its, and its kill switch, where it has one, would stop what goes around it. The proxy
+ * works alongside it, its connections going through that VPN.
+ */
+export class OtherVpnError extends Error {
+  constructor(
+    readonly dev: string | null,
+    readonly apps: string[] = [],
+  ) {
+    const on = dev && dev !== SPLIT_ROUTES ? `on ${dev}` : null;
+    const what = [apps.join(" or "), on].filter(Boolean).join(", ") || SPLIT_ROUTES;
+    super(`Another VPN is on (${what}) and takes all the traffic: turn it off for whole-system mode; the proxy works alongside it`);
+  }
+}
+
+/**
+ * Another VPN taking all the traffic now, said before whole-system mode asks for a password (GlobalSession's start
+ * looks again, and refuses it): Linux and macOS, whose routes are read without root; null elsewhere, or when none is.
+ */
+export async function otherVpn(): Promise<OtherVpnError | null> {
+  try {
+    let dev: string | null = null;
+    if (process.platform === "linux") {
+      const { stdout } = await exec("ip", ["route"]);
+      const orig = parseDefaultRoute(stdout, TUN);
+      dev = orig && conflictingVpn(stdout, orig);
+    } else if (process.platform === "darwin") dev = await macOtherVpn();
+    return dev ? new OtherVpnError(dev, await runningVpnApps(dev)) : null;
+  } catch {
+    return null; // start() looks again
+  }
 }
 
 async function run(argv: string[], quiet = false): Promise<void> {
@@ -336,7 +408,9 @@ export async function ensureTun2socks(via: DownloadVia = {}): Promise<string> {
     await ensureWintun(cache, via);
     return cache;
   }
-  for (const probe of ["tun2socks", join(home, "go/bin/tun2socks"), cache]) {
+  // one on PATH by its full path: the network helper's install copies it from there, run from no folder in particular
+  const onPath = (process.env.PATH ?? "").split(":").map((dir) => dir && join(dir, "tun2socks")).find((p) => p && existsSync(p));
+  for (const probe of [onPath || "tun2socks", join(home, "go/bin/tun2socks"), cache]) {
     try {
       await exec(probe, ["--version"]);
       return probe;
@@ -591,11 +665,8 @@ export class GlobalSession {
     const { stdout: routeOut } = await exec("ip", ["route"]); // reading needs no root
     const orig = parseDefaultRoute(routeOut);
     if (!orig) throw new Error("No default route found; are you online?");
-    if (conflictingVpn(routeOut, orig) && !force) {
-      throw new Error(
-        `Another VPN looks active (default on ${orig.dev}, or 0/1 split routes). Stop it, or force.`,
-      );
-    }
+    const other = conflictingVpn(routeOut, orig);
+    if (other && !force) throw new OtherVpnError(other, await runningVpnApps(other));
     // Pin the exact IPv4 the proxy will dial, so its upstream can't loop back
     // through the tun (Fastly is anycast; a second lookup could pick another IP).
     const serverIp = (await lookup(server.hostname, { family: 4 })).address;
@@ -806,9 +877,10 @@ export class GlobalSession {
     if (this.#mac instanceof DarwinRouting) this.#mac.splitChanged();
   }
 
-  /** The public exit IP (confirms the tunnel works), or null if unreachable. `plain`: over HTTP (relay mode). */
+  /** The public exit IP (confirms the tunnel works), or null if unreachable: whole-system mode doesn't stay on then. `plain`: over HTTP (relay mode). */
   async verifyExitIp(plain = false): Promise<string | null> {
-    return publicIp(undefined, 3, plain); // retries: right after start, tun2socks may not be reading the tun yet
+    // retries: right after start, tun2socks may not be reading the tun yet; then Cloudflare's trace, for ipify being down
+    return (await publicIp(undefined, 3, plain)) ?? (plain ? null : publicIp(undefined, 1, true));
   }
 
   /** Restores routing and stops tun2socks. Best-effort, idempotent. */
@@ -911,16 +983,18 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
     await new Promise((r) => setTimeout(r, 2500));
     if (!dead) {
       const ip = await session.verifyExitIp();
-      console.log(
-        ip
-          ? green(`  exit IP is now ${bold(ip)}`)
-          : yellow(`  couldn't reach the internet through the tunnel — ${verbose ? "check the tun2socks output above" : "run with --verbose for details"}.`),
-      );
+      if (!ip) {
+        // as in the app, it doesn't stay on carrying nothing. Why: whether the VPN's server (pinned around the tun) carries
+        const why = await checkVpn(conn, conn.server!).then(() => null, (err: Error) => err);
+        const tun = `the VPN works, so it's DNS or tun2socks (${verbose ? "its output's above" : "run with --verbose for details"})`;
+        throw new Error(`couldn't reach the internet through the tunnel, so the network's back as it was: ${why?.message ?? tun}`);
+      }
+      console.log(green(`  exit IP is now ${bold(ip)}`));
     }
     console.log(dim(`  DNS ${dns} · IPv6 ${IS_WIN ? "blocked" : "blackholed"} · Ctrl+C restores.\n`));
     await new Promise(() => {}); // run until signalled
   } catch (err) {
     await cleanup();
-    throw err;
+    throw err instanceof OtherVpnError ? new Error(`${err.message} (or pass --force)`) : err; // the command line can go ahead anyway
   }
 }

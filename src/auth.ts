@@ -10,6 +10,8 @@ import { mozillaFetch } from "./guardian.js";
  */
 export interface Authenticator {
   getAccessToken(signal?: AbortSignal): Promise<string>;
+  /** Drops the token it keeps (Guardian refused it): the next one's asked for anew. None: it has only the one. */
+  forget?(): void;
 }
 
 /** FxA OAuth scopes Guardian requires for a VPN token. */
@@ -144,6 +146,10 @@ export class SessionAuth implements Authenticator {
     throw new FxaError(`Firefox account server refused the VPN token: ${data.message ?? `HTTP ${status}`}`, data.errno);
   }
 
+  forget(): void {
+    this.#cached = null;
+  }
+
   /** A refresh token of this account for another device (a TV: tvpair.ts), VPN-only: it makes its own access tokens. */
   async refreshToken(signal?: AbortSignal): Promise<string> {
     const { ok, status, data } = await fxaPost(
@@ -183,6 +189,10 @@ export class RefreshAuth implements Authenticator {
     // 108, 110: the token's gone (signed out of, from the account's devices)
     if (data.errno === 108 || data.errno === 110 || status === 401) throw new FxaError("This sign-in has ended (signed out, or expired): sign in again.", 110);
     throw new FxaError(`Firefox account server refused the VPN token: ${data.message ?? `HTTP ${status}`}`, data.errno);
+  }
+
+  forget(): void {
+    this.#cached = null;
   }
 }
 
