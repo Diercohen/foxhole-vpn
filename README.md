@@ -130,9 +130,12 @@ it shows each click with a screenshot. The relay:
   country ("VPN not available in this region"): only small control calls,
   your traffic still goes through Firefox VPN. Once connected, even those go
   through the VPN, so the relay only gets the first pass of each connect;
-- reaches Mozilla's account server (`api.accounts.firefox.com`, the VPN's token
-  and sign-ins) and the server list when they don't connect. Without a relay,
-  foxhole says which one is blocked and offers the setup; and
+- reaches the server list when it doesn't connect. Mozilla's account server
+  (`api.accounts.firefox.com`: the VPN's token, and sign-ins) has turned the
+  relay away since 2026-11 (HTTP 406), so where it's blocked, foxhole makes
+  each next token through Firefox VPN while it's connected, and a TV or phone
+  signed in from another device gets its first token with the sign-in.
+  Without a relay, foxhole says which one is blocked and offers the setup; and
 - can carry your browsing itself: pick **Relay** at the top of Locations.
 
 **On an Android phone or TV**, make the relay on a computer (Apps Script's setup needs one), then bring it over on

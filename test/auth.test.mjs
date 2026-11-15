@@ -4,11 +4,13 @@
 // a signed GET. fetch is stubbed; no Firefox, no network.
 import assert from "node:assert";
 import { createHash, createHmac } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FirefoxAuth, sessionCredentials, sessionVerified, VPN_SCOPES } from "../dist/auth.js";
+import { FirefoxAuth, RefreshAuth, destroyToken, sessionCredentials, sessionVerified, VPN_SCOPES } from "../dist/auth.js";
 import { useRelay } from "../dist/guardian.js";
+
+process.env.HOME = mkdtempSync(join(tmpdir(), "foxhole-auth-")); // userHome(): the tokens kept (tokens.json)
 
 // https://github.com/mozilla/fxa-auth-server/wiki/onepw-protocol#test-vectors
 const sessionToken = Buffer.from(Array.from({ length: 32 }, (_, i) => 0xa0 + i)).toString("hex");
@@ -120,4 +122,41 @@ assert.equal(await sessionVerified(sessionToken), true, "confirmed, through the 
 assert.deepEqual(relayed.map((p) => [p.m, p.u, Object.keys(p.h), "b" in p, "ct" in p]), Array(2).fill(["GET", "https://api.accounts.firefox.com/v1/session/status", ["authorization"], false, false]));
 useRelay(null);
 
-console.log("ok - Firefox login: onepw keys, the signed token request, reuse, clock-skew retry, and through the relay; a session's sign-in confirmed or not, a signed GET");
+// A sign-in for another device (tvpair.ts): the refresh token, and the first VPN token Mozilla answers with it
+const asked = [];
+globalThis.fetch = async (url, init) => {
+  asked.push(JSON.parse(init.body));
+  return Response.json({ access_token: "first", refresh_token: "ab".repeat(32), expires_in: 3600 });
+};
+const handed = await new FirefoxAuth({ profileDir: dir }).deviceSignIn();
+assert.equal(handed.refreshToken, "ab".repeat(32));
+assert.equal(handed.access.token, "first");
+assert.ok(Math.abs(handed.access.expires - (Date.now() + 3600_000)) < 5000, "when it expires, from expires_in");
+assert.deepEqual(asked.pop(), { client_id: "5882386c6d801776", grant_type: "fxa-credentials", scope: VPN_SCOPES.join(" "), access_type: "offline" }, "asked as before");
+
+// A sent sign-in (RefreshAuth) with that first token: used, Mozilla not asked (where its account server can't be
+// reached, it's what connects), and kept for the next start, readable only by the user; dropped once Guardian refuses
+// it (forget), and the next asked for
+let made = 0;
+globalThis.fetch = async (url, init) => {
+  const body = JSON.parse(init.body);
+  if (url.endsWith("/oauth/destroy")) return Response.json({});
+  assert.equal(body.grant_type, "refresh_token", "a token made with the refresh token");
+  return Response.json({ access_token: `made${++made}`, expires_in: 86400 });
+};
+const sentTok = "cd".repeat(32);
+assert.equal(await new RefreshAuth(sentTok, handed.access).getAccessToken(), "first", "the first, as sent");
+assert.equal(made, 0, "Mozilla not asked");
+assert.equal(await new RefreshAuth(sentTok).getAccessToken(), "first", "kept: the next start has it");
+const tokensFile = join(process.env.HOME, ".config", "foxhole-vpn", "tokens.json");
+assert.equal(statSync(tokensFile).mode & 0o777, 0o600, "readable only by the user");
+assert.ok(!readFileSync(tokensFile, "utf8").includes(sentTok), "under a hash of its sign-in, not the sign-in itself");
+new RefreshAuth(sentTok).forget();
+assert.equal(await new RefreshAuth(sentTok).getAccessToken(), "made1", "forgotten: the next is made");
+assert.equal(await new RefreshAuth(sentTok).getAccessToken(), "made1", "and kept");
+assert.equal(await new RefreshAuth("ef".repeat(32)).getAccessToken(), "made2", "another sign-in never gets it");
+assert.equal(await new RefreshAuth(sentTok, { token: "stale", expires: Date.now() + 60_000 }).getAccessToken(), "made1", "a first one about to expire isn't taken");
+await destroyToken(sentTok);
+assert.equal(await new RefreshAuth(sentTok).getAccessToken(), "made3", "signed out of: its token goes too");
+
+console.log("ok - Firefox login: onepw keys, the signed token request, reuse, clock-skew retry, and through the relay; a session's sign-in confirmed or not, a signed GET; a sign-in for another device with its first token, and a sent one's tokens kept");

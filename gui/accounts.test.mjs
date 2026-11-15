@@ -86,6 +86,14 @@ else {
   assert.match(c.state().notice.text, /You're signed in with three@example\.com, sent from Phone, and it's the account in use now\./);
   assert.deepEqual(c.state().accounts.map((a) => a.email), ["Me@Example.com", "two@example.com", "three@example.com"]);
   assert.equal(loadAccounts().current, "u3");
+
+  // one sent with its first VPN token, where Mozilla can't check it (it turns this refresh token down, as where its
+  // account server turns the relay away): taken all the same, and in use with it (auth.ts RefreshAuth)
+  w = await waiting();
+  const first = { token: "first", expires: Date.now() + 3600_000 };
+  assert.deepEqual(await sendToTv(w.tv, { code: w.code }, { account: { uid: "u4", email: "four@example.com", refreshToken: tok("9"), access: first } }, "Phone"), { account: true, relay: false });
+  assert.match(c.state().notice.text, /You're signed in with four@example\.com, sent from Phone/);
+  assert.equal(loadAccounts().current, "u4");
 }
 
 // ── Signing out (Settings → Accounts, its button): the account in use is disconnected first, while it's still the one

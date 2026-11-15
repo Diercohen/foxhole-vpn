@@ -30,6 +30,11 @@ const jwt = `x.${Buffer.from(JSON.stringify({ nbf: 1, exp: 2 })).toString("base6
 const seen = [];
 const guardian = https.createServer({ key: readFileSync(key), cert: readFileSync(cert) }, (req, res) => {
   seen.push({ sni: req.socket.servername, host: req.headers.host, auth: req.headers.authorization });
+  if (req.url.startsWith("/v1/")) {
+    // Mozilla's account server (mozillaFetch, through the tunnel): the request as it came
+    let body = "";
+    return req.on("data", (c) => (body += c)).on("end", () => res.end(JSON.stringify({ method: req.method, type: req.headers["content-type"], body })));
+  }
   if (req.headers.authorization === "Bearer region") return res.writeHead(451).end(); // Mozilla refuses this network's country
   if (req.headers.authorization !== "Bearer good") return res.writeHead(401).end();
   res.writeHead(200, { "X-Quota-Limit": "100", "X-Quota-Remaining": "40", "X-Quota-Reset": "2026-11-01T00:00:00Z" });
@@ -115,6 +120,23 @@ assert.deepStrictEqual(relayed.at(-1), { k: "k", u: fxaUrl, m: "POST", h: { auth
 const before2 = relayed.length;
 assert.strictEqual((await mozillaFetch("https://api.accounts.firefox.com/answers")).status, 400, "Mozilla's answer");
 assert.strictEqual(relayed.length, before2, "not relayed");
+// connected, through the VPN's tunnel first, as Guardian's calls: since 2026-11 the account server turns away the
+// relay (406), not the VPN's exit. TLS to its host on the tunnel, the request as it was; neither fetched nor relayed
+const viaVpn = [];
+useTunnel(async (host, p) => (viaVpn.push(`${host}:${p}`), net.connect(port, "127.0.0.1")));
+const fxaRes = await mozillaFetch(fxaUrl, { method: "POST", headers: { "content-type": "application/json", authorization: "Hawk x" }, body: '{"grant":"ä"}' });
+assert.strictEqual(fxaRes.status, 200);
+assert.deepStrictEqual(await fxaRes.json(), { method: "POST", type: "application/json", body: '{"grant":"ä"}' }, "its method, type and body");
+assert.deepStrictEqual(viaVpn, ["api.accounts.firefox.com:443"]);
+assert.deepStrictEqual(seen.at(-1), { sni: "api.accounts.firefox.com", host: "api.accounts.firefox.com", auth: "Hawk x" }, "the host's TLS and name, on the tunnel");
+assert.strictEqual(relayed.length, before2, "not relayed");
+useTunnel(async () => null); // not connected, or relay mode
+assert.strictEqual((await mozillaFetch(fxaUrl, { method: "POST", headers: {}, body: "{}" })).status, 200, "no tunnel: the usual way");
+assert.strictEqual(relayed.length, before2 + 1, "relayed, as the connection failed");
+useTunnel(async () => Promise.reject(new Error("the VPN's server refused the pass")));
+await mozillaFetch(fxaUrl, { method: "POST", headers: {}, body: "{}" });
+assert.strictEqual(relayed.length, before2 + 2, "a tunnel that fails: the usual way");
+useTunnel(null);
 useRelay(null);
 await assert.rejects(
   mozillaFetch("https://firefox.settings.services.mozilla.com/v1/records"),

@@ -7,7 +7,7 @@ import { findAccount, openBrowser, macApp } from "./dist/profile.js";
 import { fetchServerList } from "./dist/serverlist.js";
 import { Connection, RELAY_CODE } from "./dist/connection.js";
 import { FirefoxAuth, StaticAuth, destroyToken } from "./dist/auth.js";
-import { askTv, findTvs, parseTvLink, sendToTv, waitForSignIn, TV_PORT } from "./dist/tvpair.js";
+import { askAgain, askTv, findTvs, parseTvLink, sendToTv, waitForSignIn, TV_PORT } from "./dist/tvpair.js";
 import { qrSvgPath } from "./dist/qr.js";
 import { SHARE_PORT, serveShare, shareData, shareLink, parseShared, sharedWhat, importPlan } from "./dist/share.js";
 import { newNotice, noticeShown, onHot, refreshHot } from "./dist/hot.js";
@@ -781,24 +781,31 @@ export class Controller extends EventEmitter {
       if (there.pub !== tv.pub) throw new Error("That QR code is an old one: the other device shows a new one now.");
       tvs = [{ ...tv, name: there.name, want: there.want }];
     } else {
-      if (!this.#tvsFound.length) await this.tvFind();
-      tvs = this.#tvsFound;
+      // those found asked again, for their keys as they are now: the code typed is the one the other screen shows now,
+      // and the key from before it (a new code after 5 wrong ones, or that screen opened again since the dialog found
+      // it) would turn it away as a wrong one; none still waiting, they're looked for again
+      tvs = this.#tvsFound = await askAgain(this.#tvsFound);
+      if (!tvs.length) {
+        await this.tvFind();
+        tvs = this.#tvsFound;
+      }
       if (!tvs.length) throw new Error("Nothing is waiting on this network. Is the other device on the same Wi-Fi, showing its code?");
     }
     // the settings' own relay (an iPhone can't use one, but can hand one on)
     const relay = this.#settings.relay ?? null;
-    // the sign-in, made only when a TV takes one: a VPN-only refresh token of its own
+    // the sign-in, made only when a TV takes one: a VPN-only refresh token of its own, and its first token (auth.ts)
     let account = null;
     const signIn = async () => {
       if (account) return account;
       if (!id) throw new Error("Sign in to a Mozilla account on this device first: Foxhole sends the other one a sign-in of it.");
       const auth = authFor(this.#accounts, id);
-      if (typeof auth?.refreshToken !== "function") throw new Error("This account's sign-in came from another device: sign in to it here first, or send another account.");
+      if (typeof auth?.deviceSignIn !== "function") throw new Error("This account's sign-in came from another device: sign in to it here first, or send another account.");
       const a = this.#accounts;
       const email = id === FIREFOX ? (findAccount()?.email ?? this.#firefoxEmail) : a.own.find((x) => x.uid === id)?.email;
       const uid = id === FIREFOX ? findAccount()?.uid : id;
       if (!uid || !email) throw new Error("Couldn't read this account's details: try another one.");
-      return (account = { uid, email, refreshToken: await auth.refreshToken(AbortSignal.timeout(15_000)) });
+      const { refreshToken, access } = await auth.deviceSignIn(AbortSignal.timeout(15_000));
+      return (account = { uid, email, refreshToken, ...(access && { access }) });
     };
     const from = this.#deviceName();
     let lastErr;

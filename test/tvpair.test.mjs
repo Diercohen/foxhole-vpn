@@ -2,7 +2,7 @@
 // is refused, and after a few the TV shows a new one; what the TV refuses to sign in with, the sender is told. A VPN
 // relay comes along with a sign-in, or alone; and a TV or phone waiting for a relay alone takes only that.
 import assert from "node:assert";
-import { askTv, distinctTvs, normalizeCode, parseTvLink, sendToTv, waitForSignIn } from "../dist/tvpair.js";
+import { askAgain, askTv, distinctTvs, normalizeCode, parseTvLink, sendToTv, waitForSignIn } from "../dist/tvpair.js";
 
 const account = { uid: "u1", email: "me@example.com", refreshToken: "ab".repeat(32) };
 const relay = { deploymentId: "AKfycb" + "x".repeat(40), authKey: "my key" };
@@ -39,6 +39,15 @@ assert.deepEqual(await sendToTv(byCode, { code: code.toLowerCase() }, { account 
 assert.deepEqual(got.pop(), { account, relay: null, from: "Laptop" }, "by the code");
 await sendToTv(fromLink, {}, { account }, "Phone");
 assert.equal(got.pop().from, "Phone", "by the QR code's link");
+// the first VPN token with it (auth.ts deviceSignIn), sent as the seconds it has left: the clocks needn't agree
+const first = { token: "first-token", expires: Date.now() + 3600_000 };
+await sendToTv(fromLink, {}, { account: { ...account, access: first } }, "Laptop");
+const withFirst = got.pop().account;
+assert.deepEqual({ ...withFirst, access: undefined }, { ...account, access: undefined }, "the sign-in as sent");
+assert.equal(withFirst.access.token, "first-token");
+assert.ok(Math.abs(withFirst.access.expires - first.expires) < 5000, "when it expires, by this device's clock");
+await sendToTv(fromLink, {}, { account: { ...account, access: { token: "old", expires: Date.now() - 1000 } } }, "Laptop");
+assert.ok(!("access" in got.pop().account), "one that's expired isn't passed on");
 
 // the relay: with the sign-in, alone, and not one (then the sign-in alone)
 assert.deepEqual(await sendToTv(fromLink, {}, { account, relay }, "Laptop"), { account: true, relay: true });
@@ -58,10 +67,19 @@ for (let i = 0; i < 4; i++) await sendToTv(byCode, { code: "222222" }, { account
 assert.equal(changes, 1, "a new code after five wrong ones");
 assert.notEqual(tv.waiting().code, code);
 await assert.rejects(sendToTv(fromLink, {}, { account }, "x"), /isn't the one on the other screen anymore/, "the old QR code with it");
+// the new code, sent with the key the TV was found with before it: turned away, however right; asked again first,
+// its key as it is now takes it (the window's Sign in a TV or phone: controller.js tvSend)
+const renewed = tv.waiting().code;
+await assert.rejects(sendToTv(byCode, { code: renewed }, { account }, "x"), /isn't the code on the other screen/, "with the key from before");
+const [now] = await askAgain([byCode]);
+assert.notEqual(now.pub, byCode.pub, "its new key");
+assert.deepEqual(await sendToTv(now, { code: renewed }, { account }, "Laptop"), { account: true, relay: false });
+assert.equal(got.pop().from, "Laptop", "the new code, with its key as it is now");
 tv.stop();
 // stopped, it's gone at once: for a sender that asked a moment ago too, on the connection it still has (before Node 19 a
 // closed server keeps those, and would go on answering as the wait that's over)
 assert.equal(await askTv(fromLink), null, "nothing waits there anymore");
+assert.deepEqual(await askAgain([byCode]), [], "asked again, it's left out");
 await assert.rejects(sendToTv(fromLink, {}, { account }, "x"), "and nothing is taken");
 assert.equal(got.length, 0);
 
@@ -75,4 +93,4 @@ assert.deepEqual(got.pop(), { account: null, relay, from: "Laptop" }, "the relay
 await assert.rejects(sendToTv(phoneLink, {}, { account }, "Old laptop"), /waiting for a VPN relay, and none came/, "an older Foxhole's sign-in");
 assert.equal(got.length, 0);
 phone.stop();
-console.log("ok - TV sign-in: by code and by QR code, with a relay or a relay alone, wrong codes refused and the code renewed, the TV's refusal passed on");
+console.log("ok - TV sign-in: by code and by QR code, its first VPN token with it, with a relay or a relay alone, wrong codes refused and the code renewed (sent to with the TV's key as it is now), the TV's refusal passed on");

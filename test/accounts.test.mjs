@@ -6,8 +6,8 @@ import { join } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "foxhole-accounts-"));
 process.env.HOME = home; // userHome()
-const { loadAccounts, saveAccounts, parseAccounts, withOwn, without, withFirefox, takeSent, withSent, AlreadySignedIn, FIREFOX } = await import("../dist/accounts.js");
-const { sessionCredentials } = await import("../dist/auth.js");
+const { loadAccounts, saveAccounts, parseAccounts, withOwn, without, withFirefox, takeSent, withSent, authFor, AlreadySignedIn, FIREFOX } = await import("../dist/accounts.js");
+const { RefreshAuth, sessionCredentials } = await import("../dist/auth.js");
 const config = join(home, ".config", "foxhole-vpn");
 const tok = (c) => c.repeat(64);
 
@@ -74,6 +74,23 @@ next = withSent(list, took);
 assert.deepEqual(next.own.map((x) => x.uid), ["u1", "u2-again"], "the same email under a new id: not listed twice");
 assert.equal(next.current, "u2-again");
 assert.equal(took.replaced?.uid, "u2");
+
+// one sent with its first VPN token (auth.ts deviceSignIn): checked by that alone, Mozilla not asked (where its account
+// server can't be reached, nothing else would connect it), and kept for its sign-in, the next start's too
+let askedMozilla = 0;
+const answering = globalThis.fetch;
+globalThis.fetch = (url, init) => (askedMozilla++, answering(url, init));
+const first = () => ({ token: "first", expires: Date.now() + 3600_000 });
+took = await takeSent(list, { ...sent("u5", "five@example.com", "e"), access: first() }); // e isn't alive: Mozilla would turn it down
+assert.equal(askedMozilla, 0, "Mozilla not asked");
+assert.deepEqual(withSent(list, took).own.at(-1), { uid: "u5", email: "five@example.com", refreshToken: tok("e") }, "kept as the file keeps one");
+assert.equal(await authFor(withSent(list, took), "u5").getAccessToken(), "first", "its sign-in has it");
+assert.equal(askedMozilla, 0);
+// the account's here, its sign-in good: not taken, nor its first token kept
+const turnedDown = await takeSent(list, { ...sent("u1", "one@example.com", "e"), access: first() }).catch((err) => err);
+assert.ok(turnedDown instanceof AlreadySignedIn);
+await assert.rejects(new RefreshAuth(tok("e")).getAccessToken(), /has ended/, "its first token gone: Mozilla asked, and turns it down");
+globalThis.fetch = answering;
 
 // Firefox's sign-in on the list, to the same account: said so, not added beside it
 const profile = join(home, ".mozilla", "firefox", "p.default-release");

@@ -182,11 +182,23 @@ function directRequest(method: "GET" | "HEAD", path: string, accessToken: string
 
 /**
  * fetch() for Mozilla's other hosts, on the same Fastly addresses as Guardian: its account server (auth.ts fxaPost: the
- * VPN's token, sign-ins) and the server list. Direct, else through the relay when one is set, as `request` does; with
- * none, GuardianBlocked when Google answers, so each UI offers the relay's setup. Only a request that gets no answer
- * is relayed: any answer, an error status too, is Mozilla's.
+ * VPN's token, sign-ins) and the server list. Connected, through the VPN first, as `request` does: since 2026-11 the
+ * account server turns away the relay (HTTP 406 to Google's addresses, whatever the request), but not the VPN's exit,
+ * so where it's blocked (Iran) the next token is made that way. Else direct, then through the relay when one is set;
+ * with none, GuardianBlocked when Google answers, so each UI offers the relay's setup. Only a request that gets no
+ * answer goes on to the next way: any answer, an error status too, is Mozilla's.
  */
 export async function mozillaFetch(url: string, init: { method?: "GET" | "POST"; headers?: Record<string, string>; body?: string } = {}, signal?: AbortSignal): Promise<Response> {
+  const opening = tunnel?.(new URL(url).hostname, 443).catch(() => null);
+  const through = opening && (await Promise.race([opening, new Promise<null>((r) => setTimeout(r, 6_000, null).unref())]));
+  if (opening && !through) void opening.then((late) => late?.destroy());
+  if (through)
+    try {
+      return await requestOn(through, url, init, signal);
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      log(`${new URL(url).hostname}: through the VPN failed (${(err as Error).message}), trying without it`);
+    }
   const via = relay;
   // with a relay to fall back to, a silently dropped (blocked) connection gives up sooner, as directRequest's does:
   // the relay's answer still comes within the callers' 15 s
@@ -210,6 +222,46 @@ export async function mozillaFetch(url: string, init: { method?: "GET" | "POST";
     clearTimeout(cap);
     signal?.removeEventListener("abort", stop);
   }
+}
+
+/**
+ * mozillaFetch's request on `through`, a stream already open to the URL's host at port 443 (the VPN's tunnel): TLS to
+ * the host on it, its certificate checked as fetch() checks one, and the answer as a Response.
+ */
+function requestOn(through: Duplex, url: string, init: { method?: string; headers?: Record<string, string>; body?: string }, signal?: AbortSignal): Promise<Response> {
+  const u = new URL(url);
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        host: u.hostname,
+        // with no agent, Node's default port is 80, and the Host header would name it
+        port: Number(u.port) || 443,
+        defaultPort: 443,
+        path: u.pathname + u.search,
+        method: init.method ?? "GET",
+        headers: { ...init.headers, ...(init.body !== undefined && { "content-length": String(Buffer.byteLength(init.body)) }) },
+        signal,
+        timeout: 10_000,
+        createConnection: () => tls.connect({ socket: through, servername: u.hostname }),
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("error", reject);
+        res.on("end", () => {
+          try {
+            const headers = new Headers();
+            for (let i = 0; i < res.rawHeaders.length; i += 2) headers.append(res.rawHeaders[i], res.rawHeaders[i + 1]);
+            resolve(new Response(chunks.length ? Buffer.concat(chunks) : null, { status: res.statusCode, headers }));
+          } catch (err) {
+            reject(err); // a status or header Response refuses
+          }
+        });
+      },
+    );
+    req.on("timeout", () => req.destroy(new Error("timed out"))).on("error", reject);
+    req.end(init.body);
+  });
 }
 
 /** Where a relay runs (httprelay.ts): Google's Apps Script. */

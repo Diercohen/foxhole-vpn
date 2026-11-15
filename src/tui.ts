@@ -1614,7 +1614,8 @@ export class Tui {
       const email = ff ? (ff.email ?? this.#firefoxEmail) : this.#accounts.own.find((x) => x.uid === id)?.email;
       const uid = ff ? ff.uid : id;
       if (!uid || !email) throw new Error("Couldn't read this account's details.");
-      return (account = { uid, email, refreshToken: await auth.refreshToken(AbortSignal.timeout(15_000)) });
+      const { refreshToken, access } = await auth.deviceSignIn(AbortSignal.timeout(15_000)); // its first token too (auth.ts)
+      return (account = { uid, email, refreshToken, ...(access && { access }) });
     };
     try {
       const tvs = await findTvs();

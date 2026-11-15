@@ -3,7 +3,7 @@
 // was a list). One is in use, and stays so for the next start: the VPN's token comes from it.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { FirefoxAuth, RefreshAuth, SessionAuth, destroyToken, fxaPost, type Authenticator } from "./auth.js";
+import { FirefoxAuth, RefreshAuth, SessionAuth, destroyToken, fxaPost, type AccessToken, type Authenticator } from "./auth.js";
 import { findAccount, userHome } from "./profile.js";
 
 /** Firefox's sign-in, in the list. */
@@ -134,23 +134,28 @@ export interface Taken {
 
 /**
  * A sign-in another device sent this one (tvpair.ts), for the list `a`: checked with Mozilla first, whose refusal is
- * thrown (the sender's told, and ends the sign-in it made). The account's on the list already, its sign-in still
- * good: it stays as it is, a full sign-in not given up for a VPN-only one, and AlreadySignedIn is thrown. One that
- * has ended (or can't be checked), the new one takes its place. withSent puts what's taken on the list as it is by
- * then; the one it replaces is signed out once the list's saved (it leaves the account's devices list).
+ * thrown (the sender's told, and ends the sign-in it made); one sent with its first VPN token, by that alone (it was
+ * made a moment ago), which is kept to connect with (auth.ts RefreshAuth): where Mozilla's account server can't be
+ * reached (Iran), nothing else would. The account's on the list already, its sign-in still good: it stays as it is,
+ * a full sign-in not given up for a VPN-only one, and AlreadySignedIn is thrown. One that has ended (or can't be
+ * checked), the new one takes its place. withSent puts what's taken on the list as it is by then; the one it replaces
+ * is signed out once the list's saved (it leaves the account's devices list).
  */
-export async function takeSent(a: Accounts, sent: Pick<OwnAccount, "uid" | "email" | "refreshToken">): Promise<Taken> {
+export async function takeSent(a: Accounts, sent: Pick<OwnAccount, "uid" | "email" | "refreshToken"> & { access?: AccessToken | null }): Promise<Taken> {
   const acct = { uid: sent.uid, email: sent.email, refreshToken: sent.refreshToken };
   // as the file keeps one, and nothing a terminal would take for more than letters
   if (!isOwn(acct) || /[\x00-\x1f\x7f-\x9f]/.test(acct.uid + acct.email)) throw new Error("that isn't a sign-in Foxhole can keep");
   const same = (x: { uid?: string; email?: string | null }) => x.uid === acct.uid || (!!x.email && x.email.toLowerCase() === acct.email.toLowerCase());
   const twin = a.own.find(same);
-  const good = (auth: Authenticator | null) => (auth ? auth.getAccessToken(AbortSignal.timeout(15_000)).then(() => true, () => false) : false);
+  // asked of Mozilla: a sent sign-in's kept token isn't proof (it outlives a sign-out at Mozilla by a day at most)
+  const good = (auth: Authenticator | null) => (auth instanceof RefreshAuth ? auth.stillGood(AbortSignal.timeout(15_000)) : auth ? auth.getAccessToken(AbortSignal.timeout(15_000)).then(() => true, () => false) : false);
   // the two asked at once: the sender waits half a minute for its answer
-  const [, kept] = await Promise.all([new RefreshAuth(acct.refreshToken as string).getAccessToken(AbortSignal.timeout(15_000)), twin ? good(authFor(a, twin.uid)) : false]);
-  if (twin && kept) throw new AlreadySignedIn(twin.uid, twin.email);
+  const auth = new RefreshAuth(acct.refreshToken as string, sent.access);
+  const [, kept] = await Promise.all([auth.getAccessToken(AbortSignal.timeout(15_000)), twin ? good(authFor(a, twin.uid)) : false]);
   const firefox = !twin && a.firefox ? findAccount() : null; // on the list: reading it was allowed
-  if (firefox?.signedIn && same(firefox)) throw new AlreadySignedIn(FIREFOX, firefox.email ?? acct.email);
+  const already = twin && kept ? new AlreadySignedIn(twin.uid, twin.email) : firefox?.signedIn && same(firefox) ? new AlreadySignedIn(FIREFOX, firefox.email ?? acct.email) : null;
+  if (already) auth.forget(); // not taken: its first token isn't kept either
+  if (already) throw already;
   return { account: acct, replaced: twin ?? null };
 }
 

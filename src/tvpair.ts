@@ -9,6 +9,7 @@
 import { createCipheriv, createDecipheriv, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, randomInt, scrypt, type KeyObject } from "node:crypto";
 import http from "node:http";
 import { networkInterfaces } from "node:os";
+import type { AccessToken } from "./auth.js";
 
 /** The port a TV waits on. */
 export const TV_PORT = 47533;
@@ -27,6 +28,8 @@ export interface TvAccount {
   uid: string;
   email: string;
   refreshToken: string;
+  /** The first VPN token, made with the sign-in: what connects a TV that can't reach Mozilla's account server (auth.ts). */
+  access?: AccessToken;
 }
 
 /** A VPN relay sent along, as Settings keeps it. */
@@ -44,6 +47,16 @@ function relayIn(v: unknown): TvRelay | null {
   const id = typeof r?.deploymentId === "string" ? r.deploymentId : "";
   const key = typeof r?.authKey === "string" ? r.authKey : "";
   return /^[\w-]{20,200}$/.test(id) && key.length > 0 && key.length <= 200 && key === key.trim() ? { deploymentId: id, authKey: key } : null;
+}
+
+/**
+ * The first VPN token in a message, if it's one: sent with the seconds it has left (`ttl`), not when it expires, as the
+ * two devices' clocks needn't agree; here, when it expires by this one's. Pure but for the clock.
+ */
+function accessIn(v: unknown): AccessToken | null {
+  const a = v as { token?: unknown; ttl?: unknown } | null;
+  const ok = typeof a?.token === "string" && /^[\x21-\x7e]{1,4096}$/.test(a.token) && typeof a.ttl === "number" && a.ttl > 0 && a.ttl <= 30 * 86400;
+  return ok ? { token: a!.token as string, expires: Date.now() + (a!.ttl as number) * 1000 } : null;
 }
 
 const b64 = (b: Buffer) => b.toString("base64url");
@@ -125,7 +138,7 @@ export async function waitForSignIn(opts: {
         const m = JSON.parse(body) as { pub?: string; via?: string; iv?: string; ct?: string };
         const pub = unb64(String(m.pub ?? ""));
         const proof = m.via === "qr" ? keys.secret : keys.codeKey;
-        let message: Partial<TvAccount> & { relay?: unknown; from?: unknown };
+        let message: Partial<Omit<TvAccount, "access">> & { access?: unknown; relay?: unknown; from?: unknown };
         try {
           const key = messageKey(diffieHellman({ privateKey: keys.privateKey, publicKey: importPub(pub) }), proof, keys.pub, pub);
           const all = unb64(String(m.ct ?? ""));
@@ -139,8 +152,9 @@ export async function waitForSignIn(opts: {
           return answer(res, 403, { error: m.via === "qr" ? OLD_QR : WRONG_CODE });
         }
         const { uid, email, refreshToken, from } = message;
+        const access = accessIn(message.access); // an older Foxhole sends none
         // a relay alone is waited for: a sign-in sent along isn't taken
-        const account = want === "signin" && [uid, email, refreshToken].every((v) => typeof v === "string" && v) ? ({ uid, email, refreshToken } as TvAccount) : null;
+        const account = want === "signin" && [uid, email, refreshToken].every((v) => typeof v === "string" && v) ? ({ uid, email, refreshToken, ...(access && { access }) } as TvAccount) : null;
         const relay = relayIn(message.relay);
         // an older Foxhole sends a sign-in only
         if (want === "relay" && !relay) return answer(res, 400, { error: "it's waiting for a VPN relay, and none came: update Foxhole on this device, or set its relay up first" });
@@ -259,6 +273,16 @@ export const distinctTvs = (found: Tv[]): Tv[] => found.filter((t, i) => found.f
 export const askTv = (tv: Tv, ms = 4000) => ask(tv.host, tv.port, ms);
 
 /**
+ * Those found a while ago, each asked again: its key as it is now. A device's key changes with its code (a new one
+ * after 5 wrong ones, or its screen opened again), and the code it shows now, sent with the key from before, is
+ * turned away as a wrong one. Those no longer waiting are left out.
+ */
+export async function askAgain(found: Tv[], ms = 4000): Promise<Tv[]> {
+  const now = await Promise.all(found.map((tv) => ask(tv.host, tv.port, ms)));
+  return distinctTvs(now.filter((t): t is Tv => !!t));
+}
+
+/**
  * Sends `account` and/or `relay` to `tv`, with its QR code's secret or the code typed. Resolves, once the TV is signed in
  * or has the relay, with what it took (one waiting for a relay alone leaves a sign-in); rejects with the TV's answer (a
  * wrong code: "that isn't the code on the TV").
@@ -274,8 +298,10 @@ export async function sendToTv(tv: Tv, proofOf: { code?: string }, what: { accou
   const iv = randomBytes(12);
   const c = createCipheriv("aes-256-gcm", key, iv);
   c.setAAD(Buffer.from(INFO));
-  // the account's fields at the top, as a TV of Foxhole 1.1 reads them (it leaves the relay)
-  const ct = Buffer.concat([c.update(JSON.stringify({ ...what.account, ...(what.relay && { relay: what.relay }), from }), "utf8"), c.final(), c.getAuthTag()]);
+  // the account's fields at the top, as a TV of Foxhole 1.1 reads them (it leaves the relay, and the first token)
+  const { access, ...account } = what.account ?? {};
+  const first = access && { access: { token: access.token, ttl: Math.floor((access.expires - Date.now()) / 1000) } };
+  const ct = Buffer.concat([c.update(JSON.stringify({ ...account, ...first, ...(what.relay && { relay: what.relay }), from }), "utf8"), c.final(), c.getAuthTag()]);
   const res = await fetch(`http://${tv.host}:${tv.port}${PATH}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
