@@ -323,8 +323,13 @@ export async function startDnsForwarder(o: DnsForwarderOptions): Promise<DnsForw
   // reach a non-loopback listener (global mode's, on the tun) and look things up through the user's VPN.
   const local = (addr = "") => addr === o.host || addr.startsWith("127.");
 
+  // close() hangs them up: a server's close waits for every client, and resolved keeps its connection open, whose own
+  // close can't come once global mode's tun is gone, with the address both ends are on
+  const clients = new Set<net.Socket>();
   const onTcp = (sock: net.Socket) => {
     if (!local(sock.remoteAddress)) return void sock.destroy();
+    clients.add(sock);
+    sock.once("close", () => clients.delete(sock));
     let buf = Buffer.alloc(0);
     sock.on("data", (d) => {
       buf = Buffer.concat([buf, d]);
@@ -370,7 +375,9 @@ export async function startDnsForwarder(o: DnsForwarderOptions): Promise<DnsForw
         close: async () => {
           for (const c of pool) c.doh.close();
           udp.close();
-          await new Promise<void>((r) => tcp.close(() => r()));
+          const closed = new Promise<void>((r) => tcp.close(() => r()));
+          for (const s of clients) s.destroy();
+          await closed;
         },
       };
     } catch (err) {

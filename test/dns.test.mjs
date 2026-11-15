@@ -96,13 +96,9 @@ const udpAns = await new Promise((resolve, reject) => {
 assert.deepEqual(udpAns, ANSWER, "UDP query returns the DoH answer");
 
 // TCP query (2-byte length prefix) -> length-prefixed answer.
+const framed = (q) => Buffer.concat([Buffer.from([q.length >> 8, q.length & 0xff]), q]);
 const tcpAns = await new Promise((resolve, reject) => {
-  const c = net.connect(PORT, "127.0.0.1", () => {
-    const framed = Buffer.alloc(2 + QUERY.length);
-    framed.writeUInt16BE(QUERY.length, 0);
-    QUERY.copy(framed, 2);
-    c.write(framed);
-  });
+  const c = net.connect(PORT, "127.0.0.1", () => c.write(framed(QUERY)));
   let buf = Buffer.alloc(0);
   c.on("data", (d) => {
     buf = Buffer.concat([buf, d]);
@@ -116,8 +112,17 @@ const tcpAns = await new Promise((resolve, reject) => {
 assert.deepEqual(tcpAns, ANSWER, "TCP query returns the DoH answer");
 assert.ok(dohRequests >= 2, "DoH server was reached for both queries");
 
-await f.close();
+// A TCP client that stays connected once answered, as systemd-resolved does: close() hangs it up instead of waiting
+// for it (in global mode its own close can't come, once the tun and the address both ends are on are gone).
+const held = net.connect(PORT, "127.0.0.1", () => held.write(framed(QUERY)));
+held.on("error", () => {});
+await new Promise((r) => held.once("data", r));
+const hungUp = new Promise((r) => held.once("close", r));
+const closed = await Promise.race([f.close().then(() => true), new Promise((r) => setTimeout(() => r(false), 2000))]);
+assert.ok(closed, "close() doesn't wait for a TCP client that stays connected");
+await hungUp;
+
 socks.close();
 doh.close();
-console.log("ok - DoH-over-SOCKS forwarder resolves UDP and TCP queries through the tunnel");
+console.log("ok - DoH-over-SOCKS forwarder resolves UDP and TCP queries through the tunnel, and closes with a client still connected");
 process.exit(0);
