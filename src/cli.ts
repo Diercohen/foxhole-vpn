@@ -687,7 +687,8 @@ ${bold("Commands:")}
   proxy [--country XX] [--port N] [--host H]
                        Run a local SOCKS5 + HTTP proxy through the VPN
   global [--country XX] [--force]
-                       Route ALL system traffic through the VPN (needs ${WIN ? "Administrator" : "sudo"})
+                       Route ALL system traffic through the VPN
+                       (${WIN ? "Administrator" : "asks for your password once, for the network helper"})
   restore [--port N]   Put the network back as before Foxhole (routes, DNS, tun2socks)
                        and free the proxy's port, stopping a Foxhole that holds it
                        (${WIN ? "Administrator" : "asks for your password"})
@@ -700,7 +701,7 @@ ${bold("Options:")}
   --verbose            Also show per-connection errors (e.g. ports the VPN
                        refuses) and tun2socks logs
 
-${dim(WIN ? "global: run  foxhole global  in Terminal (Admin)  · Ctrl+C restores networking." : 'global: run as  sudo env "PATH=$PATH" foxhole global  · Ctrl+C restores networking.')}
+${dim(WIN ? "global: run  foxhole global  in Terminal (Admin)  · Ctrl+C restores networking." : "global: Ctrl+C restores networking.")}
 ${dim("Stop any other active VPN first (or pass --force).")}
 
 ${bold("Environment:")}

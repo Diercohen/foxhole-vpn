@@ -82,7 +82,7 @@ container or over SSH too. The terminal UI adds accounts the same way: `a` → *
 ```sh
 foxhole                     # interactive TUI
 foxhole proxy --country US  # just the proxy
-sudo env "PATH=$PATH" foxhole global --country US   # route the whole system
+foxhole global --country US # route the whole system
 foxhole countries           # list countries
 foxhole usage               # data left this month
 foxhole doctor              # check login, server list, entitlement
@@ -103,7 +103,8 @@ you may start it. To remove it, in an administrator PowerShell:
 
 On Linux and macOS the password is asked **once**: with it Foxhole sets up a small
 network helper, as other VPN apps do, and whole-system mode needs no password after
-that. The helper is a root-owned script (`net`, in `/usr/local/libexec/foxhole` on Linux,
+that, in the app, the TUI and `foxhole global` alike.
+The helper is a root-owned script (`net`, in `/usr/local/libexec/foxhole` on Linux,
 `/Library/PrivilegedHelperTools/foxhole` on macOS) and one sudoers rule
 (`/etc/sudoers.d/foxhole-<uid>`) for your user, no background service. It only runs the
 exact commands whole-system mode needs, so a program of yours could use it to send this

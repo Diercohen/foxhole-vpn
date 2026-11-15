@@ -410,6 +410,19 @@ async function winHelper(tun2socks: () => Promise<string>): Promise<{ priv: Priv
   }
 }
 
+/** Puts the helper in through `root`, a root shell's runner; true once sudo runs it with no password. */
+async function install(root: Pick<Priv, "run">, tun2socks: () => Promise<string>): Promise<boolean> {
+  try {
+    await root.run(["sh", "-c", installScript(process.getuid!(), await tun2socks())]);
+  } catch (err) {
+    log(`network helper: not set up: ${(err as Error).message.split("→").pop()?.trim()}`); // the script itself isn't for the log
+    return false;
+  }
+  if (!(await helperReady())) return log("network helper: set up, but sudo doesn't run it"), false;
+  log("network helper: set up, whole-system mode won't ask for the password again");
+  return true;
+}
+
 /**
  * What a whole-system session runs through, if the helper can: it's in, or `password` (not asked for
  * again after this) puts it in. Null: as before, sudo with the password.
@@ -417,15 +430,26 @@ async function winHelper(tun2socks: () => Promise<string>): Promise<{ priv: Priv
 export async function helperFor(password: string | null, tun2socks: () => Promise<string>): Promise<{ priv: Priv; tun2socksPath: string } | null> {
   if (IS_WIN) return winHelper(tun2socks);
   if (!SUPPORTED || password === null) return null;
-  if (!(await helperReady())) {
-    try {
-      await sudoPriv(password).run(["sh", "-c", installScript(process.getuid!(), await tun2socks())]);
-    } catch (err) {
-      log(`network helper: not set up: ${(err as Error).message.split("→").pop()?.trim()}`); // the script itself isn't for the log
-      return null;
-    }
-    if (!(await helperReady())) return log("network helper: set up, but sudo doesn't run it"), null;
-    log("network helper: set up, whole-system mode won't ask for the password again");
-  }
+  if (!(await helperReady()) && !(await install(sudoPriv(password), tun2socks))) return null;
+  return { priv: helperPriv(), tun2socksPath: T2S };
+}
+
+/**
+ * `foxhole global`'s: the helper, put in first if it isn't, by sudo asking for the password in this terminal itself
+ * (Touch ID too, where sudo takes it), and saying why when it won't. `asking` says what for, just before. Null: it
+ * isn't in, and didn't go in.
+ */
+export async function helperHere(tun2socks: () => Promise<string>, asking: () => void): Promise<{ priv: Priv; tun2socksPath: string } | null> {
+  if (!SUPPORTED) return null;
+  const here = {
+    run: (argv: string[]) =>
+      new Promise<void>((resolve, reject) => {
+        asking();
+        const p = spawn("sudo", argv, { stdio: "inherit" });
+        p.on("error", reject);
+        p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`sudo: exit ${code}`))));
+      }),
+  };
+  if (!(await helperReady()) && !(await install(here, tun2socks))) return null;
   return { priv: helperPriv(), tun2socksPath: T2S };
 }

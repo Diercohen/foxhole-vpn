@@ -926,36 +926,65 @@ export interface GlobalOptions {
   login?: (address: string | undefined) => ProxyLogin | null; // what a proxy client must sign in with
 }
 
+/** --verbose: what a helper's children write shown here too, as root's are (through sudo it only goes to the log). */
+function shown(priv: Priv): Priv {
+  return {
+    ...priv,
+    spawn: (argv, lifeline) => {
+      const p = priv.spawn(argv, lifeline);
+      p.stderr?.on("data", (d: Buffer) => process.stderr.write(d));
+      return p;
+    },
+  };
+}
+
 /**
- * CLI global mode: routes everything through the VPN and runs until Ctrl+C.
- * Requires root (so the whole process is elevated via `sudo -E`).
+ * CLI global mode: routes everything through the VPN and runs until Ctrl+C. As root (`sudo foxhole global`, the
+ * sandbox) it runs the networking itself; else through the network helper, as the app and the TUI do (helper.ts):
+ * sudo asks for the password here the first time, to put it in. Windows: an Administrator terminal.
  */
 export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<void> {
-  if (!(await isPrivileged())) {
-    console.error(
-      IS_WIN
-        ? red("Global mode needs Administrator rights.") + ` Open ${bold("Terminal (Admin)")} and run ${bold("foxhole global")} there.`
-        // env PATH: Ubuntu's sudo swaps PATH for its secure_path, which has no nvm-installed node or foxhole;
-        // no -E: sudo-rs (Ubuntu 26.04's sudo) ignores it with a warning, and foxhole finds the home via SUDO_USER
-        : red("Global mode needs root.") + ` Run: ${bold('sudo env "PATH=$PATH" foxhole global')}, or press ${bold("g")} in ${bold("foxhole")}.`,
-    );
+  const root = await isPrivileged();
+  if (IS_WIN && !root) {
+    console.error(red("Global mode needs Administrator rights.") + ` Open ${bold("Terminal (Admin)")} and run ${bold("foxhole global")} there.`);
     process.exit(1);
   }
   if (!conn.server) throw new Error("No server selected");
+  // another VPN taking all the traffic: said before a password (start() looks again)
+  const other = opts.force ? null : await otherVpn();
+  if (other) throw new Error(`${other.message} (or pass --force)`);
 
   // Start the local proxy and prove auth works BEFORE touching the system.
   const proxy = await startProxy(conn, opts.host, opts.port, opts.login);
+  let priv: Priv;
   let tun2socksPath: string;
   try {
     await conn.currentPass();
-    tun2socksPath = await ensureTun2socks({ proxy: { host: dialHost(opts.host), port: proxy.port } }); // a download goes through the VPN
+    const tun2socks = () => ensureTun2socks({ proxy: { host: dialHost(opts.host), port: proxy.port } }); // a download goes through the VPN
+    if (root) {
+      priv = directPriv();
+      tun2socksPath = await tun2socks();
+    } else {
+      const { helperHere } = await import("./helper.js"); // not at the top: helper.ts leads back to this file
+      const asking = () => console.log(dim("sudo asks for your password once: it sets up Foxhole's network helper, so global mode won't ask again."));
+      const helper = await helperHere(tun2socks, asking);
+      // env PATH: Ubuntu's sudo swaps PATH for its secure_path, which has no nvm-installed node or foxhole;
+      // no -E: sudo-rs (Ubuntu 26.04's sudo) ignores it with a warning, and foxhole finds the home via SUDO_USER
+      if (!helper) {
+        await proxy.close();
+        console.error(red("The network helper isn't set up, so global mode needs root.") + ` Run: ${bold('sudo env "PATH=$PATH" foxhole global')}, or press ${bold("g")} in ${bold("foxhole")}.`);
+        process.exit(1);
+      }
+      priv = verbose ? shown(helper.priv) : helper.priv;
+      tun2socksPath = helper.tun2socksPath;
+    }
   } catch (err) {
     await proxy.close();
     throw err;
   }
 
   const session = new GlobalSession({
-    priv: directPriv(),
+    priv,
     server: conn.server,
     proxyHost: opts.host,
     proxyPort: opts.port,
