@@ -48,6 +48,7 @@ https.request = (o, ...rest) => {
   return req;
 };
 const { Controller } = await import("./controller.js");
+(await import("./dist/guardian.js")).useDirect((url, init) => fetch(url, init)); // Mozilla, directly: the fetch() stood in for above
 const c = new Controller({ copy: () => {}, updates: { state: () => ({}), on() {} } });
 
 // ── signing in offline: said so, and signed in once the internet's back ─────────────────────────────────────────────

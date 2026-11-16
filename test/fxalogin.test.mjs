@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 const home = mkdtempSync(join(tmpdir(), "foxhole-fxalogin-"));
 process.env.HOME = home; // where desktop-app.json goes (userHome)
 const { desktopApp, firefox, saveDesktopApp, signInWindow } = await import("../dist/fxalogin.js");
+(await import("../dist/guardian.js")).useDirect((url, init) => fetch(url, init)); // Mozilla, directly: the fetch() stood in for below
 
 // which app: none recorded here, so this copy of the repo's own (gui/ on its Electron), where that's installed
 const gui = fileURLToPath(new URL("../gui/", import.meta.url));

@@ -8,6 +8,7 @@ const home = mkdtempSync(join(tmpdir(), "foxhole-accounts-"));
 process.env.HOME = home; // userHome()
 const { loadAccounts, saveAccounts, parseAccounts, withOwn, without, withFirefox, takeSent, withSent, authFor, AlreadySignedIn, FIREFOX } = await import("../dist/accounts.js");
 const { RefreshAuth, sessionCredentials } = await import("../dist/auth.js");
+(await import("../dist/guardian.js")).useDirect((url, init) => fetch(url, init)); // Mozilla, directly: the fetch() stood in for below
 const config = join(home, ".config", "foxhole-vpn");
 const tok = (c) => c.repeat(64);
 

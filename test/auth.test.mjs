@@ -8,7 +8,9 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FirefoxAuth, RefreshAuth, destroyToken, sessionCredentials, sessionVerified, VPN_SCOPES } from "../dist/auth.js";
-import { useRelay } from "../dist/guardian.js";
+import { useDirect, useRelay } from "../dist/guardian.js";
+
+useDirect((url, init) => fetch(url, init)); // Mozilla, directly: the fetch() stood in for below
 
 process.env.HOME = mkdtempSync(join(tmpdir(), "foxhole-auth-")); // userHome(): the tokens kept (tokens.json)
 
@@ -49,6 +51,10 @@ assert.deepEqual(calls[1].body, {
 });
 assert.equal(await auth.getAccessToken(), "tok2", "reused while fresh");
 assert.equal(calls.length, 2, "no second request");
+// kept for the next start (tokens.json), which so connects where the account server can't be reached
+assert.equal(await new FirefoxAuth({ profileDir: dir }).getAccessToken(), "tok2", "kept: the next start has it");
+assert.equal(calls.length, 2, "Mozilla not asked");
+auth.forget(); // Guardian refused it: the kept one goes too
 
 // A signed-out or revoked session says so instead of failing vaguely.
 globalThis.fetch = async () => Response.json({ errno: 110, message: "Invalid authentication token" }, { status: 401 });
@@ -70,6 +76,18 @@ globalThis.fetch = async (url, init) => {
 assert.equal(await new FirefoxAuth({ profileDir: dir }).getAccessToken(), "tok4", "the token, through the relay (the clock's retry too)");
 assert.deepEqual(relayed.map((p) => [p.k, p.m, p.u, Object.keys(p.h)]), Array(2).fill(["k", "POST", "https://api.accounts.firefox.com/v1/oauth/token", ["authorization"]]));
 useRelay(null);
+
+// Past half its life (an hour of a day's), it's used at once and a new one made meanwhile, once each 10 minutes at most
+let short = 0;
+globalThis.fetch = async () => Response.json({ access_token: `short${++short}`, expires_in: 3600 });
+const aging = new FirefoxAuth({ profileDir: dir });
+aging.forget(); // tok4, kept
+assert.equal(await aging.getAccessToken(), "short1");
+assert.equal(await aging.getAccessToken(), "short1", "used at once");
+await new Promise((r) => setTimeout(r, 50));
+assert.equal(await aging.getAccessToken(), "short2", "the new one, made meanwhile");
+assert.equal(short, 2, "once in 10 minutes");
+assert.equal(await new FirefoxAuth({ profileDir: dir }).getAccessToken(), "short2", "and kept for the next start");
 
 // Whether a session's sign-in is confirmed: GET /session/status signed with it, as the page asks it. A fake FxA that
 // checks the HAWK header of a GET (no payload, so no hash), wants ts=1000, and answers as `status` says.

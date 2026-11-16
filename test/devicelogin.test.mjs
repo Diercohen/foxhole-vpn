@@ -16,6 +16,7 @@ const { askTv, sendToTv } = await import("../dist/tvpair.js");
 const { vw } = await import("../dist/ui.js");
 const { loadAccounts, saveAccounts, withFirefox } = await import("../dist/accounts.js");
 const { loadSettings } = await import("../dist/settings.js");
+(await import("../dist/guardian.js")).useDirect((url, init) => fetch(url, init)); // Mozilla, directly: the fetch() stood in for below
 
 const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const text = (lines) => plain(lines.join("\n"));

@@ -102,6 +102,7 @@ const android = {
   }),
 };
 const { Controller } = await import("./controller.js");
+(await import("./dist/guardian.js")).useDirect((url, init) => fetch(url, init)); // Mozilla, directly: the fetch() stood in for above
 const c = new Controller({ copy: () => {}, updates: { state: () => ({}), on() {} }, android });
 c.signedIn({ uid: "u1", email: "me@example.com", sessionToken: "a".repeat(64) });
 assert.ok(await until(() => c.state().auth.stage === "ready"), "signed in");

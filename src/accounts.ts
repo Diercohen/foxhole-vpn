@@ -175,5 +175,7 @@ export function peekFirefox(): string | null {
 /** Signs an account out at Mozilla (it leaves the account's devices list); quietly, as the account goes from here anyway. */
 export async function signOut(a: Pick<OwnAccount, "sessionToken" | "refreshToken">): Promise<void> {
   if (a.refreshToken) return destroyToken(a.refreshToken);
-  if (a.sessionToken) await fxaPost("/session/destroy", {}, a.sessionToken, AbortSignal.timeout(10_000)).catch(() => {});
+  if (!a.sessionToken) return;
+  new SessionAuth(() => a.sessionToken as string).forget(); // its kept token goes too
+  await fxaPost("/session/destroy", {}, a.sessionToken, AbortSignal.timeout(10_000)).catch(() => {});
 }

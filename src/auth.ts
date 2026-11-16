@@ -46,13 +46,13 @@ export interface AccessToken {
 /** Good for more than 5 minutes yet: reused till then. */
 const fresh = (t: AccessToken | null | undefined): t is AccessToken => !!t && t.expires - Date.now() > 300_000;
 
-// A sent sign-in's VPN tokens (RefreshAuth), kept in tokens.json (readable only by the user) for the next start, as a
-// phone's app is started again. Where Mozilla's account server can't be reached (Iran: blocked, and since 2026-11 it
-// turns away the relay, HTTP 406), the first one comes with the sign-in (tvpair.ts) and connects, and the next ones are
-// made through Firefox VPN while it's connected (guardian.ts mozillaFetch). Each under its refresh token's hash: another
-// sign-in never gets it.
+// The VPN tokens made (SessionAuth, RefreshAuth), kept in tokens.json (readable only by the user) for the next start.
+// Where Mozilla's account server can't be reached (Iran: blocked, or most connections dropped, and since 2026-11 it
+// turns away the relay, HTTP 406), a start connects with the one kept (a sent sign-in's first one comes with it,
+// tvpair.ts), and the next ones are made through Firefox VPN while it's connected (guardian.ts mozillaFetch). Each under
+// its sign-in's hash (refresh or session token): another sign-in never gets it.
 const tokensFile = () => join(userHome(), ".config", "foxhole-vpn", "tokens.json");
-const keyOf = (refreshToken: string) => createHash("sha256").update(refreshToken).digest("hex").slice(0, 32);
+const keyOf = (signIn: string) => createHash("sha256").update(signIn).digest("hex").slice(0, 32);
 
 /** The tokens kept, those still good; none if the file's missing or isn't one. */
 function keptTokens(): Record<string, AccessToken> {
@@ -160,7 +160,8 @@ export async function sessionVerified(sessionToken: string, signal?: AbortSignal
 export class SessionAuth implements Authenticator {
   readonly #load: () => string;
   readonly #expired: string;
-  #cached: { token: string; expires: number } | null = null; // expires: epoch ms
+  #cached: AccessToken | null = null;
+  #renewed = 0; // when one past half its life was last renewed (epoch ms)
 
   constructor(load: () => string, expired = "This sign-in has ended (signed out, or expired): sign in again.") {
     this.#load = load;
@@ -168,17 +169,30 @@ export class SessionAuth implements Authenticator {
   }
 
   async getAccessToken(signal?: AbortSignal): Promise<string> {
-    // Reused until 5 minutes before it expires: Connection asks on every pass and usage refresh.
-    if (this.#cached && this.#cached.expires - Date.now() > 300_000) return this.#cached.token;
+    // Reused until 5 minutes before it expires: Connection asks on every pass and usage refresh. Kept for the next start
+    // too (keptTokens), which so connects without the account server. Past half its life, a new one's made meanwhile
+    // (each 10 minutes at most), through Firefox VPN once it's connected: the one kept stays young.
+    if (!fresh(this.#cached)) this.#cached = keptTokens()[keyOf(this.#load())] ?? null;
+    if (!fresh(this.#cached)) return this.#make(signal);
+    if (this.#cached.expires - Date.now() < (TOKEN_TTL * 1000) / 2 && Date.now() - this.#renewed > 600_000) {
+      this.#renewed = Date.now();
+      this.#make().catch(() => {}); // the one kept goes on meanwhile
+    }
+    return this.#cached.token;
+  }
+
+  /** A token made with the session, kept. */
+  async #make(signal?: AbortSignal): Promise<string> {
+    const session = this.#load();
     const { ok, status, data } = await fxaPost(
       "/oauth/token",
       { client_id: FIREFOX_CLIENT_ID, grant_type: "fxa-credentials", scope: VPN_SCOPES.join(" "), ttl: TOKEN_TTL },
-      this.#load(),
+      session,
       signal,
     );
     if (ok && typeof data.access_token === "string") {
       const expiresIn = typeof data.expires_in === "number" ? data.expires_in : TOKEN_TTL;
-      this.#cached = { token: data.access_token, expires: Date.now() + expiresIn * 1000 };
+      keepToken(keyOf(session), (this.#cached = { token: data.access_token, expires: Date.now() + expiresIn * 1000 }));
       return data.access_token;
     }
     if (data.errno === 110) throw new FxaError(this.#expired, 110);
@@ -187,6 +201,9 @@ export class SessionAuth implements Authenticator {
 
   forget(): void {
     this.#cached = null;
+    try {
+      keepToken(keyOf(this.#load()), null); // the next start doesn't get it back either
+    } catch {} // no session to read (signed out of Firefox): none's kept under it
   }
 
   /**

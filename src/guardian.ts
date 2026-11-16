@@ -1,7 +1,10 @@
 // Client for Mozilla's Guardian service, the backend behind Firefox's built-in
 // VPN. Every call authenticates with an FxA access token (VPN scope) that the
 // auth module provides; see auth.ts.
+import dns from "node:dns";
+import { once } from "node:events";
 import https from "node:https";
+import net from "node:net";
 import tls from "node:tls";
 import type { Duplex } from "node:stream";
 import { log } from "./log.js";
@@ -180,15 +183,56 @@ function directRequest(method: "GET" | "HEAD", path: string, accessToken: string
   });
 }
 
+type MozillaInit = { method?: "GET" | "POST"; headers?: Record<string, string>; body?: string };
+
+/**
+ * A connection to `host`:`port` on whichever of its addresses (dns.ts's fallbacks with them) connects first, all dialled
+ * at once, within 10 s. Node tries them in turn, 3 s each (cli.ts, gui/main.js): where a filter drops most of Fastly's
+ * addresses, a different few each minute, and one it lets through can take a few SYN retries (Shatel, 2026-11), that
+ * seldom reached one before the relay's turn at 6 s, and the account server turns the relay away (406), so the VPN's
+ * token failed at start; at once, one connected within 0.1-7 s in each of 12 tries. At its worst none does within 10 s:
+ * then a start connects with the token kept from before (auth.ts SessionAuth).
+ */
+async function dialFirst(host: string, port: number, signal: AbortSignal): Promise<net.Socket> {
+  const found = await new Promise<dns.LookupAddress[]>((resolve, reject) => dns.lookup(host, { all: true }, (err, a) => (err ? reject(err) : resolve(a))));
+  const socks = [...new Set(found.map((a) => a.address))].map((address) => net.connect({ host: address, port }));
+  const stop = (err: Error) => socks.forEach((s) => s.destroy(err));
+  const onAbort = () => stop(signal.reason);
+  const timer = setTimeout(stop, 10_000, new Error("timed out"));
+  signal.addEventListener("abort", onAbort, { once: true });
+  if (signal.aborted) onAbort();
+  try {
+    const first = await Promise.any(socks.map((s) => once(s, "connect").then(() => s)));
+    for (const s of socks) if (s !== first) s.destroy();
+    return first;
+  } catch (err) {
+    throw (err as AggregateError).errors[0]; // the first address's, as one alone would say
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
+/** How mozillaFetch reaches a host directly, fetch()-shaped: its request on the first of its addresses to connect. */
+let direct = async (url: string, init: MozillaInit & { signal: AbortSignal }): Promise<Response> => {
+  const { hostname, port } = new URL(url);
+  return requestOn(await dialFirst(hostname, Number(port) || 443, init.signal), url, init, init.signal);
+};
+
+/** Has mozillaFetch reach hosts directly through `d` (tests: fetch(), which they stand in for Mozilla with). */
+export function useDirect(d: typeof direct): void {
+  direct = d;
+}
+
 /**
  * fetch() for Mozilla's other hosts, on the same Fastly addresses as Guardian: its account server (auth.ts fxaPost: the
  * VPN's token, sign-ins) and the server list. Connected, through the VPN first, as `request` does: since 2026-11 the
  * account server turns away the relay (HTTP 406 to Google's addresses, whatever the request), but not the VPN's exit,
- * so where it's blocked (Iran) the next token is made that way. Else direct, then through the relay when one is set;
- * with none, GuardianBlocked when Google answers, so each UI offers the relay's setup. Only a request that gets no
- * answer goes on to the next way: any answer, an error status too, is Mozilla's.
+ * so where it's blocked (Iran) the next token is made that way. Else directly (every address at once: dialFirst), then
+ * through the relay when one is set; with none, GuardianBlocked when Google answers, so each UI offers the relay's
+ * setup. Only a request that gets no answer goes on to the next way: any answer, an error status too, is Mozilla's.
  */
-export async function mozillaFetch(url: string, init: { method?: "GET" | "POST"; headers?: Record<string, string>; body?: string } = {}, signal?: AbortSignal): Promise<Response> {
+export async function mozillaFetch(url: string, init: MozillaInit = {}, signal?: AbortSignal): Promise<Response> {
   const opening = tunnel?.(new URL(url).hostname, 443).catch(() => null);
   const through = opening && (await Promise.race([opening, new Promise<null>((r) => setTimeout(r, 6_000, null).unref())]));
   if (opening && !through) void opening.then((late) => late?.destroy());
@@ -201,14 +245,14 @@ export async function mozillaFetch(url: string, init: { method?: "GET" | "POST";
     }
   const via = relay;
   // with a relay to fall back to, a silently dropped (blocked) connection gives up sooner, as directRequest's does:
-  // the relay's answer still comes within the callers' 15 s
+  // the relay's answer still comes within the callers' 15 s. Not the account server's: it turns the relay away (406)
   const ctrl = new AbortController();
   const stop = () => ctrl.abort(signal?.reason);
   if (signal?.aborted) stop();
   else signal?.addEventListener("abort", stop, { once: true });
-  const cap = via ? setTimeout(() => ctrl.abort(new Error("timed out")), 6_000) : undefined;
+  const cap = via && new URL(url).hostname !== "api.accounts.firefox.com" ? setTimeout(() => ctrl.abort(new Error("timed out")), 6_000) : undefined;
   try {
-    return await fetch(url, { ...init, signal: ctrl.signal });
+    return await direct(url, { ...init, signal: ctrl.signal });
   } catch (err) {
     const { hostname, pathname } = new URL(url);
     if (signal?.aborted) throw err;

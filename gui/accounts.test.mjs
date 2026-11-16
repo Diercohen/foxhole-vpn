@@ -33,6 +33,7 @@ assert.deepEqual(c.state().accounts.map((a) => a.email).sort(), ["Me@Example.com
 const { askTv, sendToTv, TV_PORT } = await import("./dist/tvpair.js");
 const { sessionCredentials } = await import("./dist/auth.js");
 const { loadSettings } = await import("./dist/settings.js");
+(await import("./dist/guardian.js")).useDirect((url, init) => fetch(url, init)); // Mozilla, directly: the fetch() stood in for below
 const sessions = [tok("a"), tok("b"), tok("c")]; // u1's is a, u2's c
 const alive = new Set([tok("a")]);
 const destroyed = []; // signed out at Mozilla

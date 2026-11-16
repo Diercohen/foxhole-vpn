@@ -42,8 +42,11 @@ scheme (`sessionCredentials`):
 
 ## Behavior
 
-- The token stays in memory, is never logged or written to disk, and is reused
-  until 5 minutes before it expires, then renewed.
+- The token is never logged. It's reused until 5 minutes before it expires,
+  and kept for the next start in `~/.config/foxhole-vpn/tokens.json` (readable
+  only by you, under a hash of the session), so a start where Mozilla's account
+  server can't be reached still connects. Past half its life, a new one is made
+  meanwhile, through the VPN once it's connected.
 - If the computer's clock is off, FxA answers errno 111 with its own time and
   the request is retried once on that time.
 - errno 110 means Firefox's login is no longer valid: sign in to Firefox again

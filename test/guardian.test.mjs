@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
-import { fetchPass, fetchUsage, mozillaFetch, pinGuardian, useRelay, useTunnel, GuardianBlocked, GuardianError } from "../dist/guardian.js";
+import { fetchPass, fetchUsage, mozillaFetch, pinGuardian, useDirect, useRelay, useTunnel, GuardianBlocked, GuardianError } from "../dist/guardian.js";
 
 setTimeout(() => {
   console.error("FAIL - test timed out");
@@ -106,6 +106,13 @@ useTunnel(async () => Promise.reject(new Error("the VPN's server refused the pas
 await fetchUsage("good");
 assert.strictEqual(dialed.length, ++n, "a tunnel that fails: directly");
 useTunnel(null);
+
+// Mozilla's other hosts directly (mozillaFetch): every address of the host dialled at once, the request on the first to
+// connect, TLS to the host's name on it: localhost's ::1 refuses (the fake listens on 127.0.0.1 alone), 127.0.0.1 answers
+const direct = await mozillaFetch(`https://localhost:${port}/v1/direct`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+assert.deepStrictEqual(await direct.json(), { method: "POST", type: "application/json", body: "{}" }, "directly, not relayed");
+assert.deepStrictEqual(seen.at(-1), { sni: "localhost", host: `localhost:${port}`, auth: undefined });
+useDirect((url, init) => fetch(url, init)); // from here, Mozilla is the fetch() stood in for below
 
 // Mozilla's other hosts (mozillaFetch: its account server, the server list): a connection that fails goes through the
 // relay, the body's type as the script's ct; an answer, an error too, is Mozilla's; with no relay set, GuardianBlocked
