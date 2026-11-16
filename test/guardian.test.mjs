@@ -12,6 +12,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { fetchPass, fetchUsage, mozillaFetch, pinGuardian, useDial, useDirect, useRelay, useTunnel, GuardianBlocked, GuardianError } from "../dist/guardian.js";
+import { fetchServerList } from "../dist/serverlist.js";
 
 setTimeout(() => {
   console.error("FAIL - test timed out");
@@ -151,6 +152,17 @@ await assert.rejects(
   mozillaFetch("https://firefox.settings.services.mozilla.com/v1/records"),
   (err) => err instanceof GuardianBlocked && err.host === "firefox.settings.services.mozilla.com" && !err.region && err.message.startsWith("firefox.settings.services.mozilla.com seems blocked"),
 );
+// The server list (serverlist.ts): kept once fetched, for when it can't be, as here; the doctor's asks for the fetch's own
+process.env.HOME = mkdtempSync(path.join(os.tmpdir(), "foxhole-vpn-home-")); // userHome(): where it's kept
+const listBlocked = (err) => err instanceof GuardianBlocked && err.host === "firefox.settings.services.mozilla.com";
+await assert.rejects(fetchServerList(), listBlocked, "none kept yet: why");
+const blockedFetch = globalThis.fetch;
+globalThis.fetch = async () => Response.json({ data: [{ code: "REC" }, { code: "DE", name: "Germany", cities: [{ servers: [{ hostname: "de.example" }] }] }] });
+const germany = { code: "DE", name: "Germany", locked: false, available: true, servers: [{ hostname: "de.example", port: 443, quarantined: false }] };
+assert.deepEqual(await fetchServerList(), [germany]);
+globalThis.fetch = blockedFetch;
+assert.deepEqual(await fetchServerList(), [germany], "kept: the one from before");
+await assert.rejects(fetchServerList(undefined, false), listBlocked, "the doctor's: the fetch's own");
 globalThis.fetch = plainFetch;
 
 relayServer.close();

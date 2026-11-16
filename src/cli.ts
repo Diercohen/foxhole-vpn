@@ -365,7 +365,7 @@ async function cmdDoctor() {
     console.log(`  Token source    : ${green(env.name)}`);
   }
   try {
-    const list = await fetchServerList();
+    const list = await fetchServerList(undefined, false); // fetched now, not the one kept
     console.log(`  Server list     : ${green(`ok (${list.length} countries)`)}`);
   } catch (err) {
     console.log(`  Server list     : ${red((err as Error).message)}`);
