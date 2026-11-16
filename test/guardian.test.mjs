@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
-import { fetchPass, fetchUsage, mozillaFetch, pinGuardian, useDirect, useRelay, useTunnel, GuardianBlocked, GuardianError } from "../dist/guardian.js";
+import { fetchPass, fetchUsage, mozillaFetch, pinGuardian, useDial, useDirect, useRelay, useTunnel, GuardianBlocked, GuardianError } from "../dist/guardian.js";
 
 setTimeout(() => {
   console.error("FAIL - test timed out");
@@ -51,6 +51,8 @@ https.globalAgent = new (class extends https.Agent {
     return super.createConnection({ ...opts, host: "127.0.0.1", port }, cb);
   }
 })({ keepAlive: false });
+// ...and Guardian's dial when not pinned (every address of vpn.mozilla.org at once, dialFirst): the same
+useDial(async (host) => (dialed.push(host), net.connect(port, "127.0.0.1")));
 
 assert.strictEqual((await fetchUsage("good")).max, 100n, "HEAD carries the usage headers");
 pinGuardian("203.0.113.7"); // TEST-NET-3, never a real host: proves the hostname isn't looked up

@@ -17,11 +17,13 @@ setTimeout(() => {
   process.exit(1);
 }, 15000).unref();
 
-// withFastlyFallback: Mozilla's hosts on Fastly's 146.75 (dropped in Iran) get its 151.101 anycast after; others don't
-const fallback = withFastlyFallback((host, opts, cb) => cb(null, [{ address: host === "elsewhere.com" ? "146.75.1.5" : "146.75.117.91", family: 4 }]));
+// withFastlyFallback: Mozilla's hosts on Fastly's 146.75 (dropped in Iran) get its 151.101 anycast after, and one on
+// 151.101 (vpn.mozilla.org's only one) the other three; others don't
+const fallback = withFastlyFallback((host, opts, cb) => cb(null, [{ address: host === "elsewhere.com" ? "146.75.1.5" : host === "vpn.mozilla.org" ? "151.101.1.91" : "146.75.117.91", family: 4 }]));
 const ask = (host, opts) => new Promise((r) => fallback(host, opts, (err, address, family) => r(family ? [address, family] : address)));
 assert.deepEqual((await ask("api.accounts.firefox.com", { all: true })).map((a) => a.address), ["146.75.117.91", "151.101.1.91", "151.101.65.91", "151.101.129.91", "151.101.193.91"]);
 assert.deepEqual(await ask("api.accounts.firefox.com", {}), ["146.75.117.91", 4], "one address: the answer's own");
+assert.deepEqual((await ask("vpn.mozilla.org", { all: true })).map((a) => a.address), ["151.101.1.91", "151.101.65.91", "151.101.129.91", "151.101.193.91"], "its own first, each once");
 assert.deepEqual((await ask("elsewhere.com", { all: true })).map((a) => a.address), ["146.75.1.5"], "not Mozilla's: as it was");
 
 const listen = (srv) => new Promise((r) => srv.listen(0, "127.0.0.1", () => r(srv.address().port)));

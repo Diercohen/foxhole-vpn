@@ -20,10 +20,13 @@ export const DOH_HOST = "cloudflare-dns.com";
 // Iran's networks (seen on Shatel, 2026-11) drop connections to Fastly's 146.75.0.0/16, where their DNS puts Mozilla's
 // hosts: the VPN token (api.accounts.firefox.com) and the server list (firefox.settings.services.mozilla.com) time out.
 // Fastly serves the same hosts on its 151.101.0.0/16 anycast at the same last octet: those go after the answer's own,
-// for Node to try in turn. A hot config (hot.ts) can replace that rule when the network changes.
+// for Node to try in turn (guardian.ts dialFirst: all at once). Those four are dropped too, a different few from one
+// minute to the next (2026-11-16), so an answer that's one of them, as vpn.mozilla.org's only one, gets the other three
+// after it. A hot config (hot.ts) can replace these rules when the network changes.
 
 const MOZILLA = /(^|\.)(firefox\.com|mozilla\.(com|org|net))$/i;
-const FALLBACK = { "146.75.": ["151.101.1.", "151.101.65.", "151.101.129.", "151.101.193."] };
+const ANYCAST = ["151.101.1.", "151.101.65.", "151.101.129.", "151.101.193."];
+const FALLBACK = { "146.75.": ANYCAST, "151.101.": ANYCAST };
 type LookupCb = (err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => void;
 
 /** The addresses to try after `address` by `rules` (hot.ts Hot.fallback): a value ending in "." gets its last number. Pure. */
@@ -43,7 +46,8 @@ export function withFastlyFallback(lookup: typeof dns.lookup): typeof dns.lookup
     lookup(host, { ...opts, all: true }, (err, found) => {
       if (err) return cb!(err, []);
       const rules = hot()?.fallback ?? FALLBACK;
-      const all = [...found, ...found.flatMap(({ address }) => alternatives(address, rules).map((a) => ({ address: a, family: net.isIP(a) })))];
+      const all = [...found, ...found.flatMap(({ address }) => alternatives(address, rules).map((a) => ({ address: a, family: net.isIP(a) })))]
+        .filter((a, i, list) => list.findIndex((b) => b.address === a.address) === i); // each once, the answer's own first
       if (opts.all) cb!(null, all);
       else cb!(null, all[0].address, all[0].family);
     });

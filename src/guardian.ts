@@ -150,6 +150,9 @@ async function request(method: "GET" | "HEAD", path: string, accessToken: string
 function directRequest(method: "GET" | "HEAD", path: string, accessToken: string, signal?: AbortSignal, through?: Duplex): Promise<Response> {
   return new Promise((resolve, reject) => {
     const fail = (err: Error) => reject(new Error(`can't reach ${GUARDIAN_HOST}`, { cause: err }));
+    // like fetch's connect timeout; a dead pinned IP would hang for minutes. Shorter with a relay to fall
+    // back to, so a silently-dropped (blocked) connection gives up sooner.
+    const ms = relay ? 6_000 : 10_000;
     const req = https.request(
       {
         host: pinnedIp ?? GUARDIAN_HOST,
@@ -158,10 +161,19 @@ function directRequest(method: "GET" | "HEAD", path: string, accessToken: string
         method,
         headers: { Host: GUARDIAN_HOST, ...bearer(accessToken) },
         signal,
-        ...(through && { createConnection: () => tls.connect({ socket: through, servername: GUARDIAN_HOST }) }),
-        // like fetch's connect timeout; a dead pinned IP would hang for minutes. Shorter with a relay to fall
-        // back to, so a silently-dropped (blocked) connection gives up sooner.
-        timeout: relay ? 6_000 : 10_000,
+        // Through the tunnel, TLS on it. Else every address at once (dialFirst), as mozillaFetch's: Node tries them in
+        // turn, and where a filter drops most of Fastly's, often had only vpn.mozilla.org's one (dns.ts adds the others).
+        // Pinned, that address alone: global mode routes it around the tunnel, and the others into it.
+        ...(through
+          ? { createConnection: () => tls.connect({ socket: through, servername: GUARDIAN_HOST }) }
+          : !pinnedIp && {
+              // Node's async form: the socket handed to `done` once there's one, or the error alone
+              createConnection: ((_: unknown, done: (err: Error | null, socket?: Duplex) => void) => {
+                dial(GUARDIAN_HOST, 443, signal, ms).then((s) => done(null, tls.connect({ socket: s, servername: GUARDIAN_HOST })), done);
+                return undefined;
+              }) as https.RequestOptions["createConnection"],
+            }),
+        timeout: ms,
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -187,20 +199,21 @@ type MozillaInit = { method?: "GET" | "POST"; headers?: Record<string, string>; 
 
 /**
  * A connection to `host`:`port` on whichever of its addresses (dns.ts's fallbacks with them) connects first, all dialled
- * at once, within 10 s. Node tries them in turn, 3 s each (cli.ts, gui/main.js): where a filter drops most of Fastly's
- * addresses, a different few each minute, and one it lets through can take a few SYN retries (Shatel, 2026-11), that
- * seldom reached one before the relay's turn at 6 s, and the account server turns the relay away (406), so the VPN's
- * token failed at start; at once, one connected within 0.1-7 s in each of 12 tries. At its worst none does within 10 s:
- * then a start connects with the token kept from before (auth.ts SessionAuth).
+ * at once, within `ms`: mozillaFetch's, and Guardian's (directRequest). Node tries them in turn, 3 s each (cli.ts,
+ * gui/main.js): where a filter drops most of Fastly's addresses, a different few each minute, and one it lets through
+ * can take a few SYN retries (Shatel, 2026-11), that seldom reached one before the relay's turn at 6 s, and the account
+ * server turns the relay away (406), so the VPN's token failed at start; at once, one connected within 0.1-7 s in each
+ * of 12 tries. At its worst none does within 10 s: then a start connects with the token kept from before (auth.ts
+ * SessionAuth). Without a relay, a start connected in 4 of 6 tries at 23:40 Iran time, where it had in none.
  */
-async function dialFirst(host: string, port: number, signal: AbortSignal): Promise<net.Socket> {
+async function dialFirst(host: string, port: number, signal?: AbortSignal, ms = 10_000): Promise<net.Socket> {
   const found = await new Promise<dns.LookupAddress[]>((resolve, reject) => dns.lookup(host, { all: true }, (err, a) => (err ? reject(err) : resolve(a))));
   const socks = [...new Set(found.map((a) => a.address))].map((address) => net.connect({ host: address, port }));
   const stop = (err: Error) => socks.forEach((s) => s.destroy(err));
-  const onAbort = () => stop(signal.reason);
-  const timer = setTimeout(stop, 10_000, new Error("timed out"));
-  signal.addEventListener("abort", onAbort, { once: true });
-  if (signal.aborted) onAbort();
+  const onAbort = () => stop(signal?.reason);
+  const timer = setTimeout(stop, ms, new Error("timed out"));
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
   try {
     const first = await Promise.any(socks.map((s) => once(s, "connect").then(() => s)));
     for (const s of socks) if (s !== first) s.destroy();
@@ -209,8 +222,16 @@ async function dialFirst(host: string, port: number, signal: AbortSignal): Promi
     throw (err as AggregateError).errors[0]; // the first address's, as one alone would say
   } finally {
     clearTimeout(timer);
-    signal.removeEventListener("abort", onAbort);
+    signal?.removeEventListener("abort", onAbort);
   }
+}
+
+// How Guardian's direct requests reach vpn.mozilla.org, not pinned (directRequest).
+let dial = dialFirst;
+
+/** Has Guardian's direct requests dial vpn.mozilla.org with `d` (tests: their fake Guardian). */
+export function useDial(d: typeof dialFirst): void {
+  dial = d;
 }
 
 /** How mozillaFetch reaches a host directly, fetch()-shaped: its request on the first of its addresses to connect. */
