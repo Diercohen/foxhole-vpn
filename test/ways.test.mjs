@@ -50,7 +50,9 @@ const gh = https.createServer(cert, (req, res) => {
   if (next.slow) {
     next.slow = false;
     let i = 0;
-    const t = setInterval(() => (res.destroyed || i * 1024 >= body.length ? clearInterval(t) : res.write(body.subarray(i * 1024, ++i * 1024))), 20);
+    // ended once it's all sent, as a server does: else Node's agent (keep-alive since Node 19) hands the next request
+    // this connection, still on this answer, and the next answer never comes
+    const t = setInterval(() => (res.destroyed ? clearInterval(t) : i * 1024 >= body.length ? (clearInterval(t), res.end()) : res.write(body.subarray(i * 1024, ++i * 1024))), 20);
     return void res.on("close", () => clearInterval(t));
   }
   if (next.cut) {
