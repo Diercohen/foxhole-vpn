@@ -75,9 +75,12 @@ server.on("stream", (stream, h) => {
     for (const p of r.payloads) stream.write(capsule(Buffer.concat([Buffer.from("echo:"), p])));
   });
 });
-await new Promise((r) => server.listen(0, "127.0.0.1", r));
+const free = net.createServer(); // the server's port: it listens there below, once a flow found nothing there
+await new Promise((r) => free.listen(0, "127.0.0.1", r));
+const port = free.address().port;
+await new Promise((r) => free.close(r));
 const conn = {
-  server: { hostname: "localhost", ip: "127.0.0.1", port: server.address().port },
+  server: { hostname: "localhost", ip: "127.0.0.1", port },
   async currentPass() {
     return { token: "faketoken", notBefore: 0, expires: 2 ** 31 };
   },
@@ -112,6 +115,9 @@ const until = async (f, ms = 3000) => {
   return f();
 };
 
+send("1.2.3.4", 49152, "nobody"); // the server not there yet: that flow fails, and the next dials anew
+await wait(300);
+await new Promise((r) => server.listen(port, "127.0.0.1", r));
 send("1.2.3.4", 3478, "stun");
 send("1.2.3.4", 3478, "again"); // while the stream opens: queued, not lost
 assert.ok(await until(() => replies.length >= 2), "answers come back through the VPN");

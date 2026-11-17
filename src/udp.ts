@@ -14,6 +14,7 @@ import { nameOf } from "./dns.js";
 import { route } from "./split.js";
 import { count } from "./traffic.js";
 import { log } from "./log.js";
+import { dialFirst } from "./guardian.js";
 
 // ── Wire formats ────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -96,33 +97,47 @@ export function udpReply(host: string, port: number, data: Buffer): Buffer {
 
 type Conn = Pick<Connection, "server" | "currentPass">;
 
-let h2: { key: string; session: http2.ClientHttp2Session; ready: Promise<void> } | null = null;
+let h2: { key: string; session?: http2.ClientHttp2Session; ready: Promise<http2.ClientHttp2Session> } | null = null;
 
-/** The HTTP/2 session to `server`, a new one if there's none (or only one to another server). */
-function sessionTo(server: Server): { session: http2.ClientHttp2Session; ready: Promise<void> } {
+/**
+ * The HTTP/2 session to `server` once it takes connect-udp, a new one if there's none (or only one to another server).
+ * On the quickest of the network's routes to the server, as each TCP tunnel is (proxy.ts ROUTES: 4 dialled at once,
+ * within its 15 s): every datagram of a call goes on this one connection, and a slow route's 4-17 KB/s and ~650 ms
+ * can't carry one.
+ */
+function sessionTo(server: Server): Promise<http2.ClientHttp2Session> {
   const key = `${server.hostname} ${server.ip ?? ""} ${server.port}`;
-  if (h2 && h2.key === key && !h2.session.closed && !h2.session.destroyed) return h2;
-  h2?.session.close();
-  const session = http2.connect(`https://${server.hostname}:${server.port}`, {
-    createConnection: () => tls.connect({ host: server.ip ?? server.hostname, port: server.port, servername: server.hostname, ALPNProtocols: ["h2"] }),
-    settings: { initialWindowSize: 1 << 20 },
-  });
-  const gone = () => void (h2?.session === session && (h2 = null));
-  session.on("error", (e) => log(`udp: the VPN's HTTP/2 session failed: ${e.message}`)).on("close", gone).on("goaway", gone);
-  session.unref(); // an idle session never keeps foxhole running
-  // extended CONNECT (:protocol) is only asked for once the server's SETTINGS allow it
-  const ready = new Promise<void>((resolve, reject) => {
-    session.once("remoteSettings", (s) => (s.enableConnectProtocol ? resolve() : reject(new Error("the VPN server doesn't take connect-udp"))));
-    session.once("close", () => reject(new Error("closed")));
-  });
-  ready.catch(() => {});
-  h2 = { key, session, ready };
-  return h2;
+  if (h2 && h2.key === key && !h2.session?.closed && !h2.session?.destroyed) return h2.ready;
+  closeUdp();
+  const mine: NonNullable<typeof h2> = {
+    key,
+    ready: dialFirst(server.ip ?? server.hostname, server.port, undefined, 15_000, 4).then((socket) => {
+      if (h2 !== mine) {
+        socket.destroy(); // closed while it dialled
+        throw new Error("closed");
+      }
+      const session = (mine.session = http2.connect(`https://${server.hostname}:${server.port}`, {
+        createConnection: () => tls.connect({ socket, servername: server.hostname, ALPNProtocols: ["h2"] }),
+        settings: { initialWindowSize: 1 << 20 },
+      }));
+      const gone = () => void (h2 === mine && (h2 = null));
+      session.on("error", (e) => log(`udp: the VPN's HTTP/2 session failed: ${e.message}`)).on("close", gone).on("goaway", gone);
+      session.unref(); // an idle session never keeps foxhole running
+      // extended CONNECT (:protocol) is only asked for once the server's SETTINGS allow it
+      return new Promise<http2.ClientHttp2Session>((resolve, reject) => {
+        session.once("remoteSettings", (s) => (s.enableConnectProtocol ? resolve(session) : reject(new Error("the VPN server doesn't take connect-udp"))));
+        session.once("close", () => reject(new Error("closed")));
+      });
+    }),
+  };
+  mine.ready.catch(() => void (h2 === mine && !mine.session && (h2 = null))); // not dialled: the next flow dials anew
+  h2 = mine;
+  return mine.ready;
 }
 
 /** Closes the session (the proxy's closing). */
 export function closeUdp(): void {
-  h2?.session.close();
+  h2?.session?.close();
   h2 = null;
 }
 
@@ -171,9 +186,9 @@ function vpnFlow(conn: Conn, host: string, port: number, back: (data: Buffer) =>
     await Promise.resolve(); // the caller has its flow before this can close it
     const server = conn.server;
     if (!server) return flow.close();
-    const { session, ready } = sessionTo(server);
+    const ready = sessionTo(server);
     const pass = await conn.currentPass();
-    await ready;
+    const session = await ready;
     if (closed) return;
     const s = (stream = session.request(
       {
