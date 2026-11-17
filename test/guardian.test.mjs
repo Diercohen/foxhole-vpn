@@ -6,6 +6,7 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"; // self-signed localhost cert
 import http from "node:http";
 import net from "node:net";
 import https from "node:https";
+import tls from "node:tls";
 import assert from "node:assert";
 import os from "node:os";
 import path from "node:path";
@@ -53,7 +54,7 @@ https.globalAgent = new (class extends https.Agent {
   }
 })({ keepAlive: false });
 // ...and Guardian's dial when not pinned (every address of vpn.mozilla.org at once, dialFirst): the same
-useDial(async (host) => (dialed.push(host), net.connect(port, "127.0.0.1")));
+useDial(async (host, p, signal, ms, each, secure) => (dialed.push(host), tls.connect({ ...secure, port, host: "127.0.0.1" })));
 
 assert.strictEqual((await fetchUsage("good")).max, 100n, "HEAD carries the usage headers");
 pinGuardian("203.0.113.7"); // TEST-NET-3, never a real host: proves the hostname isn't looked up
@@ -108,13 +109,27 @@ assert.strictEqual(dialed.length, ++n, "no tunnel: directly");
 useTunnel(async () => Promise.reject(new Error("the VPN's server refused the pass")));
 await fetchUsage("good");
 assert.strictEqual(dialed.length, ++n, "a tunnel that fails: directly");
+// one the TLS handshake goes silent on (the network let TCP through, then dropped the rest): given up on after its
+// 6 s (a relay's set), then directly, where it hung: the request's timeout wasn't set on a socket it was handed
+const silent = net.createServer(() => {});
+await new Promise((r) => silent.listen(0, "127.0.0.1", r));
+useTunnel(async () => net.connect(silent.address().port, "127.0.0.1"));
+const t0 = Date.now();
+assert.strictEqual((await fetchUsage("good")).remaining, 40n);
+assert.strictEqual(dialed.length, ++n, "a tunnel that goes silent: directly");
+assert.ok(Date.now() - t0 >= 5_900, "after its 6 s");
+silent.close();
 useTunnel(null);
 
-// Mozilla's other hosts directly (mozillaFetch): every address of the host dialled at once, the request on the first to
-// connect, TLS to the host's name on it: localhost's ::1 refuses (the fake listens on 127.0.0.1 alone), 127.0.0.1 answers
+// Mozilla's other hosts directly (mozillaFetch): every address of the host dialled at once, the request on the first
+// whose TLS handshake to the host's name is done: localhost's ::1 takes the TCP connection and says nothing after (as
+// the filter answers some of Fastly's addresses itself), 127.0.0.1 answers. The first TCP one would be ::1's, and hang
+const mute = net.createServer(() => {});
+await new Promise((r) => mute.once("error", r).listen(port, "::1", r)); // no IPv6 here: ::1 refuses, as good
 const direct = await mozillaFetch(`https://localhost:${port}/v1/direct`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
 assert.deepStrictEqual(await direct.json(), { method: "POST", type: "application/json", body: "{}" }, "directly, not relayed");
 assert.deepStrictEqual(seen.at(-1), { sni: "localhost", host: `localhost:${port}`, auth: undefined });
+mute.close();
 useDirect((url, init) => fetch(url, init)); // from here, Mozilla is the fetch() stood in for below
 
 // Mozilla's other hosts (mozillaFetch: its account server, the server list): a connection that fails goes through the

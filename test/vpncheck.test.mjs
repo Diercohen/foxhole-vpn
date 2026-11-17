@@ -56,6 +56,8 @@ const fails = (p) => p.then(() => assert.fail("it should fail"), (err) => err);
 // it carries: both sites asked at once, on the pass, the first answer does
 let { server, at } = await vpnServer(() => "ok");
 await checkVpn(conn, at);
+// the other's still asked, maybe a moment after (each connection's routes are raced first, proxy.ts connectTls)
+for (const end = Date.now() + 2000; asked.length < 2 && Date.now() < end; ) await new Promise((r) => setTimeout(r, 10));
 assert.deepEqual(asked.map((a) => a.site).sort(), ["api.ipify.org", "www.cloudflare.com"], "ipify and Cloudflare, both");
 assert.ok(asked.every((a) => a.pass), "on the pass");
 server.close();

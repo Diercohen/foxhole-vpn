@@ -14,7 +14,7 @@ import { nameOf, DOH_HOST } from "./dns.js";
 import { IP_HOST, TRACE_HOST } from "./netinfo.js";
 import { relayServe, fakeName, realIp, setDirectTo, setDirectDial } from "./relaymode.js";
 import { udpAssociate, closeUdp } from "./udp.js";
-import { useTunnel, tunnelInUse } from "./guardian.js";
+import { dialFirst, useTunnel, tunnelInUse } from "./guardian.js";
 
 // Throttled stderr: a browser opens many connections, so don't repeat the same
 // failure more than once every few seconds.
@@ -136,16 +136,24 @@ interface Upstream {
   ip?: string;
 }
 
+// Each new connection to a VPN server takes one of the network's routes to it, which one set by its port numbers, and
+// keeps it. From Iran to São Paulo's (2026-11-17) half took a 270-390 ms route and half a 635-690 ms one, where a
+// download crawled at 4-17 KB/s and timed out while the others ran at 0.9-2.5 MB/s. So ROUTES are dialled at once and
+// the first to connect, on the quickest route, is kept: with half the routes slow, 1 in 16 is slow, not 1 in 2.
+const ROUTES = 4;
+
 /** A new TLS connection to the VPN server: its pinned IP in global mode, else looked up; SNI and certificate by name. */
-function connectTls(server: Upstream): Promise<tls.TLSSocket> {
+async function connectTls(server: Upstream): Promise<tls.TLSSocket> {
+  const start = Date.now();
+  const socket = await dialFirst(server.ip ?? server.hostname, server.port, undefined, UPSTREAM_TIMEOUT_MS, ROUTES);
   return new Promise((resolve, reject) => {
     const fail = (err: Error) => {
       clearTimeout(timer);
       up.destroy();
       reject(err);
     };
-    const timer = setTimeout(() => fail(new Error("timed out")), UPSTREAM_TIMEOUT_MS);
-    const up = tls.connect({ host: server.ip ?? server.hostname, port: server.port, servername: server.hostname, ALPNProtocols: ["http/1.1"] }, () => {
+    const timer = setTimeout(() => fail(new Error("timed out")), UPSTREAM_TIMEOUT_MS - (Date.now() - start));
+    const up = tls.connect({ socket, servername: server.hostname, ALPNProtocols: ["http/1.1"] }, () => {
       clearTimeout(timer);
       up.removeListener("error", fail);
       resolve(up);

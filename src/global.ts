@@ -281,9 +281,11 @@ export function httpsGet(url: string, proxy?: DownloadVia["proxy"] | Tunnel, hea
     const request = (socket?: Duplex) => {
       // No `agent` option: with one (even `false`), Node ignores createConnection and dials directly. Without
       // an agent it can't tell https's port either, so say it, or the Host header gets ":80" (a redirect loop).
-      const opts = { timeout: 30_000, defaultPort: 443, headers, ...(socket && { createConnection: () => tls.connect({ socket, servername: u.hostname }) }) };
+      const opts = { defaultPort: 443, headers, ...(socket && { createConnection: () => tls.connect({ socket, servername: u.hostname }) }) };
       const req = https.get(u, opts, resolve);
-      req.on("timeout", () => req.destroy(new Error("timed out"))).on("error", reject); // idle 30 s: a stalled download fails
+      // idle 30 s (60 if a write came last: Node lets that lapse pass): a stalled download fails. req.setTimeout:
+      // the `timeout` option isn't set on a socket createConnection gives
+      req.setTimeout(30_000, () => req.destroy(new Error("timed out"))).on("error", reject);
     };
     if (!proxy) return request();
     if (typeof proxy === "function") return void proxy(u.hostname, Number(u.port || 443)).then(request, reject);

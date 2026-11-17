@@ -169,11 +169,10 @@ function directRequest(method: "GET" | "HEAD", path: string, accessToken: string
           : !pinnedIp && {
               // Node's async form: the socket handed to `done` once there's one, or the error alone
               createConnection: ((_: unknown, done: (err: Error | null, socket?: Duplex) => void) => {
-                dial(GUARDIAN_HOST, 443, signal, ms).then((s) => done(null, tls.connect({ socket: s, servername: GUARDIAN_HOST })), done);
+                dial(GUARDIAN_HOST, 443, signal, ms, 1, { servername: GUARDIAN_HOST }).then((s) => done(null, s), done);
                 return undefined;
               }) as https.RequestOptions["createConnection"],
             }),
-        timeout: ms,
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -191,7 +190,12 @@ function directRequest(method: "GET" | "HEAD", path: string, accessToken: string
         });
       },
     );
-    req.on("timeout", () => req.destroy(new Error("timed out"))).on("error", fail).end();
+    // The whole request within ms. Not the `timeout` option: Node sets that only on a socket it makes, not on one
+    // createConnection hands it, where a TLS handshake the network let start and then dropped (Iran, 2026-11-17) hung
+    // the start; nor req.setTimeout, an idle timer whose first lapse after a write Node lets pass, as after an
+    // unanswered TLS hello (12 s for 6).
+    const timer = setTimeout(() => req.destroy(new Error("timed out")), ms);
+    req.on("close", () => clearTimeout(timer)).on("error", fail).end();
   });
 }
 
@@ -204,18 +208,25 @@ type MozillaInit = { method?: "GET" | "POST"; headers?: Record<string, string>; 
  * can take a few SYN retries (Shatel, 2026-11), that seldom reached one before the relay's turn at 6 s, and the account
  * server turns the relay away (406), so the VPN's token failed at start; at once, one connected within 0.1-7 s in each
  * of 12 tries. At its worst none does within 10 s: then a start connects with the token kept from before (auth.ts
- * SessionAuth). Without a relay, a start connected in 4 of 6 tries at 23:40 Iran time, where it had in none.
+ * SessionAuth). Without a relay, a start connected in 4 of 6 tries at 23:40 Iran time, where it had in none. `each`:
+ * that many to each address, for the quickest of the network's routes to it (proxy.ts connectTls).
+ *
+ * With `secure`, the first TLS handshake done wins, not the first TCP one: the filter answers some addresses' TCP
+ * itself, quicker than Fastly can (vpn.mozilla.org's 151.101.193.91 in 47 ms, the others in ~220, 2026-11-17), and
+ * then lets nothing through, so the first to connect was that one each time, and the start hung on its handshake.
  */
-async function dialFirst(host: string, port: number, signal?: AbortSignal, ms = 10_000): Promise<net.Socket> {
+export async function dialFirst(host: string, port: number, signal?: AbortSignal, ms = 10_000, each = 1, secure?: tls.ConnectionOptions): Promise<net.Socket> {
   const found = await new Promise<dns.LookupAddress[]>((resolve, reject) => dns.lookup(host, { all: true }, (err, a) => (err ? reject(err) : resolve(a))));
-  const socks = [...new Set(found.map((a) => a.address))].map((address) => net.connect({ host: address, port }));
+  const socks = [...new Set(found.map((a) => a.address))].flatMap((address) =>
+    Array.from({ length: each }, () => (secure ? tls.connect({ ...secure, host: address, port }) : net.connect({ host: address, port }))),
+  );
   const stop = (err: Error) => socks.forEach((s) => s.destroy(err));
   const onAbort = () => stop(signal?.reason);
   const timer = setTimeout(stop, ms, new Error("timed out"));
   signal?.addEventListener("abort", onAbort, { once: true });
   if (signal?.aborted) onAbort();
   try {
-    const first = await Promise.any(socks.map((s) => once(s, "connect").then(() => s)));
+    const first = await Promise.any(socks.map((s) => once(s, secure ? "secureConnect" : "connect").then(() => s)));
     for (const s of socks) if (s !== first) s.destroy();
     return first;
   } catch (err) {
@@ -237,7 +248,7 @@ export function useDial(d: typeof dialFirst): void {
 /** How mozillaFetch reaches a host directly, fetch()-shaped: its request on the first of its addresses to connect. */
 let direct = async (url: string, init: MozillaInit & { signal: AbortSignal }): Promise<Response> => {
   const { hostname, port } = new URL(url);
-  return requestOn(await dialFirst(hostname, Number(port) || 443, init.signal), url, init, init.signal);
+  return requestOn(await dialFirst(hostname, Number(port) || 443, init.signal, 10_000, 1, { servername: hostname }), url, init, init.signal);
 };
 
 /** Has mozillaFetch reach hosts directly through `d` (tests: fetch(), which they stand in for Mozilla with). */
@@ -259,7 +270,7 @@ export async function mozillaFetch(url: string, init: MozillaInit = {}, signal?:
   if (opening && !through) void opening.then((late) => late?.destroy());
   if (through)
     try {
-      return await requestOn(through, url, init, signal);
+      return await requestOn(tls.connect({ socket: through, servername: new URL(url).hostname }), url, init, signal);
     } catch (err) {
       if (signal?.aborted) throw err;
       log(`${new URL(url).hostname}: through the VPN failed (${(err as Error).message}), trying without it`);
@@ -290,10 +301,10 @@ export async function mozillaFetch(url: string, init: MozillaInit = {}, signal?:
 }
 
 /**
- * mozillaFetch's request on `through`, a stream already open to the URL's host at port 443 (the VPN's tunnel): TLS to
- * the host on it, its certificate checked as fetch() checks one, and the answer as a Response.
+ * mozillaFetch's request on `secured`, TLS to the URL's host (directly, or on the VPN's tunnel), its certificate
+ * checked as fetch() checks one, and the answer as a Response.
  */
-function requestOn(through: Duplex, url: string, init: { method?: string; headers?: Record<string, string>; body?: string }, signal?: AbortSignal): Promise<Response> {
+function requestOn(secured: Duplex, url: string, init: { method?: string; headers?: Record<string, string>; body?: string }, signal?: AbortSignal): Promise<Response> {
   const u = new URL(url);
   return new Promise((resolve, reject) => {
     const req = https.request(
@@ -306,8 +317,7 @@ function requestOn(through: Duplex, url: string, init: { method?: string; header
         method: init.method ?? "GET",
         headers: { ...init.headers, ...(init.body !== undefined && { "content-length": String(Buffer.byteLength(init.body)) }) },
         signal,
-        timeout: 10_000,
-        createConnection: () => tls.connect({ socket: through, servername: u.hostname }),
+        createConnection: () => secured,
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -324,7 +334,8 @@ function requestOn(through: Duplex, url: string, init: { method?: string; header
         });
       },
     );
-    req.on("timeout", () => req.destroy(new Error("timed out"))).on("error", reject);
+    const timer = setTimeout(() => req.destroy(new Error("timed out")), 10_000); // the whole request: see directRequest's
+    req.on("close", () => clearTimeout(timer)).on("error", reject);
     req.end(init.body);
   });
 }
