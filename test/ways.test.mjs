@@ -38,6 +38,7 @@ const gh = https.createServer(cert, (req, res) => {
   }
   if (pathname === "/foxhole-vpn/-/foxhole-vpn-9.9.9.tgz") return res.end(tgz);
   if (pathname === "/releases/download/v9.9.9/app.bin") return res.writeHead(302, { location: `https://${req.headers.host}/storage/app.bin?sig=1` }).end();
+  if (pathname === "/stall") return; // never answered
   if (pathname !== "/storage/app.bin") return res.writeHead(404).end();
   hits.push(`${pathname} ${req.headers.range ?? ""}`);
   if (next.expired) return next.expired--, res.writeHead(403).end("Signature not valid in the specified time frame");
@@ -214,6 +215,14 @@ rmSync(file("h"), { force: true });
 setTimeout(() => stop.abort(new Error("stopped")), 100);
 await assert.rejects(throughWays(off, (w, last) => (seen.push(w.via), download(here, file("h"), w, () => {}, { last, signal: stop.signal })), stop.signal), /stopped/);
 assert.deepEqual(seen, ["direct"]);
+// stopped before any answer came (directly, or the relay's script call): at once, not at their timeouts (30-90 s)
+for (const w of [{ via: "direct" }, { via: "relay", conn: relay }]) {
+  const early = new AbortController();
+  setTimeout(() => early.abort(new Error("stopped")), 100);
+  const t0 = Date.now();
+  await assert.rejects(download(`https://127.0.0.1:${ghPort}/stall`, file("i"), w, () => {}, { signal: early.signal }), /stopped/);
+  assert.ok(Date.now() - t0 < 1000, `${w.via}: at once`);
+}
 
 // get(): a GitHub answer through each way, the relay's from memory
 for (const w of [{ via: "direct" }, off[1], off[2]]) {

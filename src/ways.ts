@@ -99,6 +99,23 @@ const AT_ONCE = 3;
 const sizeOf = (file: string) => (existsSync(file) ? statSync(file).size : 0);
 
 /**
+ * `p`, or the stop's reason as soon as `signal` stops it (the TUI's esc), where it would wait on `p` to connect, open
+ * Firefox VPN's tunnel, be answered or bring a relay's piece, up to their timeouts (30-90 s). What `p` brings after is
+ * let go by `drop`.
+ */
+// ponytail: what's on its way isn't cancelled, only left to end (its answer dropped, or its timeout); pass the signal
+// down (httpsGet, the tunnel, relayFetch) if what it still costs ever matters
+function unlessStopped<T>(p: Promise<T>, signal?: AbortSignal, drop: (late: T) => void = () => {}): Promise<T> {
+  if (!signal) return p;
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => reject(signal.reason);
+    signal.addEventListener("abort", stop, { once: true });
+    if (signal.aborted) stop();
+    p.then((v) => (signal.aborted ? drop(v) : resolve(v)), reject).finally(() => signal.removeEventListener("abort", stop));
+  });
+}
+
+/**
  * Downloads `url` to `file` by `way`, following redirects and carrying on from what an earlier try left there (by any
  * way); `progress(percent)` as it goes. `last`: no way after this one, so a slow one isn't given up on (`slow`: what's
  * too slow, for tests). An HTTP error has its `status`.
@@ -108,9 +125,7 @@ export async function download(url: string, file: string, way: Way, progress: (p
   for (let hops = 0; hops < 6; hops++) {
     signal?.throwIfAborted();
     const have = sizeOf(file);
-    const res = await get(url, way, have ? { range: `bytes=${have}-` } : {});
-    if (signal?.aborted) res.destroy();
-    signal?.throwIfAborted(); // stopped while it connected
+    const res = await unlessStopped(get(url, way, have ? { range: `bytes=${have}-` } : {}), signal, (late) => late.destroy());
     const { statusCode = 0, headers } = res;
     if (statusCode >= 300 && statusCode < 400 && headers.location) {
       res.resume();
@@ -193,12 +208,12 @@ async function inPieces(url: string, file: string, conn: Pick<Connection, "relay
     }
   };
   let have = sizeOf(file);
-  let first = await piece(have, have + PIECE - 1);
+  let first = await unlessStopped(piece(have, have + PIECE - 1), signal);
   if (!first.body) {
     if (first.total === have) return; // it's all there already
     rmSync(file, { force: true }); // what's there doesn't fit: from the start
     have = 0;
-    first = await piece(0, PIECE - 1);
+    first = await unlessStopped(piece(0, PIECE - 1), signal);
   }
   const total = first.total;
   if (!(total > 0) || !first.body) throw new Error("the server didn't say the file's size");
@@ -219,8 +234,7 @@ async function inPieces(url: string, file: string, conn: Pick<Connection, "relay
   try {
     while (have < total) {
       while (flying.length < AT_ONCE && next < total) flying.push(ask());
-      const p = await flying.shift()!;
-      signal?.throwIfAborted();
+      const p = await unlessStopped(flying.shift()!, signal);
       if (!p.body || p.total !== total) throw new Error("the file changed as it came");
       await appendFile(file, p.body);
       have += p.body.length;
