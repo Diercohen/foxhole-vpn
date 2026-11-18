@@ -246,13 +246,26 @@ function render() {
 
 // ── Header ─────────────────────────────────────────────────────────────────────────────────
 
+let avatars = {}; // the accounts' pictures by email (lowercase), data: URLs, asked for apart from the state (controller.js avatars)
+let avatarsAsked = -1; // how many the controller had when last asked
+
+/** An account's avatar: its own picture (Mozilla's profile), else its email's first letter. */
+const avatar = (email) => {
+  const url = avatars[email?.toLowerCase()];
+  return typeof url === "string" && /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(url) ? `<img src="${url}" alt="">` : esc((email || "?")[0].toUpperCase());
+};
+
 function renderHeader() {
-  section("head", [S.email, S.usage, S.update, S.version, S.relayStats], () => {
+  if (S.avatars !== avatarsAsked) {
+    avatarsAsked = S.avatars;
+    void act("avatars").then((m) => ((avatars = m ?? {}), renderHeader(), renderAccounts()));
+  }
+  section("head", [S.email, S.usage, S.update, S.version, S.relayStats, Object.keys(avatars).length], () => {
     const u = S.usage;
     const r = S.relayStats; // relay mode: its requests instead of Firefox VPN's data
     $("#ver").textContent = `v${S.version}`;
     $("#about-ver").textContent = S.version;
-    $("#acct-avatar").textContent = (S.email || "?")[0].toUpperCase();
+    $("#acct-avatar").innerHTML = avatar(S.email);
     $("#acct-name").textContent = S.email || t`Mozilla account`;
     $("#data-k").textContent = r ? t`Relay` : t`Data`;
     $("#data-v").textContent = r ? t`${r.relayed.toLocaleString()} sent` : !u ? "—" : u.unlimited ? t`Unlimited` : t`${u.left} left`;
@@ -1053,7 +1066,7 @@ function accountRow(a, { remove = true } = {}) {
   const what = [a.current ? t`In use` : "", a.error ?? left(a.usage), a.firefox ? t`Firefox's sign-in` : ""].filter(Boolean).join(" · ");
   const title = a.firefox ? t`Stop using Firefox's sign-in (Firefox stays signed in)` : t`Sign out of this account`;
   return `<div class="account-line acct-row${a.current ? " current" : ""}" data-use="${esc(a.id)}">
-    <span class="avatar big">${esc((a.email || "?")[0].toUpperCase())}</span>
+    <span class="avatar big">${avatar(a.email)}</span>
     <div class="grow"><b>${esc(a.email || (a.firefox ? t`Firefox's account` : t`Mozilla account`))}</b><span>${esc(what)}</span></div>
     ${gauge(a.usage)}
     ${remove ? `<button class="icon-btn" type="button" data-logout="${esc(a.id)}" title="${title}" aria-label="${title}">${icon("logout")}</button>` : ""}
@@ -1098,11 +1111,11 @@ function renderSwitched() {
 let lowShown = ""; // the low-data warning shown for this account and amount: once, until it changes
 
 function renderAccounts() {
-  section("accounts", [S.accounts, S.firefoxEmail], () => {
+  section("accounts", [S.accounts, S.firefoxEmail, Object.keys(avatars).length], () => {
     $("#accounts").innerHTML = S.accounts.map((a) => accountRow(a)).join("") || t`<div class="hint">None yet.</div>`;
     $("#add-choices").innerHTML = choices(S.firefoxEmail, { firefox: !S.accounts.some((a) => a.firefox) });
   });
-  section("low", [S.low, S.accounts], () => {
+  section("low", [S.low, S.accounts, Object.keys(avatars).length], () => {
     const low = S.low;
     if (!low) return $("#low-modal").classList.remove("on");
     $("#low-why").textContent = t`${low.email || t`This account`} has ${low.left} left this month. Switch to another account, or add one, to carry on without a break.`;

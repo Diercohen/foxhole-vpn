@@ -152,6 +152,26 @@ export async function sessionVerified(sessionToken: string, signal?: AbortSignal
   return data.state === "verified" && details.accountEmailVerified !== false && details.sessionVerificationMeetsMinimumAAL !== false;
 }
 
+/** Mozilla's profile server: an account's picture, which the VPN's token can read (its "profile" scope). */
+export const PROFILE_API = "https://profile.accounts.firefox.com/v1";
+
+/**
+ * The account's own picture (Mozilla's profile) as a data: URL, the ways mozillaFetch has (through Firefox VPN where
+ * Mozilla's blocked); null where it has none (Mozilla's default: the window shows the email's first letter), or it isn't
+ * an image to show. Throws where Mozilla doesn't answer: it's asked again later.
+ */
+export async function fetchAvatar(token: string, signal?: AbortSignal): Promise<string | null> {
+  const res = await mozillaFetch(`${PROFILE_API}/profile`, { headers: { authorization: `Bearer ${token}` } }, signal);
+  if (!res.ok) throw new Error(`Mozilla's profile: HTTP ${res.status}`);
+  const { avatar, avatarDefault } = (await res.json()) as { avatar?: unknown; avatarDefault?: unknown };
+  if (avatarDefault || typeof avatar !== "string" || !avatar.startsWith("https://")) return null;
+  const img = await mozillaFetch(avatar, {}, signal);
+  if (!img.ok) throw new Error(`Mozilla's avatar: HTTP ${img.status}`);
+  const type = img.headers.get("content-type")?.split(";")[0].trim().toLowerCase() ?? "";
+  const bytes = Buffer.from(await img.arrayBuffer());
+  return /^image\/(png|jpeg|gif|webp)$/.test(type) && bytes.length <= 1 << 20 ? `data:${type};base64,${bytes.toString("base64")}` : null;
+}
+
 /**
  * Authenticator backed by a Mozilla account's session token: it signs FxA's `fxa-credentials` OAuth grant with it,
  * as Firefox does for its own VPN (AUTH.md). `load` reads the token (a file: Firefox's profile, or Foxhole's

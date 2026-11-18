@@ -59,7 +59,7 @@ const ACTIONS = new Set([
   "state", "power", "connect", "disconnect", "toggleGlobal", "retryOffline", "cancelOffline", "connectAnyway",
   "setShare", "setLang", "setPort", "setLogin", "setRelay", "checkRelay", "closeRelayTest", "relaySetup", "openSettings", "openSplit", "appIcons", "traffic", "hideSite", "setSplitDefault", "setSmart", "checkSite", "shareOpen", "importCheck", "importSettings", "newsShown", "setNetRule", "addRule", "toggleRule", "removeRule",
   "logs", "copy", "copyLogs", "reloadList",
-  "addAccount", "useAccount", "removeAccount", "refreshAccounts", "dismissLow", "retrySignIn", "checkEntitled", "tvWait", "tvFind", "tvSend", "showWifiName",
+  "addAccount", "useAccount", "removeAccount", "refreshAccounts", "avatars", "dismissLow", "retrySignIn", "checkEntitled", "tvWait", "tvFind", "tvSend", "showWifiName",
   "trustCa", "untrustCa", "dismissTrust",
   "disguise", // the phone's own: Look like a calculator
 ]);

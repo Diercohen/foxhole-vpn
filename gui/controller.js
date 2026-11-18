@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import { findAccount, openBrowser, macApp } from "./dist/profile.js";
 import { fetchServerList } from "./dist/serverlist.js";
 import { Connection, RELAY_CODE } from "./dist/connection.js";
-import { FirefoxAuth, StaticAuth, destroyToken } from "./dist/auth.js";
+import { FirefoxAuth, StaticAuth, destroyToken, fetchAvatar } from "./dist/auth.js";
 import { askAgain, askTv, findTvs, parseTvLink, sendToTv, waitForSignIn, TV_PORT } from "./dist/tvpair.js";
 import { qrSvgPath } from "./dist/qr.js";
 import { SHARE_PORT, serveShare, shareData, shareLink, parseShared, sharedWhat, importPlan } from "./dist/share.js";
@@ -157,6 +157,9 @@ export class Controller extends EventEmitter {
   #tvsFound = []; // the TVs found waiting on this device's network (tvFind), for a code typed
   #firefoxEmail = null; // Firefox's sign-in's, once read (peekFirefox: where reading it asks nothing)
   #others = new Map(); // an account's id → { usage, error }: the data left of those not in use (refreshAccounts)
+  // the accounts' pictures (Mozilla's profile) by email, lowercase: data: URLs (null: none, or being looked up), asked
+  // for by the window apart from the state (avatars). By email, not id: Firefox's sign-in can change to another account
+  #avatars = new Map();
   #openSignIn; // opens Foxhole's own Mozilla sign-in: the desktop's window (gui/signinwindow.js), the phone's page
   #updates; // updater.js: a new version of the app
   /**
@@ -220,7 +223,7 @@ export class Controller extends EventEmitter {
       const go = () => this.connect(code, { again: go, quiet: true }).then(() => global && this.#active && !this.#global && this.toggleGlobal());
       if (this.#listError || this.#rows().some((c) => c.code === code)) void go();
     }
-    setInterval(() => (this.#refreshUsage(), this.#entitled === false && this.#checkEntitled(false)), 3 * 60_000).unref();
+    setInterval(() => (this.#refreshUsage(), this.#avatarInUse(), this.#entitled === false && this.#checkEntitled(false)), 3 * 60_000).unref();
   }
 
   // ── No internet: a connect waits for it, a connection that lost it carries on once it's back ─────────────────────
@@ -389,6 +392,7 @@ export class Controller extends EventEmitter {
       this.#auth = { stage: "ready" };
       this.#followSmartDns();
       this.#tokenSource = auth;
+      this.#avatarInUse();
       if (this.#switchTo === this.#accounts.current) {
         this.#switchTo = null;
         this.#switched++;
@@ -896,8 +900,9 @@ export class Controller extends EventEmitter {
     if (id === was) void this.#resignIn();
   }
 
-  /** The data left of the accounts not in use (the one in use's comes with its passes): when Settings opens. */
+  /** The data left of the accounts not in use (the one in use's comes with its passes), and their pictures: when Settings opens. */
   refreshAccounts() {
+    this.#avatarInUse();
     for (const id of this.#ids()) {
       if (id === this.#accounts.current) continue;
       if (id === FIREFOX) this.#firefoxEmail = findAccount()?.email ?? this.#firefoxEmail; // on the list: reading it was allowed
@@ -906,9 +911,10 @@ export class Controller extends EventEmitter {
         this.#others.set(id, { usage: null, error: "signed out" });
         continue;
       }
+      const email = id === FIREFOX ? this.#firefoxEmail : this.#accounts.own.find((x) => x.uid === id)?.email;
       void auth
         .getAccessToken(AbortSignal.timeout(15_000))
-        .then((token) => fetchUsage(token, AbortSignal.timeout(15_000)))
+        .then((token) => (this.#loadAvatar(email, async () => token), fetchUsage(token, AbortSignal.timeout(15_000))))
         .then(
           (usage) => this.#others.set(id, { usage, error: null }),
           (err) => this.#others.set(id, { usage: this.#others.get(id)?.usage ?? null, error: err.errno === 110 ? "signed out" : "couldn't check" }),
@@ -952,6 +958,30 @@ export class Controller extends EventEmitter {
         error: current ? null : (this.#others.get(id)?.error ?? null),
       };
     });
+  }
+
+  /**
+   * The account in use's picture, till Mozilla's answered: once it's signed in with, and every 3 minutes (where Mozilla's
+   * blocked, the first look often goes before Firefox VPN is connected, which is the way through).
+   */
+  #avatarInUse() {
+    const auth = this.#tokenSource;
+    if (this.#auth.stage === "ready" && auth) this.#loadAvatar(this.#email, () => auth.getAccessToken(AbortSignal.timeout(15_000)));
+  }
+
+  /** An account's picture, looked up once with a token from `token()`: again only where Mozilla didn't answer. */
+  #loadAvatar(email, token) {
+    const key = email?.toLowerCase();
+    if (!key || this.#avatars.has(key)) return;
+    this.#avatars.set(key, null); // one look at a time
+    token()
+      .then((t) => fetchAvatar(t, AbortSignal.timeout(30_000)))
+      .then((url) => url && (this.#avatars.set(key, url), this.#changed()), () => this.#avatars.delete(key));
+  }
+
+  /** The accounts' pictures known so far: { email: data: URL }. Apart from the state, which goes to the window every second. */
+  avatars() {
+    return Object.fromEntries([...this.#avatars].filter(([, url]) => url));
   }
 
   /** The account in use has less than LOW_DATA left (and the warning wasn't put away this month): offer another. */
@@ -1958,6 +1988,7 @@ export class Controller extends EventEmitter {
       message: this.#message,
       usage: usageView(u),
       accounts: this.#accountList(),
+      avatars: [...this.#avatars.values()].filter(Boolean).length, // more pictures: the window asks for them (avatars)
       firefoxEmail: this.#firefoxEmail,
       low: this.#low(),
       notice: this.#notice,

@@ -7,7 +7,7 @@ import { createHash, createHmac } from "node:crypto";
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FirefoxAuth, RefreshAuth, destroyToken, sessionCredentials, sessionVerified, VPN_SCOPES } from "../dist/auth.js";
+import { FirefoxAuth, RefreshAuth, destroyToken, fetchAvatar, sessionCredentials, sessionVerified, VPN_SCOPES } from "../dist/auth.js";
 import { useDirect, useRelay } from "../dist/guardian.js";
 
 useDirect((url, init) => fetch(url, init)); // Mozilla, directly: the fetch() stood in for below
@@ -177,4 +177,20 @@ assert.equal(await new RefreshAuth(sentTok, { token: "stale", expires: Date.now(
 await destroyToken(sentTok);
 assert.equal(await new RefreshAuth(sentTok).getAccessToken(), "made3", "signed out of: its token goes too");
 
-console.log("ok - Firefox login: onepw keys, the signed token request, reuse, clock-skew retry, and through the relay; a session's sign-in confirmed or not, a signed GET; a sign-in for another device with its first token, and a sent one's tokens kept");
+// The account's picture: Mozilla's profile read with the VPN's token, the picture as a data: URL; none (Mozilla's
+// default) is null, the window's first letter; no answer throws, to be asked again
+let profile = { avatar: "https://firefoxusercontent.com/abc", avatarDefault: false };
+const pics = [];
+globalThis.fetch = async (url, init) => {
+  pics.push([String(url), init.headers?.authorization]);
+  if (String(url).endsWith("/v1/profile")) return Response.json(profile);
+  return new Response(Buffer.from("png!"), { headers: { "content-type": "image/png" } });
+};
+assert.equal(await fetchAvatar("vpntok"), `data:image/png;base64,${Buffer.from("png!").toString("base64")}`, "the picture");
+assert.deepEqual(pics, [["https://profile.accounts.firefox.com/v1/profile", "Bearer vpntok"], ["https://firefoxusercontent.com/abc", undefined]], "the profile with the token, the picture without it");
+profile = { avatar: "https://profile.accounts.firefox.com/v1/avatar/d", avatarDefault: true };
+assert.equal(await fetchAvatar("vpntok"), null, "Mozilla's default: none");
+globalThis.fetch = async () => new Response("", { status: 503 });
+await assert.rejects(fetchAvatar("vpntok"), "no answer: asked again later");
+
+console.log("ok - Firefox login: onepw keys, the signed token request, reuse, clock-skew retry, and through the relay; a session's sign-in confirmed or not, a signed GET; a sign-in for another device with its first token, and a sent one's tokens kept; the account's picture, or none");

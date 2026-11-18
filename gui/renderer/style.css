@@ -225,6 +225,7 @@ body.mac .titlebar { padding-left: 96px; }
   font-size: 13px; font-weight: 800; color: #fff;
   background: linear-gradient(135deg, var(--fox), var(--fox-2)); box-shadow: 0 6px 16px -6px var(--fox-2), inset 0 1px 0 rgba(255, 255, 255, 0.35); }
 .avatar.big { width: 42px; height: 42px; border-radius: 14px; font-size: 17px; }
+.avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; } /* the account's own picture (app.js avatar) */
 .account .name { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; color: var(--ink-2); }
 .pill.update { padding: 0 14px; color: #fff; font-size: 12.5px; font-weight: 700;
   background: linear-gradient(135deg, var(--fox), var(--fox-2)); box-shadow: 0 8px 26px -8px var(--fox-2), inset 0 1px 0 rgba(255, 255, 255, 0.3);
