@@ -59,8 +59,8 @@
 
 body[data-phase="off"] { --a1: #8b5cff; --a2: #45b6ff; }
 body[data-phase="busy"] { --a1: #ffc247; --a2: #ff7a1a; --on-ink: #1d1200; }
-body[data-phase="on"] { --a1: #2ef2b0; --a2: #45b6ff; --on-ink: #03150f; }
-body[data-phase="global"] { --a1: #ff8a2a; --a2: #ff3d6e; }
+body[data-phase="on"] { --a1: #a3e635; --a2: #65a30d; --on-ink: #0f1a02; }
+body[data-phase="global"] { --a1: #2ef2b0; --a2: #45b6ff; --on-ink: #03150f; }
 /* relay mode (the user's own Apps Script, not Firefox VPN): purple */
 body[data-relay][data-phase="on"] { --a1: #b76bff; --a2: #ff6bd6; --on-ink: #1a0326; }
 body[data-relay][data-phase="global"] { --a1: #d35cff; --a2: #7c5cff; }

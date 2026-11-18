@@ -1,5 +1,5 @@
 // The app's own icon shows the state, as the tray's does: an amber dot with dots in turn while it connects or works,
-// mint with a plug on the proxy, pink with a screen for the whole system. In the Dock on macOS, on the window's icon
+// lime with a plug on the proxy, mint with a screen for the whole system. In the Dock on macOS, on the window's icon
 // (the taskbar button's) on Windows and Linux. A dock that draws an app's own icon instead (Windows' for a pinned app,
 // Ubuntu's) keeps it: Windows' overlay badge shows there, smaller and softer, as Windows enlarges it from 16 px.
 import { app, nativeImage, screen, shell } from "electron";
@@ -8,8 +8,8 @@ import { join } from "node:path";
 
 // busy: the window's amber; on and global: the tray icons' dots
 // relay mode: the window's purples
-const COLORS = { busy: [0xff, 0xc2, 0x47], on: [0x2d, 0xf1, 0xaf], global: [0xfe, 0x4c, 0x7c], relay: [0xb7, 0x6b, 0xff], relayGlobal: [0xd3, 0x5c, 0xff] };
-const INK = { busy: [0x1d, 0x12, 0x00], on: [0x03, 0x15, 0x0f], global: [0xff, 0xff, 0xff], relay: [0x1a, 0x03, 0x26], relayGlobal: [0xff, 0xff, 0xff] }; // the glyph's, as on the window's mode switch
+const COLORS = { busy: [0xff, 0xc2, 0x47], on: [0xa3, 0xe6, 0x35], global: [0x2d, 0xf1, 0xaf], relay: [0xb7, 0x6b, 0xff], relayGlobal: [0xd3, 0x5c, 0xff] };
+const INK = { busy: [0x1d, 0x12, 0x00], on: [0x0f, 0x1a, 0x02], global: [0x03, 0x15, 0x0f], relay: [0x1a, 0x03, 0x26], relayGlobal: [0xff, 0xff, 0xff] }; // the glyph's, as on the window's mode switch
 const RING = [0x07, 0x06, 0x0c]; // the app's dark, between the dot and the icon
 const LABEL = { busy: "Working", on: "Connected", global: "Whole system", relay: "Relay", relayGlobal: "Relay, whole system" }; // Windows reads an overlay out
 // One red pixel: where its byte lands gives this platform's channel order in bitmaps (BGRA on macOS and Windows)

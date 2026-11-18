@@ -41,7 +41,7 @@ export function trayView(s, act) {
   const ready = s.auth.stage === "ready" && !s.busy && !s.restoring;
   const here = s.active ?? s.offline?.code ?? s.selected; // where Connect goes, and the location ticked
   return {
-    // relay mode: a purple dot where Firefox VPN's is mint or pink (on macOS, monochrome: "Relay" beside it)
+    // relay mode: a purple dot where Firefox VPN's is lime or mint (on macOS, monochrome: "Relay" beside it)
     icon: s.globalOn ? (s.relayOn ? "relayGlobal" : "global") : s.active ? (s.relayOn ? "relay" : "on") : "off",
     title: s.busy ? "…" : s.relayOn ? t`Relay` : s.active && !flagFile(s.active) ? flag(s.active) : "", // a flag with a picture goes into the icon (macOS)
     flag: !s.busy && flagFile(s.active) ? s.active : null,
