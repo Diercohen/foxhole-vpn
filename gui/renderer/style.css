@@ -191,6 +191,10 @@ body.idle .blob, body.idle .embers i, body.idle .ticks { animation-play-state: p
 }
 body.mac .titlebar { padding-left: 96px; }
 .titlebar button, .titlebar .chip { -webkit-app-region: no-drag; }
+/* its items keep their size, unsqueezed: where they don't all fit, the least needed give way whole (app.js fitBar) */
+.titlebar > * { flex-shrink: 0; }
+.titlebar.tight :is(.word, .ver), .titlebar.tighter .chip.data .txt, .titlebar.tightest .brand { display: none; }
+.titlebar.tighter .chip.data { padding: 0 4px; } /* the ring alone: a button's width */
 .grow { flex: 1; min-width: 0; }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand .logo { width: 30px; height: 30px; filter: drop-shadow(0 4px 14px rgba(255, 122, 26, 0.55)); animation: bob 6s ease-in-out infinite; }

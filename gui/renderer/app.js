@@ -290,8 +290,26 @@ function renderHeader() {
       : up.error && up.file ? t`Couldn't update to ${esc(up.version)} by itself: ${esc(up.error)}. <span class="link" id="get-update">Install it yourself</span>`
       : up.error ? t`Couldn't update to ${esc(up.version)}: ${esc(up.error)}. <span class="link" id="get-update">Try again</span> or get it from the ${page}.`
       : t`Version ${esc(up.version)} is out. <span class="link" id="get-update">Update now</span>`;
+    fitBar();
   });
 }
+
+// The title bar's items keep their size (style.css). Where they don't all fit (a phone, a narrow window, longer words),
+// the least needed give way whole, in turn: the wordmark and version, the data's words (the ring stays; its title and
+// the Data sheet have them), the logo (a Mac's narrowest window, its buttons beside it, with an update to get).
+const FIT = ["tight", "tighter", "tightest"];
+function fitBar() {
+  const bar = $(".titlebar");
+  bar.classList.remove(...FIT);
+  for (const step of FIT) {
+    const s = getComputedStyle(bar);
+    const items = [...bar.children].filter((e) => e.getClientRects().length); // not the hidden ones
+    const need = items.reduce((w, e) => w + e.getBoundingClientRect().width, parseFloat(s.paddingLeft) + parseFloat(s.paddingRight) + (items.length - 1) * parseFloat(s.columnGap));
+    if (need > bar.getBoundingClientRect().width + 0.5) bar.classList.add(step);
+  }
+}
+new ResizeObserver(fitBar).observe($(".titlebar")); // the window's width
+document.fonts.addEventListener("loadingdone", fitBar); // the words' widths
 
 // ── The orb and what's under it ────────────────────────────────────────────────────────────
 
