@@ -986,10 +986,18 @@ kbd { font-family: var(--mono); font-size: 12px; padding: 1px 6px; border-radius
 @media (max-width: 760px), (max-height: 600px) and (pointer: coarse) {
   html, body { height: auto; min-height: 100%; }
   body { display: block; overflow: hidden auto; padding: var(--safe-top, 0px) var(--safe-right, 0px) var(--safe-bottom, 0px) var(--safe-left, 0px); }
-  /* the status bar over the page as it scrolls: glass */
-  body::before { content: ""; position: fixed; z-index: 30; top: 0; left: 0; right: 0; height: var(--safe-top, 0px);
+  /* the status bar over the page as it scrolls: glass (::before); the title bar stays on top, glass too once the page
+     is under it (::after; without scroll timelines, from the start), and what's scrolled to (a control focused) stops
+     below it */
+  body::before, body::after { content: ""; position: fixed; z-index: 30; top: 0; left: 0; right: 0; height: var(--safe-top, 0px);
     background: rgba(7, 6, 12, 0.72); -webkit-backdrop-filter: blur(18px) saturate(140%); backdrop-filter: blur(18px) saturate(140%); }
-  .titlebar { height: 60px; gap: 6px; padding: 0 12px 0 16px; }
+  body::after { top: var(--safe-top, 0px); height: 60px; }
+  @supports (animation-timeline: scroll()) { /* not an animation at all elsewhere: iOS 16's WebKit stops painting with one (.still) */
+    body::after { animation: glassIn linear both; animation-timeline: scroll(root); animation-range: 0 40px; }
+  }
+  @keyframes glassIn { from { opacity: 0; } }
+  .titlebar { position: sticky; top: var(--safe-top, 0px); z-index: 31; height: 60px; gap: 6px; padding: 0 12px 0 16px; }
+  html { scroll-padding-top: calc(var(--safe-top, 0px) + 60px); }
   .brand { gap: 8px; }
   .brand .logo { width: 28px; height: 28px; }
   .brand .word { font-size: 18px; }
@@ -1063,7 +1071,7 @@ body:not(.android) .android-only { display: none !important; }
 .android * { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
 .android .overlay { background: radial-gradient(900px 600px at 50% 30%, rgba(255, 122, 26, 0.1), transparent 70%), rgb(7, 6, 12); }
 .android .toast { background: rgba(16, 12, 26, 0.96); }
-body.android::before { background: rgba(7, 6, 12, 0.96); }
+body.android::before, body.android::after { background: rgba(7, 6, 12, 0.96); }
 .android .sheet, .android .locations { background: linear-gradient(160deg, rgb(34, 27, 50), rgb(16, 13, 26)); }
 .android .modal .box { background: linear-gradient(160deg, rgb(38, 30, 56), rgb(17, 14, 28)); }
 .android .embers { display: none; } /* off on Android: with them the page drew 16-18 fps instead of 19-28 (emulator, phase changes) */
