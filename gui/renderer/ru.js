@@ -844,6 +844,7 @@ globalThis.RU = {
   "Foxhole reaches Mozilla through it where Mozilla is blocked, and Relay is first in Locations.": "Там, где Mozilla заблокирована, Foxhole доходит до неё через него, а «Ретранслятор» стоит первым в Локациях.",
   "Relay: your Apps Script has older code that fails on many sites. Update it: Settings → VPN relay → Update the script step by step.": "Ретранслятор: в вашем Apps Script устаревший код, который не работает на многих сайтах. Обновите его: Настройки → Ретранслятор VPN → Пошаговое обновление скрипта.",
   // Shield (blocker.ts)
+  "New": "Новое",
   "Shield": "Щит",
   "Blocks ads, trackers, malware and more before they load.": "Блокирует рекламу, трекеры, вредоносные сайты и не только ещё до загрузки.",
   "Block ads, trackers and malware": "Блокировка рекламы, трекеров и вредоносных сайтов",

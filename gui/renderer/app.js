@@ -769,7 +769,7 @@ const LISTS_SHOWN = {
   malware: ["bug", t`Malware`],
   ads: ["eye", t`Ads and trackers`],
   social: ["share", t`Social networks`],
-  porn: ["mosaic", t`Porn`],
+  porn: ["eggplant", t`Porn`],
   gambling: ["dice", t`Gambling`],
   clickbait: ["hook", t`Clickbait and fake news`],
   vpns: ["lock", t`Other VPNs and proxies`],

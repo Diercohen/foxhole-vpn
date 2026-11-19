@@ -845,6 +845,7 @@ globalThis.FA = {
   "Foxhole reaches Mozilla through it where Mozilla is blocked, and Relay is first in Locations.": "هر جا Mozilla مسدود باشد، Foxhole از طریق آن به Mozilla می رسد، و رله اولین مورد در مکانها است.",
   "Relay: your Apps Script has older code that fails on many sites. Update it: Settings → VPN relay → Update the script step by step.": "رله: Apps Script شما کد قدیمی تری دارد که روی خیلی از سایتها کار نمی کند. به روزش کنید: تنظیمات ← رله VPN ← به روز کردن اسکریپت، قدم به قدم.",
   // Shield (blocker.ts)
+  "New": "جدید",
   "Shield": "سپر",
   "Blocks ads, trackers, malware and more before they load.": "تبلیغات، ردیاب‌ها، بدافزارها و موارد دیگر را پیش از بارگذاری مسدود می‌کند.",
   "Block ads, trackers and malware": "مسدود کردن تبلیغات، ردیاب‌ها و بدافزارها",
