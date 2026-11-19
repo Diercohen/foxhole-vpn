@@ -218,7 +218,7 @@ function phase() {
 function render() {
   const ph = phase();
   document.body.dataset.phase = ph;
-  document.body.toggleAttribute("data-relay", S.relayOn); // purple, where Firefox VPN is lime and mint
+  document.body.toggleAttribute("data-relay", S.relayOn); // purple, where Firefox VPN is mint and pink
   document.body.toggleAttribute("data-lost", !!S.lost && ph !== "busy"); // amber, the fox searching: connected, with no internet
   renderHeader();
   renderHero(ph);
