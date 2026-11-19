@@ -2061,7 +2061,13 @@ export class Controller extends EventEmitter {
   }
 
   #say(tone, text) {
-    this.#message = { tone, text, id: (this.#message?.id ?? 0) + 1 };
+    // an error or warning is in the Logs too (the toast cuts it at two lines): `line`, the one a tap on the toast opens at
+    let line;
+    if (tone === "error" || tone === "warn") {
+      line = logLines.slice(-20).findLast((l) => l.slice(10) === text); // logged already (proxy.ts warn)
+      if (!line) log(text), (line = logLines[logLines.length - 1]);
+    }
+    this.#message = { tone, text, line, id: (this.#message?.id ?? 0) + 1 };
     this.#changed();
   }
 

@@ -744,6 +744,8 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .logs { flex: 1; overflow: auto; padding: 14px 22px 22px; font-family: var(--mono); font-size: 12px; line-height: 1.7; user-select: text; }
 .logs .ln { white-space: pre-wrap; word-break: break-word; color: var(--ink-2); animation: fadeIn 0.4s var(--out); }
 .logs .ln time { color: var(--ink-4); margin-right: 10px; }
+.logs .ln.hit { margin: 2px -8px; padding: 2px 8px; border-radius: 8px; outline: none; color: var(--ink);
+  background: color-mix(in oklab, var(--rose) 18%, transparent); box-shadow: inset 2px 0 0 var(--rose); }
 .logs .empty { margin-top: 40px; font-family: var(--font); }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } }
 

@@ -1738,14 +1738,14 @@ function drawAutostart(on) {
 }
 
 // .locations: a sheet on a phone (style.css), the side panel elsewhere
-function showSheet(name) {
+function showSheet(name, line) {
   for (const el of document.querySelectorAll(".sheet, .locations")) el.classList.toggle("on", el.id === `sheet-${name}`);
   openSheet = name;
   $("#scrim").classList.add("on");
   if (name === "settings") act("openSettings");
   if (name === "settings" && !PHONE) void act("autostart").then(drawAutostart);
   if (name === "split") act("openSplit");
-  if (name === "logs") void act("logs").then((lines) => ((logBuf = lines.slice(-1000)), drawLogs(true)));
+  if (name === "logs") void act("logs").then((lines) => ((logBuf = lines.slice(-1000)), drawLogs(true, [], line)));
   if (name === "data") void ((showHidden = false), drawData());
 }
 
@@ -1909,10 +1909,12 @@ $("#wz-body").addEventListener("keydown", (e) => e.key === "Enter" && e.target.i
 // ── Logs ───────────────────────────────────────────────────────────────────────────────────
 
 let logBuf = [];
+let logHeld = false; // opened at a toast's line: new lines don't scroll the Logs away from it
 const logLine = (l) => `<div class="ln"><time>${esc(l.slice(0, 8))}</time>${esc(l.slice(10))}</div>`;
 
-function drawLogs(all, added = []) {
+function drawLogs(all, added = [], line) {
   const box = $("#logs");
+  if (all) logHeld = false;
   const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   if (all) box.innerHTML = logBuf.length ? logBuf.map(logLine).join("") : t`<div class="empty"><b>Nothing logged yet</b>Proxy failures (e.g. ports the VPN refuses) and tun2socks output in whole-system mode appear here.</div>`;
   else {
@@ -1921,7 +1923,14 @@ function drawLogs(all, added = []) {
     while (box.childElementCount > 1000) box.firstElementChild.remove();
   }
   $("#logs-count").textContent = t`${logBuf.length} line${logBuf.length === 1 ? "" : "s"} · proxy failures and tun2socks output, live`;
-  if (all || atEnd) box.scrollTop = box.scrollHeight;
+  const hit = line && box.children[logBuf.lastIndexOf(line)];
+  if (hit) {
+    logHeld = true;
+    hit.classList.add("hit");
+    hit.tabIndex = -1;
+    hit.focus({ preventScroll: true });
+    hit.scrollIntoView({ block: "center" });
+  } else if (all || (atEnd && !logHeld)) box.scrollTop = box.scrollHeight;
 }
 
 fh.onLog((lines) => {
@@ -1951,7 +1960,13 @@ document.addEventListener("click", async (e) => {
   if (btn.dataset.netRule !== undefined) return act("setNetRule", S.net, btn.dataset.netRule || null);
   if (btn.dataset.netForget !== undefined) return act("setNetRule", btn.dataset.netForget, null);
   if (btn.id === "logout-ok") $("#logout-modal").classList.remove("on");
-  if (btn.id === "toast") return btn.classList.remove("on");
+  if (btn.id === "toast") {
+    btn.classList.remove("on");
+    // cut short (two lines at most, style.css): all of it, in the Logs
+    const span = $("#toast-text");
+    if (S.message?.line && span.scrollHeight > span.clientHeight + 1) showSheet("logs", S.message.line);
+    return;
+  }
   if (btn.dataset.act) {
     if (btn.hasAttribute("data-copied")) flash(btn, t`${icon("check")}Copied`);
     return btn.dataset.arg === undefined ? act(btn.dataset.act) : act(btn.dataset.act, btn.dataset.arg);
