@@ -108,7 +108,6 @@ export class Controller extends EventEmitter {
   #net; // undefined: not read yet
   #netPaused = null; // the location a network's rule paused (Settings → On this network), connected again on leaving it
   #ip; // undefined: checking
-  #ipNote = "";
   #netSeq = 0; // drops answers from an older check
   #pw = null; // the administrator password popup: { error, checking, for: global | trust | untrust }
   #trustAsk = false; // the window asks to trust foxhole's certificate (relay mode)
@@ -1032,7 +1031,6 @@ export class Controller extends EventEmitter {
     void publicIp(proxy, 3, country === RELAY_ROW).then((ip) => {
       if (seq !== this.#netSeq) return;
       this.#ip = ip;
-      this.#ipNote = country === RELAY_ROW ? "Google's · sites can still see yours" : country ? `VPN · ${label(country)}` : "not via Foxhole";
       this.#changed();
     });
   }
@@ -2002,7 +2000,6 @@ export class Controller extends EventEmitter {
       netChecking: this.#net === undefined,
       ip: this.#ip ?? null,
       ipChecking: this.#ip === undefined,
-      ipNote: this.#ipNote,
       proxy: this.#active ? { addr: this.#proxyAddr(), shared: this.#host === "0.0.0.0" } : null,
       splitSummary: splitSummary(sp),
       // the relay's auth key stays in the main process, out of the window; the id (it's in a URL) and whether a key is set are shown

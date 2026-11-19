@@ -80,7 +80,7 @@ function localize(s) {
   }
   for (const k of ["message", "splitNote", "settingsNote", "notice", "pw", "auth", "tvWait", "share", "update", "smartDns", "smartRouter"])
     if (s[k]) for (const f of ["text", "title", "error"]) if (typeof s[k][f] === "string") s[k][f] = tr(s[k][f]);
-  for (const k of ["ipNote", "listError", "splitSummary"]) s[k] = tr(s[k]);
+  for (const k of ["listError", "splitSummary"]) s[k] = tr(s[k]);
   if (s.share?.what) s.share.what = s.share.what.map(tr);
   for (const u of [s.usage, ...(s.accounts ?? []).map((a) => a.usage)]) if (u) (u.reset = tr(u.reset)), (u.runsOut = tr(u.runsOut));
   for (const a of s.accounts ?? []) a.error = tr(a.error);
@@ -376,7 +376,7 @@ function renderHero(ph) {
 const globalMode = () => (S.active ? S.globalOn : !!S.wantGlobal);
 
 function renderCards() {
-  section("cards", [S.net, S.netChecking, S.ip, S.ipChecking, S.ipNote, S.proxy, S.splitSummary, S.globalOn, S.lanIp, S.relayOn], () => {
+  section("cards", [S.net, S.netChecking, S.ip, S.ipChecking, S.proxy, S.splitSummary, S.globalOn, S.lanIp, S.relayOn], () => {
     const fill = (id, v, s, cls = "") => {
       $(`${id} .v`).className = `v ${cls}`;
       $(`${id} .v`).innerHTML = v;
@@ -384,10 +384,13 @@ function renderCards() {
     };
     const skel = '<span class="skel"></span>';
     if (S.netChecking) fill("#c-net", skel, '<span class="skel short"></span>');
-    else fill("#c-net", esc(tr(S.net) ?? t`offline`), (S.lanIp ? `LAN ${esc(S.lanIp)}` : t`no local address`) + showName(), S.net ? "" : "warn");
+    else {
+      // the public IP (the VPN's when connected), then the LAN's; the whole line on hover, where it's cut
+      const ip = S.ip ? `IP ${esc(S.ip)}` : S.ipChecking ? t`checking the IP…` : t`IP unreachable`;
+      fill("#c-net", esc(tr(S.net) ?? t`offline`), `${ip} · ${S.lanIp ? `LAN ${esc(S.lanIp)}` : t`no local address`}` + showName(), S.net ? "" : "warn");
+      $("#c-net .s").title = $("#c-net .s").textContent;
+    }
     $("#c-net use").setAttribute("href", S.net?.startsWith("Mobile") ? "#i-phone" : S.net && !S.net.startsWith("Wi-Fi") ? "#i-plug" : "#i-wifi");
-    if (S.ipChecking) fill("#c-ip", skel, '<span class="skel short"></span>');
-    else fill("#c-ip", esc(S.ip ?? t`unreachable`), esc(S.ip ? S.ipNote : t`the IP check didn't answer`), S.ip ? "" : "warn");
     const p = S.proxy;
     fill("#c-proxy", p ? esc(p.addr) : "—", p ? t`SOCKS5 + HTTP${p.shared ? t` · shared` : ""}` : t`SOCKS5 + HTTP, once connected`, p ? "" : "dim");
     $("#copy-proxy").hidden = !p;

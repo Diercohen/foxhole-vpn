@@ -1069,9 +1069,8 @@ kbd { font-family: var(--mono); font-size: 12px; padding: 1px 6px; border-radius
 .phone .desktop-only { display: none !important; }
 body:not(.android) .android-only { display: none !important; }
 .phone #c-net { display: none; } /* no Network card on a phone */
-.android #c-ip { display: none; } /* nor a Public IP card on Android */
 .ios :is(.relay-zone, .relay-only) { display: none; } /* no relay on an iPhone (controller.js NO_RELAY) */
-.phone #c-split { order: 1; } .phone #c-proxy { order: 2; } .phone #c-ip { order: 3; } /* a phone's order: Location, Split tunneling, Proxy */
+.phone #c-split { order: 1; } .phone #c-proxy { order: 2; } /* a phone's order: Location, Split tunneling, Proxy */
 /* Android: no frosted glass, solid panels instead; animations stay */
 .android * { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
 .android .overlay { background: radial-gradient(900px 600px at 50% 30%, rgba(255, 122, 26, 0.1), transparent 70%), rgb(7, 6, 12); }
