@@ -385,8 +385,9 @@ function renderCards() {
     const skel = '<span class="skel"></span>';
     if (S.netChecking) fill("#c-net", skel, '<span class="skel short"></span>');
     else {
-      // the public IP (the VPN's when connected), then the LAN's; the whole line on hover, where it's cut
-      const ip = S.ip ? `IP ${esc(S.ip)}` : S.ipChecking ? t`checking the IP…` : t`IP unreachable`;
+      // the public IP (the VPN's when connected; not the relay's, Google's, which passes the real one on to sites), then the
+      // LAN's; the whole line on hover, where it's cut
+      const ip = S.relayOn && S.ip ? t`Sites still see your real IP` : S.ip ? `IP ${esc(S.ip)}` : S.ipChecking ? t`checking the IP…` : t`IP unreachable`;
       fill("#c-net", esc(tr(S.net) ?? t`offline`), `${ip} · ${S.lanIp ? `LAN ${esc(S.lanIp)}` : t`no local address`}` + showName(), S.net ? "" : "warn");
       $("#c-net .s").title = $("#c-net .s").textContent;
     }

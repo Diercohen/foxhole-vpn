@@ -71,6 +71,7 @@ globalThis.RU = {
   "Pick a location to connect": "Выберите локацию для подключения",
   "offline": "нет сети",
   "checking the IP…": "проверка IP…",
+  "Sites still see your real IP": "Сайты видят ваш реальный IP",
   "IP unreachable": "IP недоступен",
   "no local address": "нет локального адреса",
   "· shared": "· общий доступ",

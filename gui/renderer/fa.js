@@ -72,6 +72,7 @@ globalThis.FA = {
   "Pick a location to connect": "برای اتصال یک مکان انتخاب کنید",
   "offline": "آفلاین",
   "checking the IP…": "در حال بررسی IP…",
+  "Sites still see your real IP": "سایت‌ها IP واقعی شما را می‌بینند",
   "IP unreachable": "IP در دسترس نیست",
   "no local address": "بدون نشانی محلی",
   "· shared": "· اشتراکی",
