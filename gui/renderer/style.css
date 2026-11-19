@@ -702,7 +702,7 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .via:hover { transform: scale(1.06); }
 .via.vpn { color: #79ffcf; background: rgba(46, 242, 176, 0.12); box-shadow: inset 0 0 0 1px rgba(46, 242, 176, 0.3), 0 0 16px -8px var(--mint); }
 .via.direct { color: #ffd27a; background: rgba(255, 194, 71, 0.12); box-shadow: inset 0 0 0 1px rgba(255, 194, 71, 0.32), 0 0 16px -8px var(--amber); }
-.rules .empty { padding: 22px 16px; border-radius: 16px; background: rgba(255, 255, 255, 0.025); box-shadow: inset 0 0 0 1px var(--line); font-size: 12.5px; }
+.rules .empty { margin-top: 10px; padding: 22px 16px; border-radius: 16px; background: rgba(255, 255, 255, 0.025); box-shadow: inset 0 0 0 1px var(--line); font-size: 12.5px; }
 
 .wizard-btn { align-self: flex-start; }
 .share-box { display: flex; flex-direction: column; gap: 8px; }
