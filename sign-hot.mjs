@@ -12,6 +12,9 @@
 //                        addresses to try after DNS's for Mozilla's hosts, in place of that built-in rule: one starting
 //                        with a key adds each value, with its last number when the value ends in "."
 //   "fronted": ["example.google.com"]   more of Google's sites relay mode sends straight to Google
+//   "youtube": { "keys": ["adBreakParams"], "hide": ["ytd-new-ad-renderer"] }
+//                        Shield's YouTube switch (youtube.ts), data only: more keys of YouTube's answers to rename as
+//                        "adPlacements" is, more parts of its pages to hide (CSS selectors: no { } < @ \ ;)
 import { createPrivateKey, createPublicKey, sign } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";

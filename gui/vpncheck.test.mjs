@@ -1,7 +1,8 @@
 // node vpncheck.test.mjs: the window says connected only once the internet opens through Firefox VPN (controller.js, on
 // proxy.ts checkVpn). A server that doesn't answer on this network: not connected, and why. Whole-system mode with no
 // internet through it doesn't stay on: the VPN carrying, the proxy stays; carrying nothing either, it disconnects. A
-// sign-in that's ended while connected disconnects and asks to sign in again. Another VPN on (Windscribe's routes): whole-
+// sign-in that's ended while connected disconnects and asks to sign in again; a token Guardian refuses at a connect is
+// got anew, and the connect goes on by itself, once. Another VPN on (Windscribe's routes): whole-
 // system mode says which before a password's asked. Android's VPN stands in for whole-system mode (no root here);
 // Mozilla's account server, the server list and Guardian are stand-ins, the VPN's server a TLS one; `ip` and `ps` too.
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"; // the stand-in server's own certificate
@@ -72,17 +73,20 @@ globalThis.fetch = async (url) => {
   if (hostname === "firefox.settings.services.mozilla.com") return Response.json(list);
   return new Response("not here", { status: 503 });
 };
-// Guardian: a pass (always due again: it's near its end), or the token refused once the sign-in's ended
+// Guardian: a pass (always due again: it's near its end), or the token refused once the sign-in's ended, or for the
+// next `refusals` passes (a token it won't take, though the account server gives one)
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+let refusals = 0;
 const realRequest = https.request;
 https.request = (o, cb) => {
   if (o?.servername !== "vpn.mozilla.org") return realRequest(o, cb);
   const req = Object.assign(new EventEmitter(), { destroy() {} });
   req.end = () =>
     setImmediate(() => {
-      const res = Object.assign(new EventEmitter(), { statusCode: signedIn ? 200 : 401, rawHeaders: [] });
+      const ok = signedIn && !(o.path === "/api/v1/fpn/token" && o.method === "GET" && refusals > 0 && refusals--);
+      const res = Object.assign(new EventEmitter(), { statusCode: ok ? 200 : 401, rawHeaders: [] });
       cb(res);
-      if (signedIn && o.method === "GET") res.emit("data", Buffer.from(JSON.stringify({ token: `${b64({})}.${b64({ nbf: 0, exp: Math.floor(Date.now() / 1000) + 60 })}.x` })));
+      if (ok && o.method === "GET") res.emit("data", Buffer.from(JSON.stringify({ token: `${b64({})}.${b64({ nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 60 })}.x` })));
       res.emit("end");
     });
   return req;
@@ -152,6 +156,21 @@ assert.equal(text(), "global failed: Firefox VPN's server refused it: HTTP/1.1 4
 vpn = "ok";
 through = true;
 
+// ── Mozilla refuses the VPN's token at a connect, a new one too: another's got, and the connect goes by itself ──────
+// (where it said to quit and open Foxhole again); refused on that one too, it's said, not tried again
+refusals = 2; // the token in hand, and the new one Connection asks for at once
+await c.connect("DE");
+assert.equal(text(), "getting a new token from Mozilla…");
+assert.ok(await until(() => c.state().active === "DE"), "connected by itself, on a new token");
+await c.disconnect();
+refusals = 4;
+await c.connect("DE");
+assert.ok(await until(() => /^Mozilla refused the VPN's token: Proxy pass: login rejected/.test(text())), `refused again: said (${text()})`);
+await sleep(1500);
+assert.equal(c.state().active, null, "not connected, nor tried again");
+assert.equal(refusals, 0);
+assert.equal(c.state().auth.stage, "ready");
+
 // ── the sign-in ends while connected: disconnected, and the window asks to sign in again ──────────────────────────
 await c.connect("DE");
 assert.equal(c.state().active, "DE");
@@ -184,5 +203,5 @@ net.connect = realConnect;
 https.request = realRequest;
 server.close();
 door.close();
-console.log("ok - vpn check: connected only once the internet opens through the server (a move to one that doesn't keeps the one there was); whole-system mode with none through it goes, the proxy staying if the VPN carries, else disconnected; an ended sign-in disconnects and asks to sign in again; another VPN on, whole-system mode says which before a password");
+console.log("ok - vpn check: connected only once the internet opens through the server (a move to one that doesn't keeps the one there was); whole-system mode with none through it goes, the proxy staying if the VPN carries, else disconnected; an ended sign-in disconnects and asks to sign in again; a refused token at a connect, got anew and connected by itself, once; another VPN on, whole-system mode says which before a password");
 process.exit(0);

@@ -9,6 +9,7 @@ import { connect } from "node:net";
 import { PRIVATE_CIDRS, DOH_HOST, isVpnDev, stopProcess, OtherVpnError, runningVpnApps, SPLIT_ROUTES, type GlobalSessionOptions, type Rerouter } from "./global.js";
 import { GUARDIAN_HOST, pinGuardian } from "./guardian.js";
 import { currentSplit } from "./split.js";
+import { blockerDir, currentBlocker } from "./blocker.js";
 
 const exec = promisify(execFile);
 
@@ -296,6 +297,7 @@ export class DarwinRouting implements Rerouter<MacRoute> {
     this.#relay = priv.relay?.spawn(relay) ?? priv.spawn(relay, true);
     this.#procs.push(this.#relay);
     await waitFor("the DNS relay", () => tcpProbe(53));
+    this.blockerChanged(); // on stdin, not in its command line (ps shows that); once sudo has read its password
     await this.#pointDns(service);
   }
 
@@ -311,6 +313,11 @@ export class DarwinRouting implements Rerouter<MacRoute> {
   /** Split tunneling's rules changed: the relay routes by the new ones. */
   splitChanged(): void {
     this.#relay?.stdin?.write(`rules ${JSON.stringify(currentSplit())}\n`);
+  }
+
+  /** Shield's settings or lists changed: the relay answers by the new ones, reading the lists from the user's folder. */
+  blockerChanged(): void {
+    this.#relay?.stdin?.write(`blocker ${JSON.stringify({ ...currentBlocker(), dir: blockerDir() })}\n`);
   }
 
   /** Restores DNS and routing, stops tun2socks and the relay. Best-effort. */

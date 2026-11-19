@@ -78,7 +78,7 @@ function localize(s) {
     c.name = countryName(c);
     if (COUNTRIES.get(c.en) !== c.name) COUNTRIES.set(c.en, c.name), trDone.clear(); // the texts with it, anew
   }
-  for (const k of ["message", "splitNote", "settingsNote", "notice", "pw", "auth", "tvWait", "share", "update", "smartDns", "smartRouter"])
+  for (const k of ["message", "splitNote", "shieldNote", "settingsNote", "notice", "pw", "auth", "tvWait", "share", "update", "smartDns", "smartRouter"])
     if (s[k]) for (const f of ["text", "title", "error"]) if (typeof s[k][f] === "string") s[k][f] = tr(s[k][f]);
   for (const k of ["listError", "splitSummary"]) s[k] = tr(s[k]);
   if (s.share?.what) s.share.what = s.share.what.map(tr);
@@ -137,6 +137,7 @@ function syncLang() {
 }
 const PHONE = fh.platform === "android" || fh.platform === "ios"; // the app on a phone (mobile/): Mozilla's sign-in is its own
 const IOS = fh.platform === "ios"; // its VPN Android's; iOS has none (Apple's needs a paid developer account): proxy only
+const WIN = fh.platform === "win32"; // an update goes in by its installer, in its window, once Foxhole has closed (updater.js)
 // iOS 16 and older (or a version not found): no animations, transitions or 3D fox; they stop its WebKit painting (style.css)
 const STILL = IOS && !(+/OS (\d+)_/.exec(navigator.userAgent)?.[1] > 16);
 const TV = !!fh.tv; // Android TV (phone.js): signs in from a phone or computer on its network, driven by a remote
@@ -231,6 +232,7 @@ function render() {
   renderNews();
   renderEntitled();
   renderSplit();
+  renderShield();
   renderSettings();
   renderNet();
   renderDisguise();
@@ -282,20 +284,21 @@ function renderHeader() {
     pill.style.setProperty("--p", `${up?.progress ?? 0}%`);
     // the way the download goes (updater.js): directly, else through Firefox VPN, else the relay
     const via = up?.via === "vpn" ? t`through Firefox VPN` : up?.via === "relay" ? t`through your relay` : up?.via === "direct" ? t`directly` : "";
-    pill.title = !up ? "" : up.error ? t`Couldn't update: ${up.error}` : up.ready ? t`Foxhole ${up.version} is ready: restart to switch to it`
+    pill.title = !up ? "" : up.error ? t`Couldn't update: ${up.error}`
+      : up.ready ? (WIN ? t`Foxhole ${up.version} is downloaded: install it to switch to it` : t`Foxhole ${up.version} is ready: restart to switch to it`)
       : up.phase === "downloading" && via ? t`Downloading Foxhole ${up.version} ${via}` : t`Foxhole ${up.version} is out`;
     $("#update span").textContent = !up ? ""
       : up.phase === "downloading" ? t`Downloading ${up.progress ?? 0}%`
       : up.phase === "installing" ? t`Installing…`
       : up.error && up.file ? t`Install update`
       : up.error ? t`Update failed · retry`
-      : up.ready ? (PHONE ? t`Install update` : t`Restart to update`)
+      : up.ready ? (PHONE || WIN ? t`Install update` : t`Restart to update`)
       : t`Update to ${up.version}`;
     const page = t`<span class="link" data-open="releases">download page</span>`;
     $("#about-update").innerHTML = !up
       ? t`Firefox's free VPN for your whole system. Unofficial, not affiliated with Mozilla.`
       : !up.auto ? t`Version ${esc(up.version)} is out. <span class="link" id="get-update">Download it</span>`
-      : up.ready && PHONE ? t`Version ${esc(up.version)} is downloaded${up.error ? t`, but couldn't be installed: ${esc(up.error)}` : ""}. <span class="link" id="get-update">${up.error ? t`Try again` : t`Install it`}</span>`
+      : up.ready && (PHONE || WIN) ? t`Version ${esc(up.version)} is downloaded${up.error ? t`, but couldn't be installed: ${esc(up.error)}` : ""}. <span class="link" id="get-update">${up.error ? t`Try again` : t`Install it`}</span>`
       : up.ready ? t`Version ${esc(up.version)} is ready: restart Foxhole to switch to it. <span class="link" id="get-update">Restart now</span>`
       : up.phase === "downloading" && via ? t`Downloading version ${esc(up.version)} ${via} · ${up.progress ?? 0}%…`
       : up.phase === "downloading" ? t`Downloading version ${esc(up.version)} · ${up.progress ?? 0}%…`
@@ -376,7 +379,7 @@ function renderHero(ph) {
 const globalMode = () => (S.active ? S.globalOn : !!S.wantGlobal);
 
 function renderCards() {
-  section("cards", [S.net, S.netChecking, S.ip, S.ipChecking, S.proxy, S.splitSummary, S.globalOn, S.lanIp, S.relayOn], () => {
+  section("cards", [S.net, S.netChecking, S.ip, S.ipChecking, S.proxy, S.splitSummary, S.globalOn, S.lanIp, S.relayOn, S.shield.lists], () => {
     const fill = (id, v, s, cls = "") => {
       $(`${id} .v`).className = `v ${cls}`;
       $(`${id} .v`).innerHTML = v;
@@ -399,6 +402,9 @@ function renderCards() {
     $("#tg-proxy").hidden = !p || S.globalOn || TV;
     const split = S.splitSummary;
     fill("#c-split", esc(split ?? t`Off`), split ? (S.globalOn ? t`for the whole system` : t`for the proxy`) : t`everything through the ${S.relayOn ? t`relay` : "VPN"}`, split ? "" : "dim");
+    const lists = S.shield.lists.filter((l) => l.on);
+    const named = lists.length <= 2 ? lists.map((l) => LISTS_SHOWN[l.id][1]).join(LANG === "fa" ? "، " : ", ") : t`${lists.length} lists`;
+    fill("#c-shield", lists.length ? esc(named) : t`Off`, lists.length ? (S.globalOn ? t`for the whole system` : t`for the proxy`) : t`Block ads, trackers and malware`, lists.length ? "" : "dim");
   });
 }
 
@@ -756,6 +762,68 @@ function renderSplit() {
   drawPicker();
 }
 
+// ── Shield (blocker.ts): block lists, laid out as Windscribe's R.O.B.E.R.T., and the user's own rules ────────────
+
+/** Each list's icon and name, in the core's order (blocker.ts LIST_IDS). */
+const LISTS_SHOWN = {
+  malware: ["bug", t`Malware`],
+  ads: ["eye", t`Ads and trackers`],
+  social: ["share", t`Social networks`],
+  porn: ["mosaic", t`Porn`],
+  gambling: ["dice", t`Gambling`],
+  clickbait: ["hook", t`Clickbait and fake news`],
+  vpns: ["lock", t`Other VPNs and proxies`],
+  crypto: ["coin", t`Crypto miners`],
+};
+
+let knownBlockRules = null; // the rules last drawn: a new one pops in
+
+function renderShield() {
+  section("shield", [S.shield, S.shieldNote, S.smartDns === null, S.caOk], () => {
+    const sh = S.shield;
+    $("#shield-info").textContent = IOS
+      ? t`Shield blocks the sites on the lists you turn on, in apps using the proxy.`
+      : t`Shield blocks the sites on the lists you turn on: in every app in Whole system mode, in apps using the proxy in Proxy only mode.` +
+        (S.smartDns ? ` ${t`TVs and consoles using Smart DNS get it too.`}` : "");
+    $("#shield-lists").innerHTML = sh.lists
+      .map((l) => {
+        const [ico, name] = LISTS_SHOWN[l.id];
+        const [status, tone] = !l.on ? [t`Allowing`, ""] : l.state === "ready" ? [t`Blocking`, "on"] : l.state === "failed" ? [t`Couldn't get the list: trying again`, "warn"] : [t`Getting the list…`, ""];
+        return `<div class="row-line shield-row${l.on ? " on" : ""}">
+          <span class="dot">${icon(ico)}</span>
+          <div><b>${name}</b><span data-tone="${tone}">${status}</span></div>
+          <button class="switch${l.on ? " on" : ""}" data-list="${l.id}" role="switch" aria-checked="${l.on}" aria-label="${esc(name)}"></button></div>`;
+      })
+      .join("");
+    // YouTube's ads (youtube.ts): in browsers trusting Foxhole's certificate; never a TV's
+    const yt = sh.youtube;
+    const [ytStatus, ytTone] = !yt ? [t`Allowing`, ""]
+      : !S.caOk ? [t`Needs Foxhole's certificate`, "warn"]
+      : IOS ? [t`Blocking in Safari, not in YouTube's app`, "on"]
+      : PHONE ? [t`Blocking in Chrome, not in YouTube's app`, "on"]
+      : [t`Blocking in your browsers`, "on"];
+    $("#shield-youtube").hidden = TV;
+    $("#shield-youtube").innerHTML = `<div class="row-line shield-row${yt ? " on" : ""}">
+      <span class="dot">${icon("play")}</span>
+      <div><b>${t`YouTube ads`}</b><span data-tone="${ytTone}">${ytStatus}</span>${yt && !S.caOk ? `<button class="link" data-yt-trust>${t`Trust it`}</button>` : ""}</div>
+      <button class="switch${yt ? " on" : ""}" data-youtube role="switch" aria-checked="${yt}" aria-label="${esc(t`YouTube ads`)}"></button></div>`;
+    const note = $("#shield-note");
+    note.dataset.tone = S.shieldNote?.tone ?? "";
+    note.textContent = S.shieldNote?.text ?? "";
+    $("#shield-count").textContent = sh.rules.length ? `(${sh.rules.length})` : "";
+    const before = knownBlockRules;
+    knownBlockRules = new Set(sh.rules.map((r) => r.match));
+    $("#shield-rules").innerHTML = sh.rules.length
+      ? sh.rules
+          .map((r) => `<div class="rule${before && !before.has(r.match) ? " fresh" : ""}" data-match="${esc(r.match)}">
+            <span class="m" title="${esc(r.match)}">${esc(r.match)}</span><span class="hits"></span>
+            <button class="via ${r.via}" data-toggle title="${t`Switch between blocking and allowing`}">${r.via === "block" ? t`Block` : t`Allow`}</button>
+            <button class="mini" data-remove title="${t`Remove`}">${icon("trash")}</button></div>`)
+          .join("")
+      : t`<div class="empty"><b>No rules yet</b>Block a site no list has, or allow one a list blocks.</div>`;
+  });
+}
+
 function drawRecent() {
   const typed = $("#split-input").value.trim().toLowerCase();
   const found = S.split.recent.filter((s) => s.includes(typed)).slice(0, 10);
@@ -1043,7 +1111,14 @@ function renderPassword() {
 
 function renderTrust() {
   section("trust", [S.trustAsk], () => {
-    $("#trust-modal").classList.toggle("on", S.trustAsk);
+    $("#trust-modal").classList.toggle("on", !!S.trustAsk);
+    // relay mode's, or Shield's YouTube switch's
+    const yt = S.trustAsk === "youtube";
+    $("#trust-modal").classList.toggle("relay", !yt);
+    $("#trust-modal .lock-orb").classList.toggle("relay", !yt);
+    $("#trust-why").textContent = yt
+      ? t`To take out YouTube's ads, Foxhole opens YouTube's encryption here, with certificates from its own authority: made here, and never sent anywhere.`
+      : t`The relay can only fetch web pages, so Foxhole opens each site's encryption on this computer to carry it, with certificates from its own authority: made on this computer, and never sent anywhere.`;
     const how = { darwin: t`macOS asks for your password once`, win32: t`Windows asks you to confirm once: choose Yes` }[fh.platform] ?? t`It takes your login password once`;
     $("#trust-how").textContent = IOS
       ? t`iOS has you install it yourself: Safari downloads it, and Foxhole says what to tap in Settings then. Safari and other apps trust it then.`
@@ -1892,6 +1967,9 @@ document.addEventListener("click", async (e) => {
   }
   if (btn.dataset.mode) return (btn.dataset.mode === "global") !== globalMode() && act("toggleGlobal");
   if (btn.dataset.via) return act("setSplitDefault", btn.dataset.via);
+  if (btn.dataset.list) return act("setBlockList", btn.dataset.list, btn.getAttribute("aria-checked") !== "true");
+  if (btn.hasAttribute("data-youtube")) return act("setYoutubeAds", !S.shield.youtube);
+  if (btn.hasAttribute("data-yt-trust")) return act("setYoutubeAds", true); // asks for the certificate again
   if (btn.dataset.site) return act("addRule", btn.dataset.site);
   if (btn.dataset.direct) return act("addRule", btn.dataset.direct).then(drawData); // the Data sheet's "Send direct"
   if (btn.dataset.hide) return act("hideSite", btn.dataset.hide, btn.dataset.on !== "1").then(drawData);
@@ -1899,10 +1977,11 @@ document.addEventListener("click", async (e) => {
   if (btn.hasAttribute("data-pick-open")) return openPicker($("#split-input").value.trim());
   if (btn.hasAttribute("data-close")) return closeSheet();
   const rule = btn.closest(".rule")?.dataset.match;
-  if (rule && btn.hasAttribute("data-toggle")) return act("toggleRule", rule);
+  const shield = !!btn.closest("#shield-rules"); // Shield's own rules, else split tunneling's
+  if (rule && btn.hasAttribute("data-toggle")) return act(shield ? "toggleBlockRule" : "toggleRule", rule);
   if (rule && btn.hasAttribute("data-remove")) {
     btn.closest(".rule").classList.add("leaving");
-    return setTimeout(() => act("removeRule", rule), 260);
+    return setTimeout(() => act(shield ? "removeBlockRule" : "removeRule", rule), 260);
   }
   switch (btn.id) {
     case "orb": {
@@ -1920,6 +1999,7 @@ document.addEventListener("click", async (e) => {
       act("copy", S.proxy?.addr ?? "");
       return flash(btn, icon("check"));
     case "c-split": return showSheet("split");
+    case "c-shield": return showSheet("shield");
     case "split-check-btn": return checkTyped();
     case "data-chip": return showSheet("data");
     case "data-show-hidden": return void ((showHidden = !showHidden), drawData());
@@ -2046,7 +2126,7 @@ document.addEventListener("click", async (e) => {
         return act("restartToUpdate");
       }
       btn.disabled = true;
-      btn.textContent = t`Restarting…`;
+      btn.textContent = WIN ? t`Closing…` : t`Restarting…`;
       return act("restartToUpdate");
     case "pw-cancel": return act("cancelPassword");
   }
@@ -2059,6 +2139,11 @@ $("#split-add").addEventListener("submit", async (e) => {
   const input = $("#split-input");
   if (await act("addRule", input.value)) (input.value = ""), ($("#split-check").hidden = true);
   drawRecent();
+});
+$("#shield-add").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = $("#shield-input");
+  if (await act("addBlockRule", input.value, e.submitter?.hasAttribute("data-allow") ? "allow" : "block")) input.value = "";
 });
 $("#split-input").addEventListener("input", () => S && (drawRecent(), ($("#split-check").hidden = true))); // its check was of what was typed before
 
@@ -2237,6 +2322,11 @@ window.addEventListener("focus", () => document.body.classList.remove("idle"));
     embers.append(e);
   }
   if (fh.platform === "darwin") document.body.classList.add("mac");
+  if (WIN) {
+    $("#update-modal h2").textContent = t`The update is downloaded`;
+    $("#update-modal p").textContent = t`Foxhole closes and its installer opens. Once it's in, Foxhole starts again, connected if it was.`;
+    $("#up-restart").textContent = t`Install`;
+  }
   if (!PHONE) $("#c-loc .s").textContent = t`Click to change`; // a narrow window's Location card (style.css)
   if (PHONE) {
     document.body.classList.add("phone", fh.platform); // .ios: no whole-system mode (style.css)

@@ -22,6 +22,7 @@ const { questionOf, answerWith, filterAnswer, homeAddress, startSmartDns } = awa
 const { useSplit } = await import("../dist/split.js");
 const { filteredByName } = await import("../dist/proxy.js");
 const { knownBlocked } = await import("../dist/smart.js");
+const { useBlocker } = await import("../dist/blocker.js");
 
 /** A query for `name` of `type` (1 A, 28 AAAA), asking for recursion, with an EDNS record as browsers send. */
 function query(name, type = 1, id = 0x1234) {
@@ -125,6 +126,22 @@ resets.close();
 assert.equal(await ask("mine.sanctioned.example"), "93.184.216.34", "one they send direct, sanctioned or not");
 connected = false;
 assert.equal(await ask("www.sanctioned.example"), "93.184.216.34", "not connected: the network's answers, so the rest still works");
+connected = true;
+
+// Shield: a blocked name is answered NXDOMAIN, connected or not, without asking the network
+useBlocker(() => ({ lists: [], rules: [{ match: "ads.example", via: "block" }] }));
+for (const on of [true, false]) {
+  connected = on;
+  const c = dgram.createSocket("udp4");
+  const got = new Promise((res) => c.once("message", res));
+  c.send(query("x.ads.example", 1, 0x4321), srv.ports.dns, "127.0.0.1");
+  const r = await got;
+  c.close();
+  assert.equal(r.readUInt16BE(2) & 0xf, 3, `NXDOMAIN, ${on ? "connected" : "not connected"}`);
+  assert.equal(r.readUInt16BE(6), 0, "no answer");
+}
+assert.ok(!asked.includes("x.ads.example"), "the network wasn't asked");
+useBlocker(() => ({ lists: [] }));
 connected = true;
 
 // the web, by the name in its first bytes, through the VPN

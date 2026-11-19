@@ -10,7 +10,7 @@ import { createTray } from "./tray.js";
 import "./renderer/fa.js"; // foxholeWords: for Settings → Language
 import "./renderer/ru.js";
 import { createBadge } from "./badge.js";
-import { Updater } from "./updater.js";
+import { Updater, afterExit } from "./updater.js";
 import { AUTOSTART_FLAG, loginItem } from "./autostart.js";
 import { REPO_URL } from "./dist/ui.js";
 import { FULL_DISK_ACCESS } from "./dist/profile.js";
@@ -40,6 +40,7 @@ const LINKS = {
 const ACTIONS = new Set([
   "state", "power", "connect", "disconnect", "toggleGlobal", "submitPassword", "cancelPassword", "retryOffline", "cancelOffline", "connectAnyway",
   "setShare", "setLang", "setSmartDns", "allowRouter", "setPort", "setLogin", "setRelay", "checkRelay", "closeRelayTest", "relaySetup", "openSettings", "openSplit", "appIcons", "traffic", "hideSite", "setSplitDefault", "setSmart", "checkSite", "shareOpen", "importCheck", "importSettings", "newsShown", "setNetRule", "addRule", "toggleRule", "removeRule",
+  "setBlockList", "addBlockRule", "toggleBlockRule", "removeBlockRule", "setYoutubeAds",
   "logs", "copy", "copyLogs", "openFirefox", "copySnippet", "reloadList",
   "addAccount", "useAccount", "removeAccount", "refreshAccounts", "avatars", "dismissLow", "retrySignIn", "checkEntitled", "tvWait", "tvFind", "tvSend", "showWifiName",
   "trustCa", "untrustCa", "dismissTrust", "copyEnv",
@@ -64,7 +65,7 @@ function updateTarget() {
     const bundle = resolve(process.execPath, "../../..");
     return writable(dirname(bundle), bundle) && statSync(bundle).dev === statSync(homedir()).dev ? { kind: "mac", bundle } : null;
   }
-  if (process.platform === "win32") return process.arch === "ia32" ? null : { kind: "win", exe: process.execPath };
+  if (process.platform === "win32") return process.arch === "ia32" ? null : { kind: "win" };
   if (process.platform === "linux" && process.arch === "x64") {
     // an AppImage in a folder it may write; or the .deb, installed with dpkg
     const file = process.env.APPIMAGE;
@@ -83,7 +84,7 @@ function autostartItem() {
 const autostart = autostartItem();
 const startHidden = process.argv.includes(AUTOSTART_FLAG);
 // a restart (an update, Full Disk Access) is one the user asked for: with the window
-const restartArgs = () => process.argv.slice(1).filter((a) => a !== AUTOSTART_FLAG && a !== "--whole-system" && a !== "--reconnect");
+const restartArgs = () => process.argv.slice(1).filter((a) => a !== AUTOSTART_FLAG && a !== "--whole-system" && a !== "--reconnect" && a !== "--updated");
 
 const updater = new Updater({ dir: join(app.getPath("userData"), "update"), downloads: app.getPath("downloads"), target: updateTarget(), ways: () => controller.updateWays(), changed: () => controller.emit("change") });
 const controller = new Controller({
@@ -180,6 +181,7 @@ app.whenReady().then(() => {
   // State goes to the window and the tray at most every 50 ms, and each second anyway (split tunneling's counts climb as sites load).
   let timer = null;
   let offlineShown = 0; // the connect waiting for the internet the window was brought up for: once, not on each state
+  let asked = null; // the sign-in or password popup it was brought up for, the same way
   controller.on("change", () => {
     timer ??= setTimeout(() => {
       timer = null;
@@ -188,8 +190,12 @@ app.whenReady().then(() => {
       win.webContents.send("state", state);
       tray.update();
       badge.update(state);
-      // The password popup or a sign-in, asked for from the tray: they're in the window
-      if ((state.pw || !["checking", "ready"].includes(state.auth.stage)) && !win.isVisible()) show();
+      // The password popup or a sign-in, asked for from the tray: they're in the window. Once each: brought up on each
+      // state, it came back each second that it was hidden or minimized, and the user couldn't get to another window
+      // while it couldn't get the VPN's token. Its tries again (checking) aren't a new one; signed in, the next is.
+      const ask = state.pw ? `pw ${state.pw.for}` : state.auth.stage === "ready" ? null : state.auth.stage === "checking" ? asked : state.auth.stage;
+      if (ask && ask !== asked && !win.isVisible()) show();
+      asked = ask;
       // Connect from the tray with no internet: the window says so, once (a start at login waits without it)
       const off = state.offline;
       if (off && !off.quiet && off.id !== offlineShown) {
@@ -235,9 +241,11 @@ app.whenReady().then(() => {
     app.quit();
   });
 
-  // opened by hand it waits for the user; at login, or a restart it was connected before, it connects
-  const whole = process.argv.includes("--whole-system");
-  const connect = startHidden || whole || process.argv.includes("--reconnect");
+  // opened by hand it waits for the user; at login, or a restart it was connected before, it connects. Windows'
+  // installer starts an update with --updated alone: the version before left its arguments (updater.js resumed)
+  const argv = process.argv.includes("--updated") ? [...process.argv, ...updater.resumed()] : process.argv;
+  const whole = argv.includes("--whole-system");
+  const connect = startHidden || whole || argv.includes("--reconnect");
   (startHidden ? controller.wholeWithoutAsking() : Promise.resolve(whole)).then((global) => controller.start({ connect, global })).catch((err) => {
     dialog.showErrorBox("Foxhole couldn't start", err.message);
     app.quit();
@@ -258,10 +266,11 @@ app.on("before-quit", (e) => {
     done = true;
     // the restart into it turns whole-system mode back on if it was
     const args = [...restartArgs(), ...(whole ? ["--whole-system"] : active ? ["--reconnect"] : [])];
-    // a downloaded version goes in (Windows: only on a restart, its installer then starts it)
+    // a downloaded version goes in (Windows: only on "Install", its installer then starts it)
     const started = updater.install({ relaunch, args });
-    // an AppImage from its file: the folder it runs from goes away with it
-    if (relaunch && !started) app.relaunch({ execPath: process.env.APPIMAGE ?? process.execPath, args });
+    // Linux from a shell of its own (updater.js afterExit), where Electron's relauncher left it closed: an AppImage from
+    // its file, as the folder it runs from goes away with it
+    if (relaunch && !started) process.platform === "linux" ? afterExit([process.env.APPIMAGE ?? process.execPath, ...args]) : app.relaunch({ execPath: process.execPath, args });
     app.exit(0); // a dial or IP check still in flight mustn't hold the quit
   });
 });

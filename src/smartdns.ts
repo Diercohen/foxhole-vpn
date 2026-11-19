@@ -13,6 +13,8 @@ import { filteredByName, serveByName, type Target } from "./proxy.js";
 import { currentSplit, ruleFor } from "./split.js";
 import { filterAddress, iranian, knownBlocked, learnBlocked, refreshLists, sanctioned } from "./smart.js";
 import { log } from "./log.js";
+import { blocked } from "./blocker.js";
+import { nxdomain } from "./dns.js";
 
 const TTL = 60; // seconds: a device asks again soon after connecting or disconnecting
 const TRIED_MS = 3600_000; // a name's handshake isn't tried again for this long
@@ -175,6 +177,7 @@ export async function startSmartDns(
   const reply = async (m: Buffer): Promise<Buffer | null> => {
     const q = questionOf(m);
     if (!q) return null;
+    if (blocked(q.name)) return nxdomain(m, q.end); // Shield, connected or not: the home's devices are spared ads and malware too
     const self = o.vpn() ? o.self() : null;
     if (self) void refreshLists(); // the sanctioned list if it isn't here yet: connected, it comes through the VPN
     if (self && needsVpn(q.name)) return answerWith(m, q.end, q.type, self);

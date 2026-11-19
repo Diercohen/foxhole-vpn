@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { userHome } from "./profile.js";
 import type { ProxyLogin } from "./proxy.js";
 import { NO_SPLIT, appOf, parseApp, parseSite, type Split, type Via } from "./split.js";
+import { parseBlocker, type Blocker } from "./blocker.js";
 
 export interface Settings {
   share: boolean; // proxy reachable from other devices on this network (0.0.0.0), not just this computer
@@ -20,6 +21,7 @@ export interface Settings {
   networks?: Record<string, NetRule>; // what joining a network does, by its name as netinfo.ts network() gives it
   lang?: "en" | "fa" | "ru"; // the desktop and phone apps' language (Settings → Language): their window, tray and notification
   hiddenSites?: string[]; // sites left out of the Data list (TUI and app), till its "show hidden" switch is on
+  blocker?: Blocker; // Shield (blocker.ts): the block lists on, YouTube's ads, the user's own rules; none: its defaults
 }
 
 /** A network's rule: connect on joining it; or pause there (disconnect, and connect again as before on leaving it). */
@@ -104,6 +106,7 @@ export function parseSettings(json: string): Settings {
     ...(parseNetworks(o.networks) && { networks: parseNetworks(o.networks) }),
     ...(o.lang === "en" || o.lang === "fa" || o.lang === "ru" ? { lang: o.lang } : {}),
     ...(parseHidden(o.hiddenSites) && { hiddenSites: parseHidden(o.hiddenSites) }),
+    ...(parseBlocker(o.blocker) && { blocker: parseBlocker(o.blocker) }),
   };
 }
 

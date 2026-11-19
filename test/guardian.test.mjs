@@ -58,9 +58,11 @@ useDial(async (host, p, signal, ms, each, secure) => (dialed.push(host), tls.con
 
 assert.strictEqual((await fetchUsage("good")).max, 100n, "HEAD carries the usage headers");
 pinGuardian("203.0.113.7"); // TEST-NET-3, never a real host: proves the hostname isn't looked up
+const asked = Math.floor(Date.now() / 1000);
 const { pass, usage } = await fetchPass("good");
 assert.strictEqual(pass.token, jwt);
-assert.strictEqual(pass.expires, 2);
+// its length from now by this computer's clock, whatever the server's: this one's times are 1970's, a second apart
+assert.ok(pass.notBefore >= asked && pass.notBefore <= Date.now() / 1000 && pass.expires === pass.notBefore + 1, JSON.stringify(pass));
 assert.strictEqual(usage.remaining, 40n);
 assert.deepStrictEqual(dialed, ["vpn.mozilla.org", "203.0.113.7"], "dials the hostname, then the pinned IP");
 for (const s of seen) assert.deepStrictEqual(s, { sni: "vpn.mozilla.org", host: "vpn.mozilla.org", auth: "Bearer good" });

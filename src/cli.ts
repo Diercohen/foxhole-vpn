@@ -14,13 +14,15 @@ import { loadRelay } from "./httprelay.js";
 import { startProxy } from "./proxy.js";
 import { firewallHint, lanIp } from "./netinfo.js";
 import { useSplit, splitSummary, type Split } from "./split.js";
+import { useBlocker, blockerOf, refreshBlocker } from "./blocker.js";
+import { useYoutube } from "./youtube.js";
 import { runGlobal, directPriv, isPrivileged, dialHost, staleCleanupScript, parseDefaultRoute } from "./global.js";
-import { loadSettings, proxyHost, loginFor } from "./settings.js";
+import { loadSettings, proxyHost, loginFor, type Settings } from "./settings.js";
 import { restoreWindows, serveElevated, HELPER_CMD } from "./global-win32.js";
 import { planMacRestore, parseRouteGet } from "./global-darwin.js";
 import { freePort } from "./restore.js";
 import { Tui } from "./tui.js";
-import { envLines } from "./catrust.js";
+import { envLines, caTrusted } from "./catrust.js";
 import { loadCa } from "./mitm.js";
 import { useFastlyFallback } from "./dns.js";
 import { checkUpdate, updateNotice, versionLines } from "./update.js";
@@ -558,6 +560,7 @@ async function cmdProxy() {
   const where = country ? `${flag(country.code)} ${countryName(country.code, country.name)}` : "recommended";
   const settings = loadSettings();
   useSplit(() => settings.split); // the rules set in the TUI's Split tunneling popup
+  useShield(settings);
   const host = arg("host") ?? proxyHost(settings);
   const port = Number(arg("port") ?? settings.port);
   const handle = await startProxy(conn, host, port, (address) => loginFor(settings, address));
@@ -615,6 +618,7 @@ async function cmdGlobal() {
   await notice();
   const settings = loadSettings();
   useSplit(() => settings.split); // the rules set in the TUI's Split tunneling popup
+  useShield(settings);
   splitNote(settings.split);
   try {
     await runGlobal(conn, {
@@ -626,6 +630,15 @@ async function cmdGlobal() {
   } catch (err) {
     handleAuthError(err);
   }
+}
+
+/** Shield's lists as set in foxhole's Settings: used, and got now and every 6 hours (through the VPN once it's up). */
+function useShield(settings: Settings): void {
+  useBlocker(() => blockerOf(settings.blocker));
+  void refreshBlocker();
+  setInterval(() => void refreshBlocker(), 6 * 3600_000).unref();
+  // YouTube's ads, where this computer trusts foxhole's certificate (checked once)
+  void caTrusted().then((ok) => useYoutube(() => !!blockerOf(settings.blocker).youtube, () => ok), () => {});
 }
 
 /** Says when split tunneling sends some sites another way, so the CLI's routing isn't a surprise. */

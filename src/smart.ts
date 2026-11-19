@@ -18,7 +18,8 @@ import { log } from "./log.js";
 import type { Via } from "./split.js";
 
 const shipped = (name: string) => fileURLToPath(new URL(`./assets/lists/${name}`, import.meta.url));
-const folder = () => join(userHome(), ".config", "foxhole-vpn", "lists");
+/** Where lists got at runtime are kept: smart's, and Shield's (blocker.ts). */
+export const folder = (): string => join(userHome(), ".config", "foxhole-vpn", "lists");
 
 export const SOURCES = {
   domains: "https://github.com/bootmortis/iran-hosted-domains/releases/latest/download/domains.txt",

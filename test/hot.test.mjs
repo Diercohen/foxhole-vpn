@@ -29,6 +29,11 @@ for (const bad of [null, "", "{}", "[1]", JSON.stringify({ data }), JSON.stringi
 assert.equal(parseHot(signed({ notice: "no time" }), publicKey), null, "no issued");
 assert.equal(parseHot(signed({ issued: "soon" }), publicKey), null);
 assert.equal(parseHot(signed({ ...data, expires: "never" }), publicKey), null);
+// YouTube's, data only: words to rename, selectors that can't leave their rule or the style element
+const yt = { keys: ["adBreakParams"], hide: ["ytd-x:has(> ad-y)", "#ad"] };
+assert.deepEqual(parseHot(signed({ ...data, youtube: yt }), publicKey).youtube, yt);
+assert.equal(parseHot(signed({ ...data, youtube: { keys: ["a|b"], hide: ["x{color:red}"] } }), publicKey).youtube, undefined, "a key that isn't a word, a rule of its own: dropped");
+assert.deepEqual(parseHot(signed({ ...data, youtube: { keys: ["adBreakParams"], hide: ["</style><script>"] } }), publicKey).youtube, { keys: ["adBreakParams"] });
 assert.deepEqual(parseHot(signed({ issued: data.issued, notice: 5, fallback: { "146.75.": [1] }, fronted: "x.com" }), publicKey), { issued: data.issued }, "fields that aren't what they should be are dropped");
 const repoFile = readFileSync(new URL("../hot.json", import.meta.url), "utf8");
 assert.ok(parseHot(repoFile), "the repo's hot.json is signed with the key src/hot.ts trusts");

@@ -22,6 +22,8 @@ import { startProxy, onProxyWarning, checkSite, checkVpn, netState, onNetState, 
 import { startSmartDns, smartDnsHost, smartDnsProblem, type SmartDns } from "./smartdns.js";
 import { log, logLines, onLog } from "./log.js";
 import { useSplit, splitOn, splitSummary, parseRule, parseSite, appOf, wayOf, hits, recentSites, SMART, type Split, type Via } from "./split.js";
+import { useBlocker, blockerOf, refreshBlocker, onBlockerChange, listState, LIST_IDS, type Blocker, type ListId } from "./blocker.js";
+import { useYoutube, onYoutubeNotice, forgetRefusers } from "./youtube.js";
 import { listApps } from "./apps.js";
 import { helperFor, helperInstalled, helperReady } from "./helper.js";
 import { GlobalSession, sudoPriv, adminPriv, isPrivileged, validateSudo, sudoUsesTouchId, touchIdSudo, ensureTun2socks, dialHost, otherVpn, type Priv } from "./global.js";
@@ -75,6 +77,7 @@ const ALL_SETTINGS = [
   { key: "password", label: "Password" },
   { key: "telegram", label: "Use in Telegram" },
   { key: "smartDns", label: "Smart DNS for a TV or console" },
+  { key: "shield", label: "Shield" },
   { key: "tv", label: "Sign in a TV or phone" },
   { key: "give", label: "Share settings" },
   { key: "take", label: "Import settings" },
@@ -94,6 +97,18 @@ const RELAY_AT = SETTINGS.findIndex((it) => it.key.startsWith("relay"));
 const RELAY_ROW: Country = { code: RELAY_CODE, name: "Relay", locked: false, available: true, servers: [] };
 /** Its row before one is set up, dimmed: Enter says what it is (#relayIntro), with the setup a key away. */
 const RELAY_SETUP: Country = { code: "RELAY-SETUP", name: "Relay", locked: false, available: false, servers: [] };
+
+/** Shield's lists' names (blocker.ts), as the window has them. */
+const LIST_NAMES: Record<ListId, string> = {
+  malware: "Malware",
+  ads: "Ads and trackers",
+  social: "Social networks",
+  porn: "Porn",
+  gambling: "Gambling",
+  clickbait: "Clickbait and fake news",
+  vpns: "Other VPNs and proxies",
+  crypto: "Crypto miners",
+};
 
 /** A country's name with its flag in front, where the TUI shows flags (EMOJI). */
 const flagged = (code: string, name: string) => (EMOJI ? `${flag(code)} ${name}` : name);
@@ -236,7 +251,8 @@ export class Tui {
   #pwError = "";
   #pwChecking = false;
   #pwFor: "global" | "router" | "trust" | "untrust" = "global"; // what the password is for
-  #trustAsk = false; // the popup asking to trust foxhole's certificate (relay mode)
+  #trustAsk: false | "relay" | "youtube" = false; // the popup asking to trust foxhole's certificate: relay mode's, or Shield's YouTube switch's
+  #trustFor: "relay" | "youtube" = "relay"; // what the last ask was for: what trusting it does, said once it's done
   #caOk: boolean | undefined; // whether this computer trusts it; undefined: not checked yet
   #relayCheck: { tone: "ok" | "warn" | "error" | "busy"; text: string } | null = null; // Settings' last check of the relay
   /** The test of the relay just turned on, or Checked (relaymode.ts relayTest); `open`: its popup's on screen. */
@@ -244,6 +260,9 @@ export class Tui {
   #relayTests = 0;
   #relayOld = false; // its script's code is older (the test, or a site through it, found it): its setup's offered again, to update it
   #splitOpen = false; // the Split tunneling popup is open
+  #shieldOpen = false; // Shield's popup: its lists
+  #shieldSel = 0;
+  #shieldNote = "";
   #splitSel = 0; // 0: "Everything else", then the rules, then "+ add a site"
   #splitStart = 0; // the first row shown, when the list scrolls
   #splitShown = 0; // how many rows are shown
@@ -308,6 +327,14 @@ export class Tui {
   /** Resolves "logout" when the user logged out, so the caller can forget the token. */
   async run(): Promise<"logout" | undefined> {
     useSplit(() => this.#settings.split); // live: a change applies to the next connection
+    useBlocker(() => blockerOf(this.#settings.blocker)); // Shield's, live too
+    onBlockerChange((written) => (written && this.#global?.blockerChanged(), this.#render())); // macOS's DNS relay reads a new list
+    void refreshBlocker(); // lists missing or old: directly till connected, then through the VPN
+    setInterval(() => void refreshBlocker(), 6 * 3600_000).unref();
+    // YouTube's ads (youtube.ts), once this computer trusts foxhole's certificate
+    useYoutube(() => !!blockerOf(this.#settings.blocker).youtube, () => this.#caOk === true);
+    onYoutubeNotice((msg) => ((this.#message = yellow(msg)), this.#render()));
+    void caTrusted().then((ok) => ((this.#caOk = ok), this.#render()), () => {});
     this.#followSmartDns();
     // the Split popup's counts climb as sites load, and relay mode's on the data row
     let seen = -1;
@@ -1016,6 +1043,7 @@ export class Tui {
         if (this.#acctOpen) return this.#acctKey(key);
         if (this.#settingsOpen) return this.#settingsKey(s, key);
         if (this.#splitOpen) return this.#splitKey(s, key);
+        if (this.#shieldOpen) return this.#shieldKey(key);
         if (this.#dataOpen) return this.#dataKey(key);
         if (key.name === "q") return void quit();
         if (key.name === "l") return void ((this.#logsOpen = true), (this.#logsNote = ""), this.#render());
@@ -1027,6 +1055,7 @@ export class Tui {
           void caTrusted().then((ok) => ((this.#caOk = ok), this.#render()));
           return this.#render();
         }
+        if (key.name === "b") return void ((this.#shieldOpen = true), (this.#shieldNote = ""), this.#render());
         if (key.name === "m") return void ((this.#dataOpen = true), (this.#dataSel = 0), (this.#dataNote = ""), (this.#dataShowHidden = false), this.#render());
         if (key.name === "t") {
           this.#splitOpen = true;
@@ -1093,6 +1122,12 @@ export class Tui {
       this.#setSel = i;
       return press("return");
     }
+    if (this.#shieldOpen) {
+      const i = fy - h.setTop;
+      if (i < 0 || i > LIST_IDS.length || fx < h.setX || fx >= h.setX + h.setW) return; // the lists, and YouTube's row
+      this.#shieldSel = i;
+      return press("return");
+    }
     if (this.#splitOpen) {
       const i = fy - h.setTop;
       if (this.#splitEdit !== null || this.#pick || i < 0 || i >= this.#splitShown || fx < h.setX || fx >= h.setX + h.setW) return;
@@ -1150,6 +1185,7 @@ export class Tui {
       if (this.#global) this.#globalCountry = country;
       saveLastCountry(country.code);
       this.#message = relay ? purple("connected through your relay") : green("connected");
+      void refreshBlocker(); // a list that didn't come directly comes through the VPN now
       if (relay) void this.#askTrust();
       else this.#refreshUsage();
     } catch (err) {
@@ -1579,6 +1615,7 @@ export class Tui {
         if (item === "relayCert") return void this.#trust(!this.#caOk);
         if (item === "relayCheck") return void this.#checkRelay();
         if (item === "telegram") return void ((this.#tgOpen = true), this.#render());
+        if (item === "shield") return void ((this.#settingsOpen = false), (this.#shieldOpen = true), (this.#shieldNote = ""), this.#render());
         if (item === "give") return this.#giveOpen();
         // typed in place: the username and relay id start from the current value, the rest from scratch
         this.#edit = { key: item, text: item === "username" ? this.#settings.username : item === "relayId" ? (this.#settings.relay?.deploymentId ?? "") : "" };
@@ -1816,6 +1853,59 @@ export class Tui {
         void this.#testRelay("wizard");
       });
     }
+    this.#render();
+  }
+
+  /** Keystrokes while Shield's popup is open: a list on or off. */
+  #shieldKey(key: readline.Key): void {
+    const b = blockerOf(this.#settings.blocker);
+    const n = LIST_IDS.length + 1; // and YouTube's ads
+    if (key.name === "t" && b.youtube && !this.#caOk) return void ((this.#trustAsk = "youtube"), (this.#trustFor = "youtube"), this.#render());
+    switch (key.name) {
+      case "escape":
+      case "b":
+        this.#shieldOpen = false;
+        break;
+      case "up":
+      case "k":
+        this.#shieldSel = (this.#shieldSel - 1 + n) % n;
+        break;
+      case "down":
+      case "j":
+        this.#shieldSel = (this.#shieldSel + 1) % n;
+        break;
+      case "return":
+      case "space": {
+        const id = LIST_IDS[this.#shieldSel];
+        if (id) return this.#saveShield({ ...b, lists: LIST_IDS.filter((l) => (l === id) !== b.lists.includes(l)) });
+        // YouTube's ads: turned on, apps found refusing the certificate are tried again, and it's asked for if need be
+        const { youtube, ...rest } = b;
+        if (youtube) return this.#saveShield(rest);
+        forgetRefusers();
+        this.#saveShield({ ...rest, youtube: true });
+        return void caTrusted().then((ok) => {
+          this.#caOk = ok;
+          if (!ok) (this.#trustAsk = "youtube"), (this.#trustFor = "youtube");
+          this.#render();
+        });
+      }
+    }
+    this.#render();
+  }
+
+  /** Saves Shield's settings: the proxy and DNS read them live, macOS's DNS relay is told, and a list turned on is got. */
+  #saveShield(blocker: Blocker): void {
+    const next = { ...this.#settings, blocker };
+    try {
+      saveSettings(next);
+    } catch (err) {
+      this.#shieldNote = red(`Couldn't save: ${(err as Error).message}`);
+      return this.#render();
+    }
+    this.#settings = next;
+    this.#shieldNote = "";
+    this.#global?.blockerChanged();
+    void refreshBlocker();
     this.#render();
   }
 
@@ -2158,6 +2248,7 @@ export class Tui {
       e?.key === "password" ? "•".repeat(e.text.length) + cursor : s.password ? "••••••••" : dim("optional"),
       dim("⏎ QR code for your phone"),
       onOff(!!s.smartDns) + (s.smartDns && this.#smartDnsYields ? yellow("  paused") : s.smartDns && this.#smartDnsError ? red("  ✗ can't start") : s.smartDns && this.#routerNeedsHelper ? yellow("  a allow Telegram") : ""),
+      (blockerOf(s.blocker).lists.length ? green(`${blockerOf(s.blocker).lists.length} of ${LIST_IDS.length} lists`) : dim("off")) + dim("  ⏎ or b"),
       e?.key === "tv" ? e.text + cursor : dim("⏎ type its code"),
       dim("⏎ QR code and link"),
       e?.key === "take" ? (e.text.length > 23 ? "…" + e.text.slice(-22) : e.text) + cursor : this.#take ? yellow("⏎ import") : dim("⏎ paste a link"),
@@ -2222,6 +2313,7 @@ export class Tui {
                         yellow("to Automatic while this computer is off or asleep."),
                       ]),
             ],
+      shield: [dim("Blocks ads, trackers, malware and more before they load, in"), dim("every app in Whole system mode, else in apps using the proxy.")],
       tv: [
         ...(e?.key === "tv"
           ? [dim("Type the 6-character code on its screen · enter send · esc cancel"), ...(this.#fullRelay() ? [`${this.#tvRelay ? green("✓") : dim("✗")} ${this.#tvRelay ? "My VPN relay too" : dim("My VPN relay too")}${dim("  tab change")}`] : [])]
@@ -2487,7 +2579,7 @@ export class Tui {
     const buttons = wide || vw(full) <= 78 ? full : [connectBtn, globalBtn(""), splitBtn(""), ...rest].join(" ");
     const table = (minWidth: number) => grid(["", "Code", "Tier", "Country"], body, { caption: bold("Locations"), captionRight: dim(range), minWidth });
     // Under a popup, its shape alone: the backdrop's colors go, which would leave half of each two-color cell
-    const covered = this.#restoring || this.#pwMode || this.#settingsOpen || this.#splitOpen || this.#logsOpen || this.#dataOpen;
+    const covered = this.#restoring || this.#pwMode || this.#settingsOpen || this.#splitOpen || this.#shieldOpen || this.#logsOpen || this.#dataOpen;
     const foxLines = foxOn ? fox(this.#mood(), Date.now(), covered, relayOn) : [];
     let panels: string[];
     let foxX: number, foxY: number; // where the fox is in the frame
@@ -2554,6 +2646,8 @@ export class Tui {
           ? this.#deviceIn ? this.#devicePopup(width, frame.length) : this.#accountsPopup()
           : this.#settingsOpen
           ? this.#tgOpen ? this.#telegramPopup(frame.length) : this.#give ? this.#givePopup(frame.length) : this.#settingsPopup()
+          : this.#shieldOpen
+          ? this.#shieldPopup()
           : this.#splitOpen
             ? this.#splitPopup(frame.length)
             : this.#dataOpen
@@ -2617,6 +2711,38 @@ export class Tui {
         dim("type to search · ↑↓ select · enter add · esc back"),
       ],
       { title: bold(cyan("⇄ Split tunneling · pick an app")), width: 66 },
+    );
+  }
+
+  /** Shield's popup: each list, on or off, and whether it's blocking yet. */
+  #shieldPopup(): string[] {
+    const b = blockerOf(this.#settings.blocker);
+    const rows = LIST_IDS.map((id, i) => {
+      const here = i === this.#shieldSel;
+      const on = b.lists.includes(id);
+      const st = on ? listState(id).state : null;
+      const status = !on ? dim("allowing") : st === "ready" ? green("blocking") : st === "failed" ? yellow("couldn't get the list: trying again") : dim("getting the list…");
+      const name = LIST_NAMES[id].padEnd(25);
+      return `${here ? cyan("❯") : " "} ${on ? green("✓") : dim("○")} ${here ? bold(name) : name}${status}`;
+    });
+    const yt = !!b.youtube;
+    const ytHere = this.#shieldSel === LIST_IDS.length;
+    const ytName = "YouTube ads".padEnd(25);
+    rows.push(`${ytHere ? cyan("❯") : " "} ${yt ? green("✓") : dim("○")} ${ytHere ? bold(ytName) : ytName}${!yt ? dim("allowing") : this.#caOk ? green("blocking in your browsers") : yellow("needs the certificate: t")}`);
+    const own = b.rules?.length ?? 0;
+    return box(
+      [
+        "",
+        ...rows,
+        "",
+        ...(ytHere
+          ? [dim("YouTube's ads taken out of its pages in your browsers, with"), dim("foxhole's certificate trusted: it opens YouTube here to edit them.")]
+          : [dim("Blocks the sites on the lists you turn on: in every app in Whole"), dim("system mode, else in apps using the proxy, and for TVs using"), dim("Smart DNS. Changes apply to new connections.")]),
+        ...(own ? [dim(`And ${own} rule${own === 1 ? "" : "s"} of your own, from the desktop app or settings.json.`)] : []),
+        this.#shieldNote,
+        dim("↑↓ select · enter on/off · esc close"),
+      ],
+      { title: bold(cyan("Shield")), width: 66 },
     );
   }
 
@@ -2747,7 +2873,8 @@ export class Tui {
   /** After connecting to the relay: asks to trust foxhole's certificate, if this computer doesn't yet (sites won't open). */
   async #askTrust(): Promise<void> {
     this.#caOk = await caTrusted();
-    this.#trustAsk = !this.#caOk && this.#relayOn();
+    this.#trustAsk = !this.#caOk && this.#relayOn() && "relay";
+    if (this.#trustAsk) this.#trustFor = "relay";
     this.#render();
   }
 
@@ -2764,7 +2891,10 @@ export class Tui {
     try {
       await setCaTrust(add, priv);
       this.#caOk = await caTrusted();
-      this.#message = !add ? dim("certificate removed") : this.#caOk ? purple("✓ Certificate trusted. Restart your browser, then sites open through the relay.") : yellow("certificate added, but not trusted yet");
+      this.#message = !add ? dim("certificate removed")
+        : !this.#caOk ? yellow("certificate added, but not trusted yet")
+        : this.#trustFor === "youtube" ? green("✓ Certificate trusted. Restart your browser, then YouTube's ads are gone.")
+        : purple("✓ Certificate trusted. Restart your browser, then sites open through the relay.");
     } catch (err) {
       this.#message = red(`certificate ${add ? "not trusted" : "not removed"}: ${(err as Error).message}`);
     } finally {
@@ -2776,15 +2906,15 @@ export class Tui {
 
   #trustPopup(): string[] {
     const how = process.platform === "darwin" ? "macOS asks for your password once," : process.platform === "win32" ? "Windows asks you to confirm once," : "It takes your sudo password once,";
+    const yt = this.#trustAsk === "youtube";
     return box(
       [
         "",
-        bold(purple("Trust foxhole's certificate to browse")),
+        bold(purple(yt ? "Trust foxhole's certificate for YouTube" : "Trust foxhole's certificate to browse")),
         "",
-        "The relay can only fetch pages, so foxhole opens",
-        "each site's encryption on this computer to carry",
-        "it, with certificates from its own authority: made",
-        "on this computer, and never sent anywhere.",
+        ...(yt
+          ? ["To take out YouTube's ads, foxhole opens YouTube's", "encryption on this computer, with certificates from", "its own authority: made on this computer, and never", "sent anywhere."]
+          : ["The relay can only fetch pages, so foxhole opens", "each site's encryption on this computer to carry", "it, with certificates from its own authority: made", "on this computer, and never sent anywhere."]),
         "",
         how,
         "then restart your browser.",

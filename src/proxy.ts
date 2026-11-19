@@ -6,6 +6,8 @@ import type { Connection } from "./connection.js";
 import { red, verbose } from "./ui.js";
 import { log } from "./log.js";
 import { route, splitOn, appsOn, probeOn, type Via } from "./split.js";
+import { blocked, blockerOn } from "./blocker.js";
+import { serveYoutube, takesOver, youtubeHere, TAKEN_OVER } from "./youtube.js";
 import { track, save as saveTraffic } from "./traffic.js";
 import { filterAddress, learnBlocked, listsVia, refreshLists, type Try } from "./smart.js";
 import { appFor } from "./apps.js";
@@ -14,7 +16,7 @@ import { nameOf, DOH_HOST } from "./dns.js";
 import { IP_HOST, TRACE_HOST } from "./netinfo.js";
 import { relayServe, fakeName, realIp, setDirectTo, setDirectDial } from "./relaymode.js";
 import { udpAssociate, closeUdp } from "./udp.js";
-import { dialFirst, useTunnel, tunnelInUse } from "./guardian.js";
+import { dialFirst, passRefused, useTunnel, tunnelInUse } from "./guardian.js";
 
 // Throttled stderr: a browser opens many connections, so don't repeat the same
 // failure more than once every few seconds.
@@ -46,6 +48,8 @@ class UpstreamStatusError extends Error {
     statusLine: string,
     // Fastly's Proxy-Status says the VPN refuses this port (SSH, mail): asking again won't change it
     readonly prohibited = false,
+    // the pass, not the connection, refused (passRefused): asked again on a new one, it goes
+    readonly pass = false,
   ) {
     super(prohibited ? `${statusLine} (the VPN refuses this port)` : statusLine);
   }
@@ -187,7 +191,9 @@ function connectThrough(up: tls.TLSSocket, passToken: string, target: Target): P
       const statusLine = head.split("\r\n", 1)[0].trim();
       const code = Number(statusLine.split(" ")[1]);
       if (code !== 200) {
-        fail(new UpstreamStatusError(code, statusLine, /^proxy-status:.*destination_ip_prohibited/im.test(head)));
+        const pass = /^x-fastly-proxy-auth-failed:/im.test(head);
+        if (pass) passRefused(passToken);
+        fail(new UpstreamStatusError(code, statusLine, /^proxy-status:.*destination_ip_prohibited/im.test(head), pass));
         return;
       }
       settled = true;
@@ -437,13 +443,15 @@ function askThrough(server: Upstream, token: string, site: (typeof VPN_CHECKS)[n
  * pinned first) on `conn`'s pass, a page asked of ipify and of Cloudflare at once, for one being down; the first answer
  * does. Throws VpnCheckError when neither comes within `ms`; the pass's own errors (the sign-in, Guardian) as they are.
  */
-export async function checkVpn(conn: Pick<Connection, "currentPass">, server: Upstream, ms = VPN_CHECK_MS): Promise<void> {
+export async function checkVpn(conn: Pick<Connection, "currentPass">, server: Upstream, ms = VPN_CHECK_MS, again = true): Promise<void> {
   const { token } = await conn.currentPass();
   try {
     await Promise.any(VPN_CHECKS.map((site) => askThrough(server, token, site, ms)));
   } catch (err) {
     const tried = (err as AggregateError).errors as Tried[];
     const refused = tried.find((e) => e instanceof UpstreamStatusError);
+    // the pass refused (passRefused): looked again on a new one, once, as the connect would fail on it
+    if (again && (refused as UpstreamStatusError | undefined)?.pass) return checkVpn(conn, server, ms, false);
     const reached = tried.find((e) => e.reached);
     const why = refused
       ? new VpnCheckError(`Firefox VPN's server refused it: ${refused.message}`, true)
@@ -593,6 +601,7 @@ async function open(conn: Connection, target: Target, name?: string, app?: strin
   if (fake) target = { host: fake, port: target.port };
   const ip = net.isIP(target.host) ? target.host : undefined;
   const site = name ?? (ip ? nameOf(ip) : target.host);
+  if (blocked(site, ip)) return null; // Shield: no warning, nothing counted
   const via = site && OWN_HOSTS.has(site.toLowerCase()) ? "vpn" : route(site, ip, app);
   if (via === "probe") return probe(conn, target, site, hello);
   // Direct where it can be. macOS global mode: a direct site goes around the tun by its DNS answer (relay.ts), but some
@@ -674,6 +683,7 @@ export async function serveByName(socket: net.Socket, conn: Connection, port: nu
   const hello = await firstBytes(socket);
   const chat = whatsappChat(hello); // names no site, and its servers take it on 443 as on 5222
   const name = chat ? "g.whatsapp.net" : sniffHost(hello);
+  if (name && blocked(name)) return void socket.destroy(); // Shield
   // the relay can't: it reads the web with foxhole's own certificate, which a TV doesn't trust
   const up = name && !socket.destroyed && !conn.relay ? sent(await dial(conn, { host: name, port: chat ? 443 : port }), name, "vpn", hello) : null;
   if (!up) return void socket.destroy();
@@ -919,6 +929,7 @@ async function relayOpen(conn: Connection, socket: net.Socket, target: Target, e
   if (socket.destroyed) return;
   const ip = net.isIP(target.host) ? target.host : undefined;
   const name = sniffHost(first) ?? (ip ? (fakeName(ip) ?? nameOf(ip)) : undefined) ?? target.host;
+  if (blocked(name, ip)) return void socket.destroy(); // Shield
   const tlsHello = first[0] === 0x16;
   const web = tlsHello || /^[A-Z]{3,7} \S+ HTTP\/1\.[01]\r\n/.test(first.toString("latin1", 0, 2100));
   if (web && !LOCAL.test(name) && (OWN_HOSTS.has(name) || route(name, ip, app) !== "direct")) {
@@ -928,6 +939,16 @@ async function relayOpen(conn: Connection, socket: net.Socket, target: Target, e
   if (!up) return void socket.destroy();
   if (first.length) up.write(first);
   splice(socket, up);
+}
+
+/** YouTube, taken over to take its ads out (youtube.ts): its own connections go the way the rules give them, counted as they go. */
+function youtube(conn: Connection, socket: net.Socket, hello: Buffer, name: string, app?: string): void {
+  serveYoutube(socket, hello, name, async (host) => {
+    const up = await open(conn, { host, port: 443 }, host, app);
+    const r = up && routeOf.get(up);
+    if (r) track(up!, r.name, r.via); // its data as it came: compressed, encrypted
+    return up;
+  });
 }
 
 /** Pipes two sockets into each other until either side closes. */
@@ -1008,12 +1029,16 @@ async function handleSocks(socket: net.Socket, conn: Connection, greeting: Buffe
   const app = await appOf(socket, target); // before the reply: once it has one, tun2socks' app may be done already
   let hello: Buffer | null = null;
   let name: string | undefined;
-  // Saving data, every site's first bytes are read so too: they try the direct way (probe).
-  if ((net.isIP(target.host) || probeOn()) && splitOn() && (target.port === 443 || target.port === 80)) {
+  // Saving data, every site's first bytes are read so too: they try the direct way (probe). Shield needs names as well,
+  // and its YouTube switch YouTube's, to take it over.
+  const yt = target.port === 443 && youtubeHere(socket);
+  const web = target.port === 443 || target.port === 80;
+  if (web && (((net.isIP(target.host) || probeOn()) && (splitOn() || blockerOn() || yt)) || (yt && TAKEN_OVER.has(target.host)))) {
     replySuccess(socket);
     hello = await firstBytes(socket);
     if (socket.destroyed) return;
     name = sniffHost(hello) ?? undefined;
+    if (yt && takesOver(hello, name)) return youtube(conn, socket, hello, name!, app);
   }
   const up = await open(conn, target, name, app, hello);
   if (!up) {
@@ -1059,6 +1084,7 @@ async function handleHttp(socket: net.Socket, conn: Connection, first: Buffer, l
     const m = url?.match(/^(?:\[([^\]]+)\]|([^:]+)):(\d+)$/);
     if (!m) return httpError(socket, "400 Bad Request");
     target = { host: m[1] ?? m[2], port: Number(m[3]) };
+    if (blocked(target.host)) return httpError(socket, "403 Forbidden"); // Shield
     if (conn.relay) {
       socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       return relayOpen(conn, socket, target, rest);
@@ -1072,6 +1098,7 @@ async function handleHttp(socket: net.Socket, conn: Connection, first: Buffer, l
     }
     if (u.protocol !== "http:") return httpError(socket, "400 Bad Request");
     target = { host: u.hostname.replace(/^\[|\]$/g, ""), port: Number(u.port || 80) };
+    if (blocked(target.host)) return httpError(socket, "403 Forbidden"); // Shield
     // relay mode: the request as it came, absolute URL and all (it says where each one on this connection goes)
     if (conn.relay && !LOCAL.test(target.host) && (OWN_HOSTS.has(target.host) || route(target.host, undefined, await appOf(socket, target)) !== "direct")) {
       return relayServe(conn, socket, head, { ...target, tls: false });
@@ -1083,8 +1110,10 @@ async function handleHttp(socket: net.Socket, conn: Connection, first: Buffer, l
     ]);
   }
 
-  if (!request && !conn.relay && probeOn() && (target.port === 443 || target.port === 80)) {
-    // saving data: the client's first bytes try the direct way (probe), and they come only after the 200
+  const yt = !request && target.port === 443 && TAKEN_OVER.has(target.host) && youtubeHere(socket); // Shield's YouTube switch
+  if (yt || (!request && !conn.relay && probeOn() && (target.port === 443 || target.port === 80))) {
+    // saving data: the client's first bytes try the direct way (probe), and they come only after the 200; YouTube's say
+    // whether it's taken over
     const app = await appOf(socket, target);
     socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
     let hello = rest;
@@ -1094,7 +1123,9 @@ async function handleHttp(socket: net.Socket, conn: Connection, first: Buffer, l
       hello = await got;
     }
     if (socket.destroyed) return;
-    const up = await open(conn, target, sniffHost(hello) ?? undefined, app, hello);
+    const name = sniffHost(hello) ?? undefined;
+    if (yt && takesOver(hello, name)) return youtube(conn, socket, hello, name!, app);
+    const up = await open(conn, target, name, app, hello);
     if (!up) return void socket.destroy();
     return splice(socket, up);
   }

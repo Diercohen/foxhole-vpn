@@ -9,7 +9,7 @@ import net from "node:net";
 import assert from "node:assert";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 
@@ -131,7 +131,7 @@ fresh.start();
 assert.equal(fresh.state(), null, "a file in Downloads without its mark isn't looked for");
 
 // a release without this system's file: said so, and nothing to install by hand
-const w = new Updater({ dir: path.join(dir, "upd-win"), downloads, target: { kind: "win", exe: "Foxhole.exe" }, ways: () => [direct], changed: () => {} });
+const w = new Updater({ dir: path.join(dir, "upd-win"), downloads, target: { kind: "win" }, ways: () => [direct], changed: () => {} });
 w.start();
 await w.check();
 assert.equal(await w.update(), false);
@@ -174,6 +174,24 @@ writeFileSync(path.join(dir, "upd-apk", "got-0.0.2"), "");
 new Updater({ dir: path.join(dir, "upd-apk"), downloads: path.join(dir, "apk"), target: apk, ways: () => [direct], changed: () => {} }).start();
 assert.ok(!existsSync(path.join(dir, "apk", "phone-and-TV-android-0.0.2.apk")) && existsSync(apkFile), "the old name's file goes, the new version's stays");
 
+// The restart into the new version (Linux; Windows' installer the same way): run from a shell of its own once this
+// process has gone, not by Electron's relauncher, which left it closed
+if (process.platform !== "win32") {
+  const flag = path.join(dir, "after-exit");
+  const child = spawn(process.execPath, ["--input-type=module", "-e", `
+    import { existsSync } from "node:fs";
+    import { afterExit } from ${JSON.stringify(new URL("./updater.js", import.meta.url).href)};
+    afterExit(["sh", "-c", 'touch "$0"', ${JSON.stringify(flag)}]);
+    setTimeout(() => process.exit(existsSync(${JSON.stringify(flag)}) ? 1 : 0), 700);`], { stdio: "inherit" });
+  assert.equal(await new Promise((r) => child.on("exit", r)), 0, "not while it runs");
+  for (let i = 0; i < 40 && !existsSync(flag); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.ok(existsSync(flag), "once it's gone");
+}
+// Windows: what the version before was doing, for the one its installer starts (with --updated alone), once
+writeFileSync(path.join(dir, "upd-win", "resume"), JSON.stringify(["--reconnect"]));
+assert.deepEqual(w.resumed(), ["--reconnect"]);
+assert.deepEqual(w.resumed(), [], "once");
+
 gh.close();
 proxy.close();
-console.log("ok - updates: the latest version, a download resumed after a break, through the proxy too; the Update button's download by its ways in turn, kept in Downloads, put in on the quit, offered by hand when it didn't take; Android's APK, checked, to its installer");
+console.log("ok - updates: the latest version, a download resumed after a break, through the proxy too; the Update button's download by its ways in turn, kept in Downloads, put in on the quit, offered by hand when it didn't take; the new version started once the old one's gone; Android's APK, checked, to its installer");

@@ -64,6 +64,13 @@
   <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
   <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><path d="M4 4l16 16"/></symbol>
   <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+  <!-- Shield's lists (and eye, share, lock above) -->
+  <symbol id="i-bug" viewBox="0 0 24 24"><rect x="7.5" y="8" width="9" height="12.5" rx="4.5"/><path d="M9.5 8V6.8a2.5 2.5 0 0 1 5 0V8"/><path d="M12 12.5v8"/><path d="M7.5 13H4M20 13h-3.5M7.9 17.3 5 19.5M16.1 17.3l2.9 2.2M8 9.8 5.2 7.6M16 9.8l2.8-2.2"/></symbol>
+  <symbol id="i-mosaic" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M4 9.3h16M4 14.7h16M9.3 4v16M14.7 4v16"/></symbol>
+  <symbol id="i-dice" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3.5"/><path d="M8.5 8.5h.01M15.5 8.5h.01M12 12h.01M8.5 15.5h.01M15.5 15.5h.01"/></symbol>
+  <symbol id="i-hook" viewBox="0 0 24 24"><circle cx="15" cy="4.2" r="1.7"/><path d="M15 5.9v7.6a4.5 4.5 0 0 1-9 0v-3l2.6 2.6"/></symbol>
+  <symbol id="i-coin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M14.6 9.4c-.4-.9-1.4-1.5-2.6-1.5-1.5 0-2.6.8-2.6 1.9 0 2.6 5.3 1.5 5.3 4.3 0 1.1-1.1 2-2.7 2-1.3 0-2.3-.6-2.7-1.6M12 6.4v1.5M12 16.1v1.5"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="4"/><path d="m10 9.3 4.8 2.7-4.8 2.7z"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path d="M14 4h3.5A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5H14"/><path d="m9.5 8-4 4 4 4M5.5 12H15"/></symbol>
   <symbol id="i-share" viewBox="0 0 24 24"><circle cx="17.5" cy="5.5" r="2.8"/><circle cx="6.5" cy="12" r="2.8"/><circle cx="17.5" cy="18.5" r="2.8"/><path d="m9 10.6 6-3.6M9 13.4l6 3.6"/></symbol>
   <symbol id="i-tv" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="12.5" rx="2.5"/><path d="M8 21h8M9 2.5l3 2.5 3-2.5"/></symbol>
@@ -136,6 +143,7 @@
       <div class="card" id="c-net"><span class="ico"><svg class="i"><use href="#i-wifi"/></svg></span><div class="body"><div class="k">Network</div><div class="v"></div><div class="s"></div></div></div>
       <div class="card" id="c-proxy"><span class="ico"><svg class="i"><use href="#i-plug"/></svg></span><div class="body"><div class="k">Proxy</div><div class="v"></div><div class="s"></div></div><button class="mini" id="tg-proxy" title="Use in Telegram: it asks to use this proxy" hidden><svg class="i"><use href="#i-telegram"/></svg></button><button class="mini copy" id="copy-proxy" title="Copy the address" hidden><svg class="i"><use href="#i-copy"/></svg></button></div>
       <button class="card link" id="c-split"><span class="ico"><svg class="i"><use href="#i-split"/></svg></span><div class="body"><div class="k">Split tunneling</div><div class="v"></div><div class="s" id="split-card-s">Choose sites and apps that skip the VPN</div></div><svg class="i chev"><use href="#i-chevron"/></svg></button>
+      <button class="card link" id="c-shield"><span class="ico"><svg class="i"><use href="#i-shield"/></svg></span><div class="body"><div class="k">Shield</div><div class="v"></div><div class="s"></div></div><svg class="i chev"><use href="#i-chevron"/></svg></button>
     </div>
   </section>
 
@@ -192,6 +200,31 @@
       <div class="rules" id="split-rules"></div>
     </div>
     <p class="fine" id="split-fine">An app's rule covers all its connections; a site covers its subdomains, and the most specific rule wins. Direct sites and apps see your real IP. Changes apply to new connections.</p>
+  </div>
+</section>
+
+<!-- Shield (blocker.ts): block lists, laid out as Windscribe's R.O.B.E.R.T., YouTube's ads, and the user's own rules -->
+<section class="sheet glass" id="sheet-shield" aria-label="Shield">
+  <header><span class="badge"><svg class="i"><use href="#i-shield"/></svg></span><div><h2>Shield</h2><p>Blocks ads, trackers, malware and more before they load.</p></div><button class="icon-btn close" data-close><svg class="i"><use href="#i-close"/></svg></button></header>
+  <div class="scroll">
+    <div class="group">
+      <div class="shield-info"><svg class="i"><use href="#i-shield"/></svg><p id="shield-info"></p></div>
+      <div class="shield-lists" id="shield-lists"></div>
+      <div class="shield-lists" id="shield-youtube"></div>
+    </div>
+    <details class="group" id="shield-custom">
+      <summary class="label"><svg class="i"><use href="#i-sliders"/></svg><span>Manage custom rules</span> <span class="count" id="shield-count"></span><svg class="i chev"><use href="#i-chevron"/></svg></summary>
+      <form id="shield-add">
+        <div class="input-row">
+          <input id="shield-input" placeholder="ads.example.com" spellcheck="false" autocomplete="off" dir="ltr">
+          <button class="btn" type="submit" data-allow title="Let it through, whatever list has it">Allow</button>
+          <button class="btn primary" type="submit"><svg class="i"><use href="#i-plus"/></svg>Block</button>
+        </div>
+        <div class="note" id="shield-note"></div>
+      </form>
+      <div class="rules" id="shield-rules"></div>
+      <p class="fine">A rule covers the site's subdomains, and the most specific one wins: block a site no list has, or allow one a list blocks. Changes apply to new connections.</p>
+    </details>
   </div>
 </section>
 
@@ -382,11 +415,11 @@
 </div>
 
 <!-- relay mode: this computer doesn't trust Foxhole's certificate yet, so sites won't open -->
-<div class="modal backdrop" id="trust-modal">
+<div class="modal backdrop relay" id="trust-modal">
   <div class="box glass">
     <div class="lock-orb relay"><svg class="i"><use href="#i-lock"/></svg></div>
     <h2>One more step: trust Foxhole's certificate</h2>
-    <p>The relay can only fetch web pages, so Foxhole opens each site's encryption on this computer to carry it, with certificates from its own authority: made on this computer, and never sent anywhere.</p>
+    <p id="trust-why">The relay can only fetch web pages, so Foxhole opens each site's encryption on this computer to carry it, with certificates from its own authority: made on this computer, and never sent anywhere.</p>
     <p id="trust-how"></p>
     <div class="actions">
       <button class="btn" type="button" id="trust-later">Not now</button>

@@ -18,6 +18,11 @@ export interface Hot {
   /** For Mozilla's hosts, addresses to try after the DNS answer's: one starting with a key adds each value, with its last number when the value ends in "." (dns.ts). */
   fallback?: Record<string, string[]>;
   fronted?: string[]; // more of Google's sites relay mode sends straight to Google (relaymode.ts)
+  /**
+   * YouTube's ads (youtube.ts), as data only (a leaked key mustn't mean code in every user's YouTube): more keys of its
+   * answers to rename, as "adPlacements" is; more parts of its pages to hide, as CSS selectors.
+   */
+  youtube?: { keys?: string[]; hide?: string[] };
 }
 
 const KEY = createPublicKey({ key: Buffer.from("MCowBQYDK2VwAyEAaI7LDlK8MSWd7EkfjgPqkgVVhFBvFFhmw7aGvppFVsQ=", "base64"), format: "der", type: "spki" });
@@ -33,6 +38,15 @@ const file = () => join(userHome(), ".config", "foxhole-vpn", "hot.json");
 const HOUR = 3600_000;
 
 /** hot.json's data if its "sig" signs it (JSON.stringify of it) with `key`, with its fields as they should be; else null. Pure. */
+/** hot.json's youtube, checked: keys are words, selectors can't leave their rule or the style element; else none. Pure. */
+function youtubeOf(y: unknown): { youtube?: Hot["youtube"] } {
+  const o = (y && typeof y === "object" ? y : {}) as { keys?: unknown; hide?: unknown };
+  const list = (a: unknown, ok: RegExp) => (Array.isArray(a) && a.length && a.every((s) => typeof s === "string" && ok.test(s)) ? (a as string[]) : undefined);
+  const keys = list(o.keys, /^[A-Za-z][A-Za-z0-9_]{2,63}$/);
+  const hide = list(o.hide, /^[^{}<@\\;]{1,300}$/); // > is a selector's: ytd-x:has(> ad-y)
+  return keys || hide ? { youtube: { ...(keys && { keys }), ...(hide && { hide }) } } : {};
+}
+
 export function parseHot(text: string | null, key = KEY): Hot | null {
   try {
     const { data, sig } = JSON.parse(text ?? "");
@@ -46,6 +60,7 @@ export function parseHot(text: string | null, key = KEY): Hot | null {
       ...(typeof data.notice === "string" && data.notice.trim() && { notice: data.notice.trim() }),
       ...(data.fallback && typeof data.fallback === "object" && Object.values(data.fallback).every(strings) && { fallback: data.fallback }),
       ...(strings(data.fronted) && { fronted: data.fronted }),
+      ...youtubeOf(data.youtube),
     };
   } catch {
     return null;

@@ -14,8 +14,10 @@ import { brotliDecompressSync, gunzipSync, inflateSync } from "node:zlib";
 import type { Connection } from "./connection.js";
 import { parseEnvelope } from "./httprelay.js";
 import { siteContext } from "./mitm.js";
-import { DOH_HOST, question, answerAddrs } from "./dns.js";
+import { DOH_HOST, question, answerAddrs, nxdomain } from "./dns.js";
 import { viaOf, currentSplit, type Split } from "./split.js";
+import { blocked } from "./blocker.js";
+import { YOUTUBE, answerEdited, editedText, readable, youtubeWanted } from "./youtube.js";
 import { log } from "./log.js";
 import { hot } from "./hot.js";
 import { SERVERLIST_URL } from "./serverlist.js";
@@ -309,6 +311,7 @@ export async function realIp(conn: Conn, name: string): Promise<string | null> {
 async function answerDns(conn: Conn, q: Buffer): Promise<Buffer> {
   const qi = question(q);
   if (!qi) throw new Error("bad DNS query");
+  if (blocked(qi.name)) return nxdomain(q, qi.end); // Shield: a browser's own DoH
   const real = REAL(qi.name) || viaOf(qi.name) === "direct";
   if (!real && qi.type === 1) return dnsAnswer(q, qi.end, [fakeIp(qi.name)], 2);
   if (!real && [28, 64, 65].includes(qi.type)) return dnsAnswer(q, qi.end, [], 2); // no IPv6 (the tun has none), no HTTPS records (no QUIC, no ECH)
@@ -463,6 +466,12 @@ async function viaRelay(c: Ctx, req: http.IncomingMessage, res: http.ServerRespo
     }
   }
   out = decoded(out, encoding);
+  // Shield's YouTube switch: YouTube Music's answers, its ads taken out (youtube.ts)
+  const type = String(res.getHeader("content-type") ?? "");
+  if (YOUTUBE.has(url.hostname) && youtubeWanted() && /^\s*(text\/html|application\/json)\b/i.test(type)) {
+    const page = /^\s*text\/html/i.test(type) && { csp: String(res.getHeader("content-security-policy") ?? "") };
+    out = Buffer.from(editedText(out.toString("latin1"), url.pathname, page), "latin1");
+  }
   const bodyless = status === 204 || status === 304 || status < 200;
   if (!bodyless) res.setHeader("content-length", out.length);
   res.writeHead(status);
@@ -565,6 +574,9 @@ function pass(r: http.IncomingMessage, res: http.ServerResponse): void {
 
 function viaFront(c: Ctx, req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
   relayStats.fronted++;
+  const yt = YOUTUBE.has(url.hostname) && youtubeWanted(); // Shield's YouTube switch: its answers edited (youtube.ts)
+  const headers: Record<string, string> = { ...headersOf(req.rawHeaders, (k) => DROP_REQ.has(k) && k !== "content-length"), host: url.host };
+  if (yt && headers["accept-encoding"]) headers["accept-encoding"] = readable(headers["accept-encoding"])!;
   const up = https.request(
     {
       host: frontAt(c.conn),
@@ -572,12 +584,12 @@ function viaFront(c: Ctx, req: http.IncomingMessage, res: http.ServerResponse, u
       servername: FRONT,
       method: req.method,
       path: url.pathname + url.search,
-      headers: { ...headersOf(req.rawHeaders, (k) => DROP_REQ.has(k) && k !== "content-length"), host: url.host },
+      headers,
       agent: frontAgent,
       timeout: 60_000,
       maxHeaderSize: 256 * 1024, // what YouTube sends a browser (policies, origin trials, cookies) runs past Node's 16 KB
     },
-    (r) => pass(r, res),
+    (r) => (yt ? answerEdited(r, res, url.pathname, req.method) : pass(r, res)),
   );
   up.on("timeout", () => up.destroy(new Error("no answer in 60 s")));
   up.on("error", (err) => (log(`relay: ${url.host} via Google's front: ${err.message}`), fail(res, 502, `Couldn't reach ${url.host} through Google: ${err.message}`)));
@@ -620,7 +632,8 @@ function viaTranslate(c: Ctx, req: http.IncomingMessage, res: http.ServerRespons
       r.on("error", () => res.destroy());
       r.on("end", () => {
         if (r.statusCode !== 200) return fail(res, 502, `Google Translate answered HTTP ${r.statusCode} for YouTube Music's page.`);
-        const body = Buffer.from(untranslated(Buffer.concat(chunks).toString("utf8"), req.headers.cookie));
+        const page = untranslated(Buffer.concat(chunks).toString("utf8"), req.headers.cookie);
+        const body = Buffer.from(youtubeWanted() ? editedText(page, url.pathname, { csp: "" }) : page); // Shield's YouTube switch
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-length": body.length });
         res.end(body);
       });
@@ -643,6 +656,7 @@ async function onRequest(req: http.IncomingMessage, res: http.ServerResponse): P
     return fail(res, 400, "That isn't a URL.");
   }
   const host = url.hostname.toLowerCase();
+  if (blocked(host)) return fail(res, 403, "Shield blocks this site."); // an HTTP proxy's next request, to another site
   if (host === DOH_HOST && url.pathname === "/dns-query" && req.method === "POST") {
     try {
       const a = await answerDns(c.conn, await readBody(req, 65_535));

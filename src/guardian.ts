@@ -48,8 +48,8 @@ export const tunnelInUse = (): Tunnel | null => tunnel;
 /** A proxy pass: the short-lived JWT the proxy servers accept. */
 export interface ProxyPass {
   token: string; // raw JWT
-  notBefore: number; // epoch seconds
-  expires: number; // epoch seconds
+  notBefore: number; // epoch seconds, by this computer's clock (fetchPass)
+  expires: number; // epoch seconds, by this computer's clock
 }
 
 /** Remaining-data info, from the X-Quota-* response headers. */
@@ -401,7 +401,11 @@ export async function fetchPass(
   const data = (await res.json()) as { token?: string };
   if (!data.token) throw new Error("Proxy pass response had no token");
   const { nbf, exp } = parseJwtTimes(data.token);
-  return { pass: { token: data.token, notBefore: nbf, expires: exp }, usage };
+  // Its 10 minutes by this computer's clock from now (it was made just now: nbf), not by the server's times: a clock a
+  // few minutes slow (no time sync during an internet cut) kept a pass the servers had stopped taking ("401 Bad Request
+  // (JWT)"), a connect's too, till that clock got there; one that's fast got a new pass for every connection.
+  const now = Math.floor(Date.now() / 1000);
+  return { pass: { token: data.token, notBefore: now, expires: now + exp - nbf }, usage };
 }
 
 /** Fetches only the current usage (cheap HEAD request), or null if unavailable. */
@@ -435,7 +439,17 @@ export async function fetchEntitlement(
   };
 }
 
-/** True when the pass is within `skewSeconds` of expiry and should be rotated. */
+let refusedPass: string | null = null; // the last pass a VPN server didn't take (passRefused)
+
+/**
+ * A VPN server didn't take this pass (x-fastly-proxy-auth-failed: "401 Bad Request (JWT)" once it's expired by its
+ * clock): the next connection asks for a new one, where each was refused on it till this computer's clock said it's due.
+ */
+export function passRefused(token: string): void {
+  refusedPass = token;
+}
+
+/** True when the pass is within `skewSeconds` of expiry, or a VPN server refused it, and should be rotated. */
 export function shouldRotate(pass: ProxyPass, skewSeconds = 120): boolean {
-  return Date.now() / 1000 >= pass.expires - skewSeconds;
+  return pass.token === refusedPass || Date.now() / 1000 >= pass.expires - skewSeconds;
 }

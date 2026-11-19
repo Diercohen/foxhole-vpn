@@ -72,7 +72,7 @@ export function trayView(s, act) {
       },
       { type: "separator" },
       ...(s.update?.ready
-        ? [{ label: t`Restart to Update (${s.update.version})`, click: () => act.update() }]
+        ? [{ label: s.update.kind === "win" ? t`Install Update (${s.update.version})` : t`Restart to Update (${s.update.version})`, click: () => act.update() }]
         : s.update
           ? [s.update.auto
             ? { label: s.update.phase ? t`Updating to ${s.update.version}…` : t`Update to Foxhole ${s.update.version}`, enabled: !s.update.phase, click: () => act.getUpdate() }

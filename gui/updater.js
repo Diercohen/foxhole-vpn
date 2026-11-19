@@ -3,7 +3,8 @@
 // Firefox VPN while it's on; else directly, then through Firefox VPN opened for it, then the relay; each when the one
 // before can't (a download that breaks off, or is too slow, carries on by the next from where it stopped). Then:
 // - macOS: the .dmg for this architecture, unpacked and checked, then swapped in for the app on the restart or quit;
-// - Windows: the installer, run silently once the app has quit (and put its routes back) on "Restart now";
+// - Windows: the installer, opened once the app has quit (and put its routes back) on "Install": its window shows it
+//   going in, then it starts the new version;
 // - Linux, an AppImage: the new AppImage, put over the old file on the restart or quit;
 // - Linux, the .deb: installed at once with pkexec dpkg (the system asks for the password);
 // - Android (mobile/), the APK: checked by the app (this app, this version, its key), then given to Android's installer.
@@ -11,7 +12,7 @@
 // go in by itself. The app's own folder keeps a mark of each (got-<version>): the Downloads folder is looked in only
 // once the Update button is pressed (macOS asks the user for it the first time).
 // A copy that can't update itself (run from the disk image, a development copy, Linux on Arm) links to the download.
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -83,6 +84,36 @@ export const ASSET = {
 // download by that one is cleared once its version is in
 const LEGACY = { apk: (v) => `phone-and-TV-android-${v}.apk` };
 
+/**
+ * Runs `argv` once this process has exited, from a shell of its own: Electron's relauncher runs from the app's own
+ * files, which on Linux go away as it exits (an AppImage's folder) or are the new version's already (a .deb's).
+ */
+export function afterExit(argv) {
+  if (process.platform === "win32") {
+    // until it's gone it holds its own files, and the installer would close it without putting the network back
+    const [file, ...args] = argv;
+    const list = args.map((a) => `'${a}'`).join(","); // ours: no quotes in them
+    spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", `Wait-Process -Id $env:FOXHOLE_PID -ErrorAction SilentlyContinue; Start-Process -FilePath $env:FOXHOLE_RUN${list && ` -ArgumentList ${list}`}`], {
+      detached: true, stdio: "ignore", windowsHide: true, env: { ...process.env, FOXHOLE_PID: String(process.pid), FOXHOLE_RUN: file },
+    }).unref();
+  } else {
+    const wait = ["sh", "-c", 'while kill -0 "$0" 2>/dev/null; do sleep 0.3; done; exec "$@"', String(process.pid), ...argv];
+    // Started at login (XDG autostart), it's a systemd service, and systemd 249's (Ubuntu 22.04) kills what's left of
+    // one once its process exits, the waiter too: that goes in a service of its own then
+    if (inUserService() && spawnSync("systemd-run", ["--user", "--quiet", "--collect", "--no-block", "--", ...wait], { stdio: "ignore", timeout: 5000 }).status === 0) return;
+    spawn(wait[0], wait.slice(1), { detached: true, stdio: "ignore" }).unref();
+  }
+}
+
+/** Linux: this process is in a systemd user service (a start at login's), not a scope (the desktop's launches). */
+function inUserService() {
+  try {
+    return /\/user@\d+\.service\/.+\.service$/m.test(readFileSync("/proc/self/cgroup", "utf8"));
+  } catch {
+    return false; // not Linux
+  }
+}
+
 /** The versions of this kind's file in `dir`: { version, name } for each complete one (not a .part). */
 function downloaded(dir, kind) {
   const [pre, post] = ASSET[kind]("\0").split("\0");
@@ -99,7 +130,7 @@ function downloaded(dir, kind) {
 export class Updater {
   #dir; // the app's own: the Mac's new app unpacked, the old one it replaced, the marks of downloads and of tries to install
   #downloads; // where the release file goes, and stays: to install by hand if it doesn't go in by itself
-  // how this copy updates itself: { kind: "mac", bundle } | { kind: "win", exe } | { kind: "appimage", file } | { kind: "deb" }
+  // how this copy updates itself: { kind: "mac", bundle } | { kind: "win" } | { kind: "appimage", file } | { kind: "deb" }
   // | { kind: "apk", check(file, version), open(file) } (the phone's: promises);
   // null: it can't, and the window links to the download instead
   #target;
@@ -282,22 +313,33 @@ export class Updater {
   installByHand() {
     const f = this.file();
     if (!f) return false;
-    if (process.platform === "win32") {
-      spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", "Wait-Process -Id $env:FOXHOLE_PID -ErrorAction SilentlyContinue; Start-Process -FilePath $env:FOXHOLE_SETUP"], {
-        detached: true, stdio: "ignore", windowsHide: true, env: { ...process.env, FOXHOLE_PID: String(process.pid), FOXHOLE_SETUP: f },
-      }).unref();
-    } else {
-      // macOS opens the disk image; Linux the .deb in the software center; an AppImage runs itself (the new version)
-      const open = this.#target.kind === "appimage" ? [] : [process.platform === "darwin" ? "open" : "xdg-open"];
-      spawn("sh", ["-c", 'while kill -0 "$0" 2>/dev/null; do sleep 0.3; done; exec "$@"', String(process.pid), ...open, f], { detached: true, stdio: "ignore" }).unref();
-    }
+    // Windows runs the installer; macOS opens the disk image; Linux the .deb in the software center; an AppImage runs itself (the new version)
+    const open = process.platform === "win32" || this.#target.kind === "appimage" ? [] : [process.platform === "darwin" ? "open" : "xdg-open"];
+    afterExit([...open, f]);
     return true;
   }
 
   /**
-   * Puts the new version in, as the app quits (its routes and DNS already back). `relaunch`: the quit is "Restart now";
-   * `args`: the new version's arguments then. True when this starts the new version itself (Windows); else the app relaunches.
-   * The downloaded file stays: if the new version doesn't start, the next start says so and offers it to install by hand.
+   * Windows: what the version before this one was doing as it quit to be updated (install()'s `args`: whole-system mode,
+   * a connection), once. Its installer starts this one with --updated alone.
+   */
+  resumed() {
+    const f = join(this.#dir, "resume");
+    try {
+      const args = JSON.parse(readFileSync(f, "utf8"));
+      return Array.isArray(args) ? args : [];
+    } catch {
+      return [];
+    } finally {
+      rmSync(f, { force: true });
+    }
+  }
+
+  /**
+   * Puts the new version in, as the app quits (its routes and DNS already back). `relaunch`: the quit is "Restart now"
+   * ("Install" on Windows); `args`: the new version's arguments then. True when this starts the new version itself
+   * (Windows: its installer does); else the app relaunches. The downloaded file stays: if the new version doesn't start,
+   * the next start says so and offers it to install by hand.
    */
   install({ relaunch = false, args = [] } = {}) {
     const t = this.#target;
@@ -316,7 +358,7 @@ export class Updater {
       });
       return true;
     }
-    if (t.kind === "win" && !relaunch) return false; // an installer cut off by a shutdown would leave half an app: it waits for "Restart now"
+    if (t.kind === "win" && !relaunch) return false; // a quit doesn't open the installer: it waits for "Install"
     const mark = join(this.#dir, `tried-${this.#version}`); // the new version's first start deletes it; the old one's says it didn't take
     try {
       writeFileSync(mark, "");
@@ -336,16 +378,12 @@ export class Updater {
         chmodSync(`${t.file}.new`, 0o755);
         renameSync(`${t.file}.new`, t.file); // the running one keeps its own copy until it exits
       } else if (t.kind === "win") {
-        // Once this process has exited (the files are free): the installer, silently, then the new version
-        const ps = [
-          "Wait-Process -Id $env:FOXHOLE_PID -ErrorAction SilentlyContinue",
-          "Start-Process -Wait -FilePath $env:FOXHOLE_SETUP -ArgumentList '/S','--updated'",
-          "if ($env:FOXHOLE_ARGS) { Start-Process -FilePath $env:FOXHOLE_EXE -ArgumentList $env:FOXHOLE_ARGS } else { Start-Process -FilePath $env:FOXHOLE_EXE }",
-        ].join("; ");
-        spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps], {
-          detached: true, stdio: "ignore", windowsHide: true,
-          env: { ...process.env, FOXHOLE_PID: String(process.pid), FOXHOLE_SETUP: this.#ready, FOXHOLE_EXE: t.exe, FOXHOLE_ARGS: args.join(" ") },
-        }).unref();
+        // The installer in its window, as the first time, once this process has exited, where it ran silently (/S):
+        // nothing showed while it went in, nor if it failed. As an update (--updated) it closes what's left of this one
+        // without asking, keeps the shortcuts as they are, and starts the new version with --updated alone, which carries
+        // on as this one was (resumed())
+        writeFileSync(join(this.#dir, "resume"), JSON.stringify(args));
+        afterExit([this.#ready, "--updated"]);
         this.#ready = null;
         return true;
       }

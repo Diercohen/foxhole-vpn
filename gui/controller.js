@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import { findAccount, openBrowser, macApp } from "./dist/profile.js";
 import { fetchServerList } from "./dist/serverlist.js";
 import { Connection, RELAY_CODE } from "./dist/connection.js";
-import { FirefoxAuth, StaticAuth, destroyToken, fetchAvatar } from "./dist/auth.js";
+import { FirefoxAuth, FxaError, StaticAuth, destroyToken, fetchAvatar } from "./dist/auth.js";
 import { askAgain, askTv, findTvs, parseTvLink, sendToTv, waitForSignIn, TV_PORT } from "./dist/tvpair.js";
 import { qrSvgPath } from "./dist/qr.js";
 import { SHARE_PORT, serveShare, shareData, shareLink, parseShared, sharedWhat, importPlan } from "./dist/share.js";
@@ -25,6 +25,8 @@ import { startSmartDns, smartDnsHost, smartDnsProblem } from "./dist/smartdns.js
 import { startGateway } from "./dist/gateway.js";
 import { log, logLines, onLog } from "./dist/log.js";
 import { useSplit, splitSummary, parseRule, parseSite, appOf, wayOf, hits, recentSites, SMART } from "./dist/split.js";
+import { useBlocker, blockerOf, refreshBlocker, onBlockerChange, listState, LIST_IDS } from "./dist/blocker.js";
+import { useYoutube, onYoutubeNotice, forgetRefusers } from "./dist/youtube.js";
 import { traffic, runsOut, sizeOf } from "./dist/traffic.js";
 import { knownBlocked, sanctioned, verdictOf, verdictText, tryText, wantOf } from "./dist/smart.js";
 import { listApps } from "./dist/apps.js";
@@ -110,7 +112,8 @@ export class Controller extends EventEmitter {
   #ip; // undefined: checking
   #netSeq = 0; // drops answers from an older check
   #pw = null; // the administrator password popup: { error, checking, for: global | trust | untrust }
-  #trustAsk = false; // the window asks to trust foxhole's certificate (relay mode)
+  #trustAsk = false; // the window asks to trust foxhole's certificate: "relay" (relay mode) or "youtube" (Shield's YouTube switch)
+  #trustFor = "relay"; // what the last ask was for: what trusting it does, said once it's done
   #caOk; // whether this computer trusts it; undefined: not checked yet
   #fwHint = null;
   #smartDns = null; // the home's DNS server, while Settings has it on and the account's signed in (smartdns.ts)
@@ -124,6 +127,7 @@ export class Controller extends EventEmitter {
   #routerNeedsHelper = false; // Smart DNS is on, but the network helper it needs for the router isn't set up yet
   #settingsNote = null;
   #splitNote = null;
+  #shieldNote = null;
   #apps = []; // split tunneling's apps to pick from: [{ id, name }] (on Android the id is its package)
   #appsLoading = false; // being looked up: the picker says so, not "no apps"
   #icons = new Map(); // their icons, by id: data: URLs (null: none), asked for by the window apart from the state (appIcons)
@@ -134,6 +138,8 @@ export class Controller extends EventEmitter {
   #gen = 0; // the account choice's: a change ends the sign-in's wait, which starts over with the new one
   #signing = null; // the sign-in under way
   #tokenSource = null; // the account in use's token source
+  #afterToken = null; // a connect Mozilla's refusal of the VPN's token stopped: asked for again once a new one's in (#signIn)
+  #tokenRetry = false; // that connect, under way: refused again, it's said rather than tried again
   #entitled = null; // whether the account in use may use the VPN (null: not known yet)
   #switchTo = null; // an account picked (useAccount), until it's signed in with
   #switched = 0; // counts the switches done: the window closes Settings on each
@@ -186,6 +192,13 @@ export class Controller extends EventEmitter {
   async start({ connect = false, global = false } = {}) {
     useRelay(this.#relay()); // where vpn.mozilla.org is blocked, relay Guardian's control calls (httprelay.ts)
     useSplit(() => this.#settings.split); // live: a change applies to the next connection
+    useBlocker(() => blockerOf(this.#settings.blocker)); // Shield's, live too
+    onBlockerChange((written) => (written && this.#global?.blockerChanged?.(), this.#changed())); // macOS's DNS relay reads a new list
+    void refreshBlocker(); // lists missing or old: directly till connected, then through the VPN
+    setInterval(() => void refreshBlocker(), 6 * 3600_000).unref();
+    // YouTube's ads (youtube.ts): never a TV's, and only once this device trusts Foxhole's certificate
+    useYoutube(() => !this.#android?.tv && !!blockerOf(this.#settings.blocker).youtube, () => this.#caOk === true);
+    onYoutubeNotice((msg) => this.#say("warn", msg));
     onLog(() => this.emit("log", logLines[logLines.length - 1]));
     onProxyWarning((msg) => this.#say("error", `proxy: ${msg}`));
     // the VPN's connections fail for the network (cut off, offline): connected, the orb says so till it's back (#lose)
@@ -400,6 +413,10 @@ export class Controller extends EventEmitter {
       this.#refreshUsage();
       void this.#checkEntitled();
       this.#changed();
+      const after = this.#afterToken;
+      this.#afterToken = null;
+      // once the connect that asked for the token is over (its proxy closed)
+      if (after) void this.#until(() => !this.#busy).then(() => ((this.#tokenRetry = true), after())).finally(() => (this.#tokenRetry = false));
       return;
     }
   }
@@ -1104,14 +1121,24 @@ export class Controller extends EventEmitter {
       this.#offline = this.#again = null; // a wait for the internet, made by another way meanwhile (the tray's)
       this.#followNet();
       this.#say("ok", relay ? "connected through your relay" : "connected");
+      void refreshBlocker(); // a list that didn't come directly comes through the VPN now
       if (relay) void this.#askTrust();
       else this.#refreshUsage();
     } catch (err) {
       if (err.code === "EADDRINUSE") this.#say("error", `port ${this.#port} is in use by another app (a VPN or proxy?) — quit it, or pick another port in Settings`);
       else if (relay) this.#say("error", err.message);
-      else if (err instanceof GuardianError && err.status === 401) {
-        forgetToken(); // so the next start asks for a new one
-        this.#say("error", "token rejected (expired) — quit and open Foxhole again to get a new one");
+      else if ((err instanceof GuardianError && err.status === 401) || (err instanceof FxaError && err.errno !== 110)) {
+        // Mozilla refused the VPN's token (a new one too: Connection asks again), or wouldn't give one. What a restart
+        // did, which this said to do: a new one, the window showing it being got (and trying again while Mozilla won't
+        // give one), then this connect again by itself. Once: refused again, it's said.
+        if (this.#tokenRetry) this.#say("error", `Mozilla refused the VPN's token: ${err.message} — try again in a few minutes`);
+        else {
+          this.#tokenSource?.forget?.();
+          forgetToken(); // a saved one (Firefox's Browser Console)
+          this.#afterToken = again ?? (() => this.connect(country.code));
+          this.#say("info", "getting a new token from Mozilla…");
+          void this.#resignIn();
+        }
       } else if (err instanceof GuardianError && err.status === 403) {
         this.#setEntitled(false, true);
         this.#say("error", "this account hasn't turned on Firefox's VPN yet");
@@ -1812,6 +1839,94 @@ export class Controller extends EventEmitter {
     };
   }
 
+  // ── Shield (blocker.ts): block lists, and the user's own rules
+
+  #shield() {
+    return blockerOf(this.#settings.blocker);
+  }
+
+  /** A block list on or off. */
+  setBlockList(id, on) {
+    if (!LIST_IDS.includes(id)) return false;
+    const b = this.#shield();
+    return this.#saveShield({ ...b, lists: LIST_IDS.filter((l) => (l === id ? on === true : b.lists.includes(l))) });
+  }
+
+  /** Adds a typed site to block, or with `via` "allow" to let through whatever list has it; true once it's in the list. */
+  addBlockRule(text, via) {
+    const t = String(text ?? "").trim();
+    const match = typeof text === "string" ? parseSite(text) : null;
+    if (!match) {
+      this.#note("shield", "error", t ? `Not a site: “${t.slice(0, 40)}”. Try ads.example.com, *.example.com or 1.2.3.4.` : "Type a site first.");
+      return false;
+    }
+    const b = this.#shield();
+    const rules = b.rules ?? [];
+    const want = via === "allow" ? "allow" : "block";
+    const had = rules.find((r) => r.match === match);
+    if (had?.via === want) {
+      this.#note("shield", "warn", `${match} is already in the list.`);
+      return false;
+    }
+    return this.#saveShield({ ...b, rules: had ? rules.map((r) => (r === had ? { match, via: want } : r)) : [...rules, { match, via: want }] });
+  }
+
+  toggleBlockRule(match) {
+    const b = this.#shield();
+    return this.#saveShield({ ...b, rules: (b.rules ?? []).map((r) => (r.match === match ? { match, via: r.via === "block" ? "allow" : "block" } : r)) });
+  }
+
+  removeBlockRule(match) {
+    const { rules = [], ...b } = this.#shield();
+    const left = rules.filter((r) => r.match !== match);
+    return this.#saveShield(left.length ? { ...b, rules: left } : b);
+  }
+
+  /**
+   * Shield's YouTube switch (youtube.ts): its ads taken out in this device's browsers, once it trusts Foxhole's certificate,
+   * which is asked for then. Turned on, apps found refusing the certificate are tried again. Not on a TV.
+   */
+  setYoutubeAds(on) {
+    if (this.#android?.tv) return false;
+    const { youtube, ...b } = this.#shield();
+    if (on) forgetRefusers();
+    if (!this.#saveShield(on ? { ...b, youtube: true } : b)) return false;
+    if (on)
+      void this.#caTrusted().then((ok) => {
+        this.#caOk = ok;
+        if (!ok) (this.#trustAsk = "youtube"), (this.#trustFor = "youtube");
+        this.#changed();
+      });
+    return true;
+  }
+
+  /** Saves Shield's settings: the proxy and DNS read them live, macOS's DNS relay is told, and a list turned on is got. */
+  #saveShield(blocker) {
+    const next = { ...this.#settings, blocker };
+    try {
+      saveSettings(next);
+    } catch (err) {
+      this.#note("shield", "error", `Couldn't save: ${err.message}`);
+      return false;
+    }
+    this.#settings = next;
+    this.#shieldNote = null;
+    this.#global?.blockerChanged?.();
+    void refreshBlocker();
+    this.#changed();
+    return true;
+  }
+
+  /** Shield as the window shows it: each list, on with its state (blocking, being got, not got) or off; the user's rules. */
+  #shieldView() {
+    const b = this.#shield();
+    return {
+      lists: LIST_IDS.map((id) => (b.lists.includes(id) ? { id, on: true, ...listState(id) } : { id, on: false })),
+      rules: b.rules ?? [],
+      youtube: !!b.youtube,
+    };
+  }
+
   /** Saves the rules: the proxy reads them live, so the next connection follows them. */
   #saveSplit(split) {
     const next = { ...this.#settings, split };
@@ -1854,7 +1969,8 @@ export class Controller extends EventEmitter {
   /** After connecting to the relay: asks to trust foxhole's certificate, if this computer doesn't yet (sites won't open). */
   async #askTrust() {
     this.#caOk = await this.#caTrusted();
-    this.#trustAsk = !this.#caOk && this.#relayOn();
+    this.#trustAsk = !this.#caOk && this.#relayOn() && "relay";
+    if (this.#trustAsk) this.#trustFor = "relay";
     this.#changed();
   }
 
@@ -1887,7 +2003,7 @@ export class Controller extends EventEmitter {
       this.#caOk = await this.#caTrusted();
       if (todo) this.#say("warn", todo);
       else if (!add) this.#say("info", "certificate removed");
-      else if (this.#caOk) this.#say("ok", "Certificate trusted. Restart your browser, then sites open through the relay.");
+      else if (this.#caOk) this.#say("ok", this.#trustFor === "youtube" ? "Certificate trusted. Restart your browser, then YouTube's ads are gone." : "Certificate trusted. Restart your browser, then sites open through the relay.");
       else this.#say("warn", "certificate added, but not trusted yet");
     } catch (err) {
       this.#say("error", `certificate ${add ? "not trusted" : "not removed"}: ${err.message}`);
@@ -1951,6 +2067,7 @@ export class Controller extends EventEmitter {
 
   #note(where, tone, text) {
     if (where === "split") this.#splitNote = { tone, text };
+    else if (where === "shield") this.#shieldNote = { tone, text };
     else this.#settingsNote = { tone, text };
     this.#changed();
   }
@@ -2026,6 +2143,8 @@ export class Controller extends EventEmitter {
         icons: [...this.#icons.values()].filter(Boolean).length, // more drawn: the window asks for them (appIcons)
       },
       splitNote: this.#splitNote,
+      shield: this.#shieldView(),
+      shieldNote: this.#shieldNote,
       pw: this.#pw,
       relayOn: this.#relayOn(),
       relayStats: this.#relayOn() ? { ...relayStats } : null,

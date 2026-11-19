@@ -74,7 +74,7 @@ function pageWords(html) {
 }
 
 // kept as they are in Persian too: names, and words that are the same (fa.js may have one, for tr() to translate its {})
-const SAME = new Set(["Foxhole", "VPN", "English", "SOCKS5 + HTTP", "SOCKS5 + HTTP{}", "Telegram", "DNS", "IP", "Firefox", "GitHub", "Google Apps Script", "Deployment ID", "Ctrl+Shift+J", "ABC 234", "IR", "{} · {}", "LAN {}", "Foxhole · {}", "IP {}", "VPN · {}"]);
+const SAME = new Set(["Foxhole", "VPN", "English", "SOCKS5 + HTTP", "SOCKS5 + HTTP{}", "Telegram", "DNS", "IP", "Firefox", "GitHub", "Google Apps Script", "Deployment ID", "Ctrl+Shift+J", "ABC 234", "ads.example.com", "IR", "{} · {}", "LAN {}", "Foxhole · {}", "IP {}", "VPN · {}"]);
 
 const sources = {
   "renderer/app.js": tagged(read("renderer/app.js")),

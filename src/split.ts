@@ -101,13 +101,14 @@ function subnet(match: string): { list: net.BlockList; bits: number } {
 /**
  * The rule for a connection from the app `app` (when known) to the site `name` (when known) at the address `ip` (when
  * known), or null for the default. An app's rule decides all its connections; else the most specific site rule wins,
- * so the order never matters: the longest matching domain, else the longest matching address prefix. Pure.
+ * so the order never matters: the longest matching domain, else the longest matching address prefix. Pure. Any rules
+ * with a match go: Shield's too (blocker.ts).
  */
-export function ruleFor(split: Split, name?: string, ip?: string, app?: string): SplitRule | null {
+export function ruleFor<R extends { match: string }>(split: { rules: R[] }, name?: string, ip?: string, app?: string): R | null {
   const a = app?.toLowerCase();
   const mine = a ? split.rules.find((r) => appOf(r.match)?.toLowerCase() === a) : undefined;
   if (mine) return mine;
-  let best: SplitRule | null = null;
+  let best: R | null = null;
   let len = -1;
   const host = name?.toLowerCase().replace(/\.$/, "");
   if (host && !net.isIP(host)) {

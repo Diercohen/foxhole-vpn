@@ -6,6 +6,7 @@ import tls from "node:tls";
 import type { Duplex } from "node:stream";
 import type { IncomingMessage } from "node:http";
 import { promisify } from "node:util";
+import { gunzip } from "node:zlib";
 import { lookup } from "node:dns/promises";
 import {
   readFileSync, writeFileSync, rmSync,
@@ -24,6 +25,7 @@ import { DarwinRouting, macOtherVpn } from "./global-darwin.js";
 import { WindowsRouting, isWindowsAdmin, uacPriv } from "./global-win32.js";
 import { logStream } from "./log.js";
 import { userHome } from "./profile.js";
+import { onBlockerChange } from "./blocker.js";
 
 const exec = promisify(execFile);
 
@@ -299,9 +301,9 @@ export function httpsGet(url: string, proxy?: DownloadVia["proxy"] | Tunnel, hea
   });
 }
 
-/** GETs `url` into memory (through `proxy`'s CONNECT when given), following redirects. */
+/** GETs `url` into memory (through `proxy`'s CONNECT when given), following redirects; gzipped on the way where the server will (lists: a third of the data). */
 export async function download(url: string, proxy?: DownloadVia["proxy"], onData: (got: number, total: number) => void = () => {}, hops = 5): Promise<Buffer> {
-  const res = await httpsGet(url, proxy);
+  const res = await httpsGet(url, proxy, { "accept-encoding": "gzip" });
   const { statusCode = 0, headers } = res;
   if (statusCode >= 300 && statusCode < 400 && headers.location && hops > 0) {
     res.resume();
@@ -316,7 +318,11 @@ export async function download(url: string, proxy?: DownloadVia["proxy"], onData
   let got = 0;
   return new Promise((resolve, reject) => {
     res.on("data", (c: Buffer) => (chunks.push(c), onData((got += c.length), total)));
-    res.on("end", () => resolve(Buffer.concat(chunks)));
+    res.on("end", () => {
+      const body = Buffer.concat(chunks);
+      if (headers["content-encoding"] !== "gzip") return resolve(body);
+      gunzip(body, (err, out) => (err ? reject(err) : resolve(out)));
+    });
     res.on("error", reject);
   });
 }
@@ -879,6 +885,12 @@ export class GlobalSession {
     if (this.#mac instanceof DarwinRouting) this.#mac.splitChanged();
   }
 
+  /** Shield changed: macOS's DNS relay is told; Windows forgets the answers it has (on Linux the forwarder reads it live). */
+  blockerChanged(): void {
+    if (this.#mac instanceof DarwinRouting) this.#mac.blockerChanged();
+    else if (IS_WIN) void exec("ipconfig", ["/flushdns"], { windowsHide: true }).catch(() => {});
+  }
+
   /** The public exit IP (confirms the tunnel works), or null if unreachable: whole-system mode doesn't stay on then. `plain`: over HTTP (relay mode). */
   async verifyExitIp(plain = false): Promise<string | null> {
     // retries: right after start, tun2socks may not be reading the tun yet; then Cloudflare's trace, for ipify being down
@@ -999,6 +1011,7 @@ export async function runGlobal(conn: Connection, opts: GlobalOptions): Promise<
     console.error(red(`tun2socks exited (${code}) — traffic is not being tunnelled.`));
   });
   session.onNetworkChange((event, detail) => console.log(event === "lost" ? yellow(`  ${detail}`) : green(`  rerouted ${detail}`)));
+  onBlockerChange((written) => written && session.blockerChanged()); // a list got: macOS's DNS relay reads it
 
   const cleanup = async () => {
     await session.stop();

@@ -12,9 +12,10 @@ import type { Connection } from "./connection.js";
 import type { Server } from "./serverlist.js";
 import { nameOf } from "./dns.js";
 import { route } from "./split.js";
+import { blocked } from "./blocker.js";
 import { count } from "./traffic.js";
 import { log } from "./log.js";
-import { dialFirst } from "./guardian.js";
+import { dialFirst, passRefused } from "./guardian.js";
 
 // ── Wire formats ────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -205,6 +206,7 @@ function vpnFlow(conn: Conn, host: string, port: number, back: (data: Buffer) =>
     s.on("error", () => flow.close()).on("close", () => flow.close());
     s.once("response", (headers) => {
       if (headers[":status"] !== 200) {
+        if (headers["x-fastly-proxy-auth-failed"]) passRefused(pass.token); // the next flow's on a new one
         if (/destination_ip_prohibited/.test(String(headers["proxy-status"] ?? ""))) {
           if ((refused.get(port) ?? 0) <= Date.now()) log(`udp: the VPN refuses port ${port} (${host})`);
           refused.set(port, Date.now() + REFUSED_MS);
@@ -277,6 +279,7 @@ export async function udpAssociate(client: net.Socket, conn: Conn, pastTun: Past
     if (flows.size >= MAX_FLOWS && !flow) return;
     const ip = net.isIP(d.host) ? d.host : undefined;
     const name = ip ? nameOf(ip) : d.host;
+    if (blocked(name, ip)) return; // Shield: dropped (QUIC's browser then asks over TCP, refused there too)
     const via = route(name, ip);
     if (via === "direct") {
       let how: ReturnType<PastTun> | null = null; // asked once: on macOS it routes the address around the tun

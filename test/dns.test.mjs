@@ -11,6 +11,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { startDnsForwarder, withFastlyFallback } from "../dist/dns.js";
+import { useBlocker } from "../dist/blocker.js";
 
 setTimeout(() => {
   console.error("FAIL - timed out");
@@ -113,6 +114,21 @@ const tcpAns = await new Promise((resolve, reject) => {
 });
 assert.deepEqual(tcpAns, ANSWER, "TCP query returns the DoH answer");
 assert.ok(dohRequests >= 2, "DoH server was reached for both queries");
+
+// Shield: a blocked name gets NXDOMAIN at once, the DoH server not asked
+useBlocker(() => ({ lists: [], rules: [{ match: "ads.example", via: "block" }] }));
+const asked = dohRequests;
+const blockedQ = Buffer.concat([Buffer.from([0x0b, 0x0c, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]), Buffer.from([1, 0x78, 3, 0x61, 0x64, 0x73, 7, ...Buffer.from("example"), 0, 0, 1, 0, 1])]);
+const nx = await new Promise((resolve, reject) => {
+  const c = dgram.createSocket("udp4");
+  c.on("message", (m) => (c.close(), resolve(m)));
+  c.on("error", reject);
+  c.send(blockedQ, PORT, "127.0.0.1");
+});
+assert.equal(nx.readUInt16BE(0), 0x0b0c, "its id");
+assert.equal(nx.readUInt16BE(2) & 0xf, 3, "NXDOMAIN");
+assert.equal(dohRequests, asked, "DoH not asked");
+useBlocker(() => ({ lists: [] }));
 
 // A TCP client that stays connected once answered, as systemd-resolved does: close() hangs it up instead of waiting
 // for it (in global mode its own close can't come, once the tun and the address both ends are on are gone).

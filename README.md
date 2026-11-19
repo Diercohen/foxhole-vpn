@@ -28,6 +28,7 @@ routing**, on Linux, macOS and Windows. A desktop app or a terminal app.
 - ✈️ **Telegram in one tap**: the proxy card's button sets Telegram on this device; with sharing on, a QR code sets your phone's
 - 📱 **Share with your phone** on the same Wi-Fi
 - 📺 **Smart DNS for a TV or console**: set its DNS to your computer, and YouTube and blocked or sanctioned sites open on it, with no app
+- 🧱 **Shield**: malware, ads and trackers blocked before they load, and at a switch social networks, porn, gambling, clickbait, other VPNs and crypto miners, with rules of your own; and **YouTube's ads** taken out in your browsers
 <!-- Share Foxhole: hidden for now
 - 📲 **Share Foxhole** with the family, no internet needed: your relay and split tunneling by QR code or link, and from an Android phone the app itself to a phone nearby -->
 - 🧮 **Look like a calculator** (Android): for a phone that may be searched, Foxhole's icon and name become a calculator's that works as one, and your code, then =, opens Foxhole. Android's own Settings still list Foxhole, and while it's connected Android shows its VPN
@@ -92,7 +93,7 @@ foxhole restore             # undo whole-system routing if foxhole was killed
 In the TUI: pick a country and press **Enter** to connect (it starts disconnected).
 **`g`** ticks or unticks **Global TUN**: ticked, the default, connecting goes on to
 whole-system mode (asks for your password in-app), and your choice is kept for next
-time. **`t`** split tunneling (**`i`** Iranian sites direct, **`s`** save data, **`?`** checks a site as you type it), **`m`** data by site (**`h`** hides a site from it, **`a`** shows the hidden), **`a`** accounts, **`l`** logs, **`s`** settings
+time. **`t`** split tunneling (**`i`** Iranian sites direct, **`s`** save data, **`?`** checks a site as you type it), **`m`** data by site (**`h`** hides a site from it, **`a`** shows the hidden), **`b`** Shield, **`a`** accounts, **`l`** logs, **`s`** settings
 (**Use in Telegram** shows its QR code).
 On Windows, whole-system mode asks for administrator rights in Windows' own
 prompt, once: allow **Windows PowerShell**. With it Foxhole sets up its network helper,
@@ -120,6 +121,31 @@ export HTTPS_PROXY=http://127.0.0.1:1080 HTTP_PROXY=http://127.0.0.1:1080
 
 Whole-system mode needs [tun2socks](https://github.com/xjasonlyu/tun2socks);
 foxhole downloads it for you. If GitHub is blocked, put the binary on your `PATH`.
+
+## Shield
+
+**Shield** (its card in the app, **`b`** in the TUI) blocks the sites on the lists you turn on: Malware and
+Ads + trackers from the start, and Social networks, Porn, Gambling, Clickbait, Other VPNs and Crypto miners at a
+switch. A blocked site gets no address (DNS answers that there's no such site) and no connection: in every app in
+whole-system mode, in apps using the proxy in Proxy only mode, in relay mode, and on TVs and consoles using Smart
+DNS (on an iPhone, apps using the proxy). **Manage custom rules** blocks a site no list has, or lets through one a
+list has: `ads.example.com` with its subdomains, `*.example.com` only its subdomains, an address or a range
+(`10.0.0.0/8`). Your rules come first, and Foxhole's own sites are never blocked.
+
+The lists are [HaGeZi's](https://github.com/hagezi/dns-blocklists) (GPL-3.0), with StevenBlack's
+[fake news list](https://github.com/StevenBlack/hosts) (MIT) in Clickbait and
+[NoCoin](https://github.com/hoshsadiq/adblock-nocoin-list) (MIT) as Crypto. Foxhole doesn't ship them: it gets a
+list when you turn it on (through the VPN when connected), and a newer one each day (Malware) or week (the
+others). Malware and Ads take about 3 MB.
+
+**YouTube ads** (computers, Chrome on Android, Safari on iPhone; not TVs): YouTube sends its ads from the servers
+its videos come from, so no list can block them. With this switch on, Foxhole opens YouTube's pages
+(`www.youtube.com`, `m.youtube.com`, `music.youtube.com`) here, with a certificate from its own authority, and
+takes the ads out before your browser sees them, as uBlock Origin does in Firefox: the player gets no ads to play,
+and the ad slots in search and the feed are hidden. Its certificate must be trusted, which the switch asks for once
+(relay mode's: made on your device and never sent anywhere). YouTube's own apps don't trust it, so they get YouTube
+as it is, ads and all: Foxhole notices the first refusal and lets them be. When YouTube changes its ads, hot.json
+(Foxhole's signed fixes) can follow without a release.
 
 ## Where Firefox VPN is blocked (e.g. Iran)
 

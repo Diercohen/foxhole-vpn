@@ -8,6 +8,7 @@ import net from "node:net";
 import { startDnsForwarder, type DnsForwarderOptions } from "./dns.js";
 import { useSplit, viaOf, currentSplit, appOf, type Split } from "./split.js";
 import { OWN_HOSTS } from "./proxy.js";
+import { useBlocker, type Blocker } from "./blocker.js";
 
 // Private, loopback, link-local and CGNAT addresses: the LAN's routes already take them
 const LOCAL = /^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/;
@@ -57,8 +58,8 @@ export function directRoutes(via: string[], run: (argv: string[]) => Promise<boo
 
 /**
  * The relay process: the DoH forwarder, plus direct routes as above. foxhole sends it new rules
- * ("rules <json>") and a moved uplink ("via <json>") on stdin; when stdin ends (foxhole stopped
- * global mode, or is gone) it removes its routes and exits.
+ * ("rules <json>"), a moved uplink ("via <json>") and Shield's settings and lists' folder ("blocker <json>", blocker.ts)
+ * on stdin; when stdin ends (foxhole stopped global mode, or is gone) it removes its routes and exits.
  */
 export async function relayMain(o: { dns: DnsForwarderOptions; split: Split; via: string[]; prefix?: string[] }): Promise<void> {
   let split = o.split;
@@ -81,6 +82,11 @@ export async function relayMain(o: { dns: DnsForwarderOptions; split: Split; via
         // then let lookups happen again, so newly direct sites get their routes
         void routes.recheck().then(() => run(["killall", "-HUP", "mDNSResponder"]));
       } else if (cmd === "via") void routes.move(JSON.parse(json) as string[]);
+      else if (cmd === "blocker") {
+        const b = JSON.parse(json) as Blocker & { dir: string };
+        useBlocker(() => b, b.dir); // its lists read again from the user's folder: some may be new
+        void run(["killall", "-HUP", "mDNSResponder"]); // answers cached before go
+      }
     }
   });
   process.stdin.on("end", quit);

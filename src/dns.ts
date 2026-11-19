@@ -3,6 +3,7 @@ import dns from "node:dns";
 import net from "node:net";
 import tls from "node:tls";
 import { viaOf } from "./split.js";
+import { blocked } from "./blocker.js";
 import { caPem } from "./mitm.js";
 import { hot } from "./hot.js";
 
@@ -94,6 +95,18 @@ export function question(msg: Buffer): { name: string; type: number; end: number
   } catch {
     return null;
   }
+}
+
+/**
+ * The answer to query `q` (its question ending at `end`) that its name doesn't exist (NXDOMAIN): Shield's, for a
+ * blocked site. Without an SOA it isn't cached, so a site allowed again opens at once. Pure.
+ */
+export function nxdomain(q: Buffer, end: number): Buffer {
+  const a = Buffer.from(q.subarray(0, end));
+  a.writeUInt16BE(0x8083 | (q.readUInt16BE(2) & 0x7900), 2); // a response, recursion as asked and available, rcode 3
+  a.writeUInt16BE(0, 6);
+  a.writeUInt32BE(0, 8); // no answers, authority or additional records (the query's EDNS dropped)
+  return a;
 }
 
 /** The IPv4 addresses in a DNS answer, with their TTLs (what parses of a cut-off one). Pure. */
@@ -315,7 +328,9 @@ export async function startDnsForwarder(o: DnsForwarderOptions): Promise<DnsForw
   // A site that goes direct is looked up where it'll be reached, on the local network (local
   // answers, no VPN data), else through the tunnel. Every answer is remembered for the proxy.
   const query = async (q: Buffer): Promise<Buffer> => {
-    const name = questionName(q);
+    const qi = question(q);
+    if (qi && blocked(qi.name)) return nxdomain(q, qi.end); // Shield: before the tunnel's asked, or macOS routes it
+    const name = qi?.name ?? null;
     const local = name && viaOf(name) === "direct" ? o.local?.() : null;
     const ans = (local && (await askLocal(q, local.server, local.from).catch(() => null))) || (await doh(q));
     remember(ans);
