@@ -406,6 +406,7 @@ body.idle .zzz i { animation-play-state: paused; }
 .k { font-size: 10.5px; font-weight: 650; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .v { margin-top: 3px; font-size: 15px; font-weight: 680; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .card .s { margin-top: 1px; font-size: 12px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .s .link { padding-block: 0; } /* Show the name: within the line, which is cut */
 .card .v.warn { color: var(--amber); }
 .card .v.dim { color: var(--ink-3); }
 .card.link .chev { color: var(--ink-3); transition: transform 0.4s var(--spring), color 0.3s; }
@@ -574,7 +575,15 @@ input:focus { background: rgba(0, 0, 0, 0.34); box-shadow: inset 0 0 0 1px color
 .hint b { color: var(--ink-2); }
 .hint strong { color: var(--ink); }
 .fine { margin-top: 16px; font-size: 12px; color: var(--ink-3); line-height: 1.55; }
-.fine .link { color: var(--fox); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; } /* a link in fine print, as Import them */
+/* an action inside a line of text (Show the name, Try again, Restart now, Import them): a tinted pill, so it reads as a button and not as more text */
+:is(span, button:not(.card)).link { padding: 1px 9px; margin: 0 1px; border: 0; border-radius: 999px; font: inherit; font-weight: 650; color: var(--fox); cursor: pointer; text-decoration: none; white-space: nowrap;
+  background: color-mix(in srgb, var(--fox) 15%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fox) 35%, transparent); transition: background 0.2s, box-shadow 0.2s; }
+:is(span, button:not(.card)).link:hover { background: color-mix(in srgb, var(--fox) 26%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fox) 60%, transparent); }
+:is(span, button:not(.card)).link:active { background: color-mix(in srgb, var(--fox) 34%, transparent); }
+/* the same pill, quieter: a dialog's way out under its buttons (Cancel, Close, Connect anyway), and Show the name */
+:is(span, button).link:is(.fine, [data-wifi]) { color: var(--ink-2); background: rgba(255, 255, 255, 0.06); box-shadow: inset 0 0 0 1px var(--line); }
+:is(span, button).link.fine { align-self: center; padding: 6px 14px; }
+:is(span, button).link:is(.fine, [data-wifi]):hover { color: var(--ink); background: rgba(255, 255, 255, 0.11); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16); }
 .note { font-size: 12.5px; font-weight: 600; min-height: 0; }
 .note:empty, #split-apps-hint:empty { display: none; }
 .note[data-tone="error"] { color: var(--rose); }
@@ -656,7 +665,7 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .shield-row.on .dot { color: var(--mint); background: rgba(46, 242, 176, 0.12); }
 .shield-row [data-tone="on"] { color: var(--mint); }
 .shield-row [data-tone="warn"] { color: var(--amber); }
-.shield-row button.link { width: max-content; padding: 0; border: 0; background: none; font: inherit; font-weight: 650; color: var(--fox); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.shield-row button.link { width: max-content; }
 #shield-youtube { margin-bottom: 10px; }
 #shield-custom summary { cursor: pointer; list-style: none; }
 #shield-custom summary::-webkit-details-marker { display: none; }
@@ -739,7 +748,6 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .choice b { font-size: 14.5px; font-weight: 700; }
 .choice span span { font-size: 12.5px; color: var(--ink-3); line-height: 1.45; }
 .about .logo { width: 40px; height: 40px; filter: drop-shadow(0 6px 16px rgba(255, 122, 26, 0.5)); }
-.about .link { color: var(--fox); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 
 .logs { flex: 1; overflow: auto; padding: 14px 22px 22px; font-family: var(--mono); font-size: 12px; line-height: 1.7; user-select: text; }
 .logs .ln { white-space: pre-wrap; word-break: break-word; color: var(--ink-2); animation: fadeIn 0.4s var(--out); }
@@ -835,7 +843,6 @@ code { padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.0
 .notes code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 1px 5px; border-radius: 5px; background: rgba(255, 255, 255, 0.08); }
 .notes pre { white-space: pre-wrap; padding: 8px 10px; border-radius: 8px; background: rgba(255, 255, 255, 0.06); }
 .notes pre code { padding: 0; background: none; }
-.notes .link { text-decoration: underline; text-underline-offset: 2px; }
 #manual-modal code { overflow-wrap: anywhere; }
 .lock-orb { width: 66px; height: 66px; margin: 0 auto 2px; border-radius: 22px; display: grid; place-items: center; color: #fff;
   background: linear-gradient(135deg, var(--amber), var(--fox) 55%, var(--fox-2));
@@ -871,8 +878,7 @@ body[data-relay] #g-ring stop:last-child { stop-color: #ff6bd6; }
 #offline-modal .lock-orb { background: linear-gradient(135deg, #ffe08a, var(--amber) 48%, #ff9f1a); box-shadow: 0 18px 44px -12px var(--amber), inset 0 1px 0 rgba(255, 255, 255, 0.5); }
 #offline-modal .waiting { align-self: center; justify-content: center; margin: 0; text-align: start; }
 #offline-modal .waiting .spin { flex: none; border-top-color: var(--amber); }
-#offline-anyway { align-self: center; margin-top: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
-#offline-anyway:hover { color: var(--ink-2); }
+#offline-anyway { margin-top: 0; }
 /* A relay's test (app.js renderRelayTest): its steps, each ✓, ! or ✕ once done, a spinner while under way */
 .relay-steps { list-style: none; display: flex; flex-direction: column; gap: 8px; padding: 0; margin: 2px 0; text-align: start; }
 .relay-steps li { display: flex; align-items: flex-start; gap: 10px; font-size: 13.5px; line-height: 1.4; color: var(--ink-2); }

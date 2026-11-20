@@ -391,7 +391,8 @@ function renderCards() {
       // the public IP (the VPN's when connected; not the relay's, Google's, which passes the real one on to sites), then the
       // LAN's; the whole line on hover, where it's cut
       const ip = S.relayOn && S.ip ? t`Sites still see your real IP` : S.ip ? `IP ${esc(S.ip)}` : S.ipChecking ? t`checking the IP…` : t`IP unreachable`;
-      fill("#c-net", esc(tr(S.net) ?? t`offline`), `${ip} · ${S.lanIp ? `LAN ${esc(S.lanIp)}` : t`no local address`}` + showName(), S.net ? "" : "warn");
+      const name = showName().replace(/^\s*·\s*/, ""); // first, as the rest of the line may be cut
+      fill("#c-net", esc(tr(S.net) ?? t`offline`), `${name && `${name} · `}${ip} · ${S.lanIp ? `LAN ${esc(S.lanIp)}` : t`no local address`}`, S.net ? "" : "warn");
       $("#c-net .s").title = $("#c-net .s").textContent;
     }
     $("#c-net use").setAttribute("href", S.net?.startsWith("Mobile") ? "#i-phone" : S.net && !S.net.startsWith("Wi-Fi") ? "#i-plug" : "#i-wifi");
