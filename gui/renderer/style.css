@@ -575,15 +575,13 @@ input:focus { background: rgba(0, 0, 0, 0.34); box-shadow: inset 0 0 0 1px color
 .hint b { color: var(--ink-2); }
 .hint strong { color: var(--ink); }
 .fine { margin-top: 16px; font-size: 12px; color: var(--ink-3); line-height: 1.55; }
-/* an action inside a line of text (Show the name, Try again, Restart now, Import them): a tinted pill, so it reads as a button and not as more text */
-:is(span, button:not(.card)).link { padding: 1px 9px; margin: 0 1px; border: 0; border-radius: 999px; font: inherit; font-weight: 650; color: var(--fox); cursor: pointer; text-decoration: none; white-space: nowrap;
-  background: color-mix(in srgb, var(--fox) 15%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fox) 35%, transparent); transition: background 0.2s, box-shadow 0.2s; }
-:is(span, button:not(.card)).link:hover { background: color-mix(in srgb, var(--fox) 26%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fox) 60%, transparent); }
-:is(span, button:not(.card)).link:active { background: color-mix(in srgb, var(--fox) 34%, transparent); }
-/* the same pill, quieter: a dialog's way out under its buttons (Cancel, Close, Connect anyway), and Show the name */
-:is(span, button).link:is(.fine, [data-wifi]) { color: var(--ink-2); background: rgba(255, 255, 255, 0.06); box-shadow: inset 0 0 0 1px var(--line); }
+/* an action inside a line of text (Show the name, Try again, Restart now, Trust it): a grey pill, so it reads as a button and not as more text */
+:is(span, button:not(.card)).link { padding: 1px 9px; margin: 0 1px; border: 0; border-radius: 999px; font: inherit; font-weight: 650; color: var(--ink-2); cursor: pointer; text-decoration: none; white-space: nowrap;
+  background: rgba(255, 255, 255, 0.06); box-shadow: inset 0 0 0 1px var(--line); transition: color 0.2s, background 0.2s, box-shadow 0.2s; }
+:is(span, button:not(.card)).link:hover { color: var(--ink); background: rgba(255, 255, 255, 0.11); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16); }
+:is(span, button:not(.card)).link:active { background: rgba(255, 255, 255, 0.16); }
+/* a dialog's way out under its buttons (Cancel, Close, Connect anyway): the same pill, bigger */
 :is(span, button).link.fine { align-self: center; padding: 6px 14px; }
-:is(span, button).link:is(.fine, [data-wifi]):hover { color: var(--ink); background: rgba(255, 255, 255, 0.11); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16); }
 .note { font-size: 12.5px; font-weight: 600; min-height: 0; }
 .note:empty, #split-apps-hint:empty { display: none; }
 .note[data-tone="error"] { color: var(--rose); }
